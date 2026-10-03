@@ -348,6 +348,18 @@ describe('ChatViewProvider done-handler persistence (Plan 02 Phase 3)', () => {
     ]);
   });
 
+  it.each(['text', 'error'] as const)('offers a CLI upgrade when the provider reports a version requirement as %s', async kind => {
+    (h.provider as any)._cliUpdates = {};
+    h.setStream([
+      { type: kind, content: 'API Error: 400 Claude Code 2.1.278 does not support this model; version 2.1.280 or newer is required.' },
+      { type: 'done' },
+    ]);
+    await send(h);
+    expect(h.sidebarMessages.filter(m => m.type === 'modelCliUpgrade')).toEqual([
+      expect.objectContaining({ payload: expect.objectContaining({ providerId: 'claude-code', minimum: '2.1.280', state: 'available' }) }),
+    ]);
+  });
+
   it('marks tool calls that never received a tool_result as completed at persist time (no eternal spinners)', async () => {
     h.setStream([
       { type: 'tool_use', toolCall: { id: 'tu-2', name: 'Read', input: { file_path: '/b.ts' }, status: 'running' } },

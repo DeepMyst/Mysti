@@ -8,10 +8,6 @@
  * `session.sessionId` was truthy, on the assumption that a truthy id means the
  * CLI will resume. That is only true for `sessionKind: 'cli-resume'`.
  *
- * Codex declares `sessionKind: 'prompt-history'`, records `thread_id` into
- * `session.sessionId` from the `thread.started` event, and its argv
- * (`codex exec --json ... -`) carries NO resume flag — so from turn 2 every
- * Codex request went out with neither history nor resume.
  */
 import { describe, it, expect } from 'vitest';
 import { TestableCodexProvider, TestableClaudeProvider } from '../../helpers/providerFactory';
@@ -30,8 +26,9 @@ const CONVERSATION = {
 } as unknown as Conversation;
 
 describe('D-3 — history suppression is gated on sessionKind, not on a truthy sessionId', () => {
-  it('Codex keeps its history after thread.started assigns a sessionId', () => {
+  it('a prompt-history provider keeps history despite a truthy sessionId', () => {
     const provider = new TestableCodexProvider();
+    Object.defineProperty(provider, 'capabilities', { value: { ...provider.capabilities, sessionKind: 'prompt-history' } });
     const session = createCodexSession();
 
     // Turn 1: no session yet — history is sent.
@@ -44,10 +41,18 @@ describe('D-3 — history suppression is gated on sessionKind, not on a truthy s
     );
     expect(session.sessionId).toBe('thread_abc');
 
-    // Codex has no resume flag, so turn 2 MUST still carry the history.
+    // Without native resume, turn 2 MUST still carry the history.
     expect(provider.capabilities.sessionKind).toBe('prompt-history');
-    expect(provider.buildCliArgs({} as any, session as any).join(' ')).not.toMatch(/resume/);
     expect((provider as any)._conversationForPrompt(session, CONVERSATION)).toBe(CONVERSATION);
+  });
+
+  it('Codex native resume suppresses duplicate prompt history', () => {
+    const provider = new TestableCodexProvider();
+    const session = createCodexSession();
+    expect((provider as any)._conversationForPrompt(session, CONVERSATION)).toBe(CONVERSATION);
+    session.sessionId = 'native-thread';
+    expect(provider.capabilities.sessionKind).toBe('cli-resume');
+    expect((provider as any)._conversationForPrompt(session, CONVERSATION)).toBeNull();
   });
 
   it('is behaviour-neutral for a cli-resume provider (Claude Code still drops history)', () => {

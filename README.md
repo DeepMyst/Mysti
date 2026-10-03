@@ -54,9 +54,9 @@
 
 ## What's New in v0.4.0
 
-### 4 New Providers (12 Total)
+### Mysti and 15 Agent Backends
 
-Mysti now supports **12 AI providers** — added **OpenCode**, **Qwen Code**, **Ollama**, and **LocalAI** alongside Claude Code, Codex, Gemini, GitHub Copilot, Cline, Cursor, OpenClaw, and Manus. Run local models with Ollama/LocalAI or use cloud providers like OpenCode and Qwen Code. Each provider has its own authentic logo in the UI.
+Choose the Mysti coordinator or one of 15 registered backends: Claude Code, Codex, Gemini, Cline, GitHub Copilot, Cursor, OpenClaw, OpenCode, Qwen Code, Hermes, Kimi Code, Continue, Ollama, LocalAI, and OpenRouter. See the [provider guide](docs/PROVIDERS.md) for setup and permission limitations. Manus is not registered in this release.
 
 ### Qwen Code
 
@@ -153,7 +153,7 @@ Authentication, model availability and usage charges depend on the selected prov
 
 ## Brainstorm Mode
 
-**Want a second opinion?** Enable Brainstorm Mode and let two AI agents tackle your problem together. **Choose any 2 of 12 agents** from the settings panel.
+**Want a second opinion?** Enable Brainstorm Mode and let two AI agents tackle your problem together. **Choose two available agents** from the settings panel.
 
 <p align="center">
   <img src="docs/gifs/brainstorm example.gif" alt="Brainstorm Mode" width="700">
@@ -386,7 +386,7 @@ copilot  # then use /login command
 
 # Or Gemini CLI
 npm install -g @google/gemini-cli
-gemini auth login
+gemini
 
 # Or Cursor (macOS/Linux; on Windows PowerShell: irm 'https://cursor.com/install?win32=true' | iex)
 curl https://cursor.com/install -fsS | bash
@@ -394,7 +394,7 @@ agent login
 
 # Or OpenClaw
 npm install -g openclaw@latest && openclaw onboard --install-daemon
-openclaw login
+openclaw onboard
 
 # Or OpenCode
 npm i -g opencode-ai@latest
@@ -475,7 +475,7 @@ Stay in control of what the AI can do:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `mysti.defaultProvider` | `claude-code` | Primary AI provider |
-| `mysti.claudePath` | `claude` | Path to Claude CLI |
+| `mysti.claudeCodePath` | `claude` | Path to Claude CLI |
 | `mysti.codexPath` | `codex` | Path to Codex CLI |
 | `mysti.geminiPath` | `gemini` | Path to Gemini CLI |
 | `mysti.copilotPath` | `copilot` | Path to Copilot CLI |

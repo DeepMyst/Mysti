@@ -38,6 +38,9 @@ function fakeProcess(): ChildProcess {
 
 function harness() {
   const provider = new TestableCodexProvider();
+  // Exercise the base single-shot contract independently of Codex's mandatory transport.
+  Object.defineProperty(provider, 'capabilities', { value: { ...provider.capabilities, supportsPersistentProcess: false } });
+  vi.spyOn(provider as any, 'requiresPersistentTransport').mockReturnValue(false);
   vi.spyOn(provider, 'getCliPath').mockReturnValue('/mock/codex');
   vi.spyOn(provider, 'buildCliArgs').mockReturnValue([]);
   const cleanup = vi.fn(async () => undefined);

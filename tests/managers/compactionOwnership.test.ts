@@ -42,7 +42,7 @@ const TABLE: Array<[ProviderType, boolean, boolean, boolean]> = [
   ['hermes', true, false, false],
   ['kimi-code', true, false, false],
   // Replayed from the last messages; report running usage totals, not fill.
-  ['openai-codex', false, false, false],
+  ['openai-codex', true, false, false],
   ['cline', false, false, false],
   ['continue', false, false, false],
   ['github-copilot', false, false, false],

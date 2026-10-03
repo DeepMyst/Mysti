@@ -1,8 +1,14 @@
 /** Mysti — SPDX-License-Identifier: Apache-2.0 */
 import type { Settings } from '../../types';
-import { shouldGateToolUse } from '../../utils/permissionClassifier';
+import { classifyToolAction, isNeverGatedAction, shouldGateToolUse } from '../../utils/permissionClassifier';
 
 type ApprovalSettings = Pick<Settings, 'mode' | 'accessLevel'>;
+
+/** Tool-name protocols must enforce read-only before the shared UI classifier. */
+export function nativeToolDecision(settings: ApprovalSettings, name: string): 'allow' | 'ask' | 'deny' {
+  if (isReadOnly(settings) && !isNeverGatedAction(classifyToolAction(name))) { return 'deny'; }
+  return shouldGateToolUse(settings, name) ? 'ask' : 'allow';
+}
 
 /** Native restrictions take precedence: the stream gate delegates these tiers to the provider. */
 function isReadOnly(settings: ApprovalSettings): boolean {

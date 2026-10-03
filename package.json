@@ -2,7 +2,7 @@
   "name": "mysti",
   "displayName": "Mysti - AI Coding Agent",
   "description": "Multi-agent AI coding assistant. Claude Code, Codex, Gemini, and GitHub Copilot brainstorm together, debate approaches, and deliver superior solutions. Like Cursor & Copilot, but with collaborative AI agents.",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "publisher": "DeepMyst",
   "author": {
     "name": "Baha Abunojaim",
@@ -274,6 +274,12 @@
         "command": "mysti.canvasAddScaffold",
         "title": "Mysti: Add Canvas Page",
         "category": "Mysti"
+      },
+      {
+        "command": "mysti.openProactive",
+        "title": "Open Proactive Inbox",
+        "category": "Mysti",
+        "icon": "$(bell)"
       }
     ],
     "menus": {
@@ -299,6 +305,11 @@
           "command": "mysti.openInNewTab",
           "when": "view == mysti.chatView",
           "group": "navigation@1"
+        },
+        {
+          "command": "mysti.openProactive",
+          "when": "view == mysti.chatView",
+          "group": "navigation@0"
         }
       ],
       "editor/title": [
@@ -582,6 +593,11 @@
             "high"
           ],
           "description": "Default thinking level for AI responses"
+        },
+        "mysti.claudeUltracode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable Claude Code Ultracode workflows independently of reasoning effort. Requires Claude Code 2.1.284 or newer and a supported model."
         },
         "mysti.defaultEffortLevel": {
           "type": "string",
@@ -880,8 +896,13 @@
         },
         "mysti.mysti.advisorAgents": {
           "type": "array",
-          "items": { "type": "string" },
-          "default": ["claude-code", "openai-codex"],
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "claude-code",
+            "openai-codex"
+          ],
           "scope": "machine",
           "markdownDescription": "Backends the Mysti coordinator asks for **advice** (`delegate agent=\"advisor\"`), in order. The first installed one runs read-only on its strongest model, billed to the plan you already have."
         },
@@ -2226,7 +2247,8 @@
     "sync-agents:force": "node scripts/sync-agents.js --force",
     "perf:sizes": "node scripts/perf-sizes.js",
     "test:vscode": "tsc -p tsconfig.vscode-test.json && node ./scripts/prepare-vscode-fixture.js && vscode-test",
-    "pretest:vscode": "npm run compile:release"
+    "pretest:vscode": "npm run compile:release",
+    "validate:installers": "node scripts/validation/installers.cjs"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
@@ -2255,6 +2277,7 @@
     "@modelcontextprotocol/sdk": "^1.27.1",
     "@vscode/extension-telemetry": "^0.9.0",
     "dompurify": "^3.4.14",
+    "json5": "2.2.3",
     "marked": "^15.0.0",
     "mermaid": "11.17.2",
     "playwright": "^1.58.2",

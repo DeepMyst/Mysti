@@ -24,6 +24,8 @@ const userDataDir = mkdtempSync(join(profiles, `${version}-`));
 
 export default defineConfig({
   files: 'out-vscode-test/**/*.test.js',
+  // Optional extracted VSIX root: exercise the actual release payload.
+  extensionDevelopmentPath: process.env.MYSTI_TEST_EXTENSION_PATH || '.',
   version,
   // Inspect the actual nested webview through the test editor's loopback CDP
   // endpoint. Port 0 lets Electron allocate a free port without a bind race.

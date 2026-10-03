@@ -101,6 +101,15 @@ describe('ProviderManager.enhancePrompt', () => {
     });
   });
 
+  it('uses an explicitly selected tab provider instead of the global default', async () => {
+    const global = vi.fn(async (p: string) => p + ' global');
+    const selected = vi.fn(async (p: string) => p + ' selected');
+    const manager = buildManager('global', [fakeProvider({ id: 'global', enhance: global }), fakeProvider({ id: 'selected', enhance: selected })]);
+    expect(await manager.enhancePrompt('draft', 'selected')).toMatchObject({ enhancedById: 'selected', fallback: false });
+    expect(global).not.toHaveBeenCalled();
+    expect(selected).toHaveBeenCalledWith('draft');
+  });
+
   it('falls back to an installed capable backend when the active one cannot enhance', async () => {
     // The shipped default: mysti.defaultProvider = qwen-code, which has no
     // enhancePrompt. Before the fix this returned the prompt untouched.

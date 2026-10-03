@@ -332,7 +332,7 @@ Mysti funciona com suas assinaturas existentes — sem custos adicionais!
 | Ferramenta CLI | Assinatura | Instalação |
 |---------------|------------|------------|
 | **Claude Code** (recomendado) | Anthropic API ou Claude Pro/Max | `npm install -g @anthropic-ai/claude-code` |
-| **GitHub Copilot CLI** | GitHub Copilot Pro/Pro+/Business | `npm install -g @github/copilot-cli` |
+| **GitHub Copilot CLI** | GitHub Copilot Pro/Pro+/Business | `npm install -g @github/copilot` |
 | **Gemini CLI** | Google AI API ou Gemini Advanced | `npm install -g @google/gemini-cli` |
 | **Codex CLI** | OpenAI API | Siga o guia de instalação da OpenAI |
 | **Cline** | Depende do provedor de modelo | `npm install -g cline` |
@@ -366,12 +366,12 @@ npm install -g @anthropic-ai/claude-code
 claude auth login
 
 # Ou GitHub Copilot CLI (acesse Claude, GPT-5, Gemini via GitHub)
-npm install -g @github/copilot-cli
+npm install -g @github/copilot
 copilot  # depois use o comando /login
 
 # Ou Gemini CLI
 npm install -g @google/gemini-cli
-gemini auth login
+gemini
 
 # Ou Cursor
 curl https://cursor.com/install -fsS | bash
@@ -379,7 +379,7 @@ agent login
 
 # Ou OpenClaw
 npm install -g openclaw@latest && openclaw onboard --install-daemon
-openclaw login
+openclaw onboard
 
 # Ou OpenCode
 npm i -g opencode-ai@latest
@@ -460,7 +460,7 @@ Mantenha o controle do que a IA pode fazer:
 | Configuração | Padrão | Descrição |
 |-------------|--------|-----------|
 | `mysti.defaultProvider` | `claude-code` | Provedor de IA principal |
-| `mysti.claudePath` | `claude` | Caminho do CLI do Claude |
+| `mysti.claudeCodePath` | `claude` | Caminho do CLI do Claude |
 | `mysti.codexPath` | `codex` | Caminho do CLI do Codex |
 | `mysti.geminiPath` | `gemini` | Caminho do CLI do Gemini |
 | `mysti.copilotPath` | `copilot` | Caminho do CLI do Copilot |

@@ -57,6 +57,9 @@ function createMockContext(): vscode.ExtensionContext {
 
 export class TestableClaudeProvider extends ClaudeCodeProvider {
   constructor() { super(createMockContext()); }
+  public buildPersistentCliArgs(settings: Settings, session: PanelSessionState): string[] | null {
+    return super.buildPersistentCliArgs(settings, session);
+  }
   public parseStreamLine(line: string, session: PanelSessionState): StreamChunk | null {
     return super.parseStreamLine(line, session);
   }
@@ -70,6 +73,9 @@ export class TestableClaudeProvider extends ClaudeCodeProvider {
 
 export class TestableCodexProvider extends CodexProvider {
   constructor() { super(createMockContext()); }
+  public buildPersistentCliArgs(settings: Settings, session: PanelSessionState): string[] {
+    return super.buildPersistentCliArgs(settings, session);
+  }
   public parseStreamLine(line: string, session: PanelSessionState): StreamChunk | null {
     return super.parseStreamLine(line, session);
   }

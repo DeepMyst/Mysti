@@ -136,8 +136,8 @@ describe('buildProviderManifest', () => {
     expect(claude.sessionKind).toBe('cli-resume');
 
     const codex = byId.get('openai-codex')!.capabilities;
-    expect(codex.thinkingStyle).toBe('complete-blocks');
-    expect(codex.sessionKind).toBe('prompt-history');
+    expect(codex.thinkingStyle).toBe('streamed');
+    expect(codex.sessionKind).toBe('cli-resume');
 
     const gemini = byId.get('google-gemini')!.capabilities;
     expect(gemini.thinkingStyle).toBe('none');

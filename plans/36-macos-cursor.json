@@ -1,0 +1,10 @@
+{
+  "checkedAt": "2026-10-01T04:59:10.855334+00:00",
+  "platform": "darwin",
+  "arch": "arm64",
+  "scope": "Fresh official Cursor archive extracted in temporary directory; launcher check only. Existing installation unchanged.",
+  "source": "https://downloads.cursor.com/lab/2026.09.28-64d2043/darwin/arm64/agent-cli-package.tar.gz",
+  "passed": true,
+  "exitCode": 0,
+  "versionOutput": "2026.09.28-64d2043"
+}

@@ -586,23 +586,20 @@ describe('Plan 28 Phase 5 — the chrome diet and the palette', () => {
     }
   }, 20000);
 
-  it.skipIf(CHROMIUM_UNAVAILABLE)('shows four segments under the composer, not ten', async () => {
-    // Four SLOTS: agent · model, trust, context, spend. Spend is correctly
-    // absent until there is a saving to report, so three show at rest. The
+  it.skipIf(CHROMIUM_UNAVAILABLE)('keeps slash and actions beside the compact composer controls', async () => {
+    // Actions, agent/model, trust, context and spend. Spend is correctly
+    // absent until there is a saving to report, so four show at rest. The
     // agent map pill is not at rest on this page: the Runs dock tests above
     // left a background job and an @openai-codex sub-agent in this chat, which
     // it rightly counts. A quiet chat, and one where the main agent works
     // alone, keep it hidden; Plan 32's block asserts that on its own page.
-    expect(await visible('.input-status-line > *:not(.status-spacer):not(#agent-map-pill)')).toBe(3);
-    for (const id of ['agent-select-btn', 'context-usage', 'behavior-indicator']) {
+    expect(await visible('.input-status-line > *:not(.status-spacer):not(#agent-map-pill)')).toBe(5);
+    for (const id of ['agent-select-btn', 'context-usage', 'behavior-indicator', 'tools-menu-btn', 'slash-cmd-btn']) {
       expect(await page!.$eval(`#${id}`, (e) => getComputedStyle(e).display), id).not.toBe('none');
     }
     // Model + effort are back as one pill (tested below); with no model list
-    // on this page it hides itself, which is why the count above is still 3.
-    for (const id of ['slash-cmd-btn', 'tools-menu-btn']) {
-      expect(await page!.$(`#${id}`), id).not.toBeNull();     // still in the DOM
-      expect(await page!.$eval(`#${id}`, (e) => getComputedStyle(e).display), id).toBe('none');
-    }
+    // on this page it hides itself. Actions now has its own visible trigger.
+
   }, 20000);
 
   it.skipIf(CHROMIUM_UNAVAILABLE)('opens on Cmd/Ctrl+K without covering the conversation', async () => {
@@ -1666,17 +1663,17 @@ describe('Plan 32 — the agent map', () => {
 
   afterAll(async () => { await pg?.context().close(); });
 
-  it.skipIf(CHROMIUM_UNAVAILABLE)('keeps the pill hidden at rest and through a plain turn, so the status line keeps three segments', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('keeps the map pill hidden at rest and through a plain turn', async () => {
     const segments = () => pg!.$$eval('.input-status-line > *:not(.status-spacer)',
       (els) => els.filter((e) => getComputedStyle(e).display !== 'none').length);
     expect((await pill()).display).toBe('none');
-    expect(await segments()).toBe(3);
+    expect(await segments()).toBe(5);
     // The main agent alone is an ordinary chat, working or done.
     await receive({ type: 'responseStarted', payload: { provider: 'claude-code' } });
     expect((await pill()).display).toBe('none');
     await receive({ type: 'responseComplete', payload: { message: { role: 'assistant', content: 'ok' } } });
     expect((await pill()).display).toBe('none');
-    expect(await segments()).toBe(3);
+    expect(await segments()).toBe(5);
   }, 20000);
 
   it.skipIf(CHROMIUM_UNAVAILABLE)('shows the pill after a delegation, and the pill opens the map', async () => {

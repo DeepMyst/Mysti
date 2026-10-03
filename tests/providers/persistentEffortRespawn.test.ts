@@ -48,19 +48,25 @@ describe('persistent-process effort snapshot (Plan 18 4.1)', () => {
 
   it('matches when nothing changed', () => {
     const s = settings();
-    const session: any = { persistentSettings: snapshotFor(s) };
+    const session: any = { persistentSettings: snapshotFor(s), control: { settings: s } };
     expect((provider as any)._persistentSettingsMatch(session, s)).toBe(true);
   });
 
   it('a mid-session effort change breaks the match (forces respawn)', () => {
     const s = settings({ effortLevel: 'high' });
-    const session: any = { persistentSettings: snapshotFor(s) };
+    const session: any = { persistentSettings: snapshotFor(s), control: { settings: s } };
     expect((provider as any)._persistentSettingsMatch(session, settings({ effortLevel: 'max' }))).toBe(false);
+  });
+
+  it('Ultracode forces respawn without changing effort', () => {
+    const s = settings();
+    const session: any = { persistentSettings: snapshotFor(s), control: { settings: s } };
+    expect((provider as any)._persistentSettingsMatch(session, settings({ ultracode: true }))).toBe(false);
   });
 
   it('clearing effort also breaks the match', () => {
     const s = settings({ effortLevel: 'high' });
-    const session: any = { persistentSettings: snapshotFor(s) };
+    const session: any = { persistentSettings: snapshotFor(s), control: { settings: s } };
     expect((provider as any)._persistentSettingsMatch(session, settings({ effortLevel: undefined }))).toBe(false);
   });
 });

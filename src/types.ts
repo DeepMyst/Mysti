@@ -225,6 +225,8 @@ export interface Settings {
   thinkingLevel: ThinkingLevel;
   /** Reasoning-effort tier (Claude Code parity). Optional for back-compat; defaults to 'high'. */
   effortLevel?: EffortLevel;
+  /** Claude's independent workflow setting; does not change reasoning effort. */
+  ultracode?: boolean;
   accessLevel: AccessLevel;
   contextMode: ContextMode;
   model: string;
@@ -486,12 +488,27 @@ export interface CliUpdatesAvailableMessage {
   payload: { updates: CliUpdatePayload[] };
 }
 
+export interface ModelCliUpgradePayload {
+  id: string;
+  providerId: string;
+  providerLabel: string;
+  minimum: string;
+  state: 'available' | 'installing' | 'failed' | 'ready';
+  message: string;
+}
+
+export interface ModelCliUpgradeMessage {
+  type: 'modelCliUpgrade';
+  payload: ModelCliUpgradePayload;
+}
+
 export type TypedWebviewMessage =
   | ManifestUpdatedMessage
   | StreamStatusMessage
   | ModelsUpdatedMessage
   | NewModelsAvailableMessage
-  | CliUpdatesAvailableMessage;
+  | CliUpdatesAvailableMessage
+  | ModelCliUpgradeMessage;
 
 export interface ProviderConfig {
   name: string;

@@ -1,0 +1,55 @@
+{
+  "checkedAt": "2026-10-01T04:20:30.826Z",
+  "scope": "Download only and Unix shell syntax checks; scripts were not executed",
+  "checks": [
+    {
+      "url": "https://cursor.com/install",
+      "httpStatus": 200,
+      "bytes": 5668,
+      "html": false,
+      "syntax": "pass"
+    },
+    {
+      "url": "https://cursor.com/install?win32=true",
+      "httpStatus": 200,
+      "bytes": 3142,
+      "html": false,
+      "syntax": "not run: PowerShell unavailable on this Mac"
+    },
+    {
+      "url": "https://hermes-agent.nousresearch.com/install.sh",
+      "httpStatus": 200,
+      "bytes": 41063,
+      "html": false,
+      "syntax": "pass"
+    },
+    {
+      "url": "https://hermes-agent.nousresearch.com/install.ps1",
+      "httpStatus": 200,
+      "bytes": 67029,
+      "html": false,
+      "syntax": "not run: PowerShell unavailable on this Mac"
+    },
+    {
+      "url": "https://code.kimi.com/kimi-code/install.sh",
+      "httpStatus": 200,
+      "bytes": 19407,
+      "html": false,
+      "syntax": "pass"
+    },
+    {
+      "url": "https://code.kimi.com/kimi-code/install.ps1",
+      "httpStatus": 200,
+      "bytes": 18488,
+      "html": false,
+      "syntax": "not run: PowerShell unavailable on this Mac"
+    },
+    {
+      "url": "https://ollama.com/install.sh",
+      "httpStatus": 200,
+      "bytes": 15902,
+      "html": false,
+      "syntax": "pass"
+    }
+  ]
+}

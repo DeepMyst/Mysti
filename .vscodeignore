@@ -14,6 +14,8 @@ tsconfig.json
 webpack.config.js
 .git/**
 .claude/**
+.remember/**
+.superpowers/**
 .env
 .env.*
 CLAUDE.md
@@ -31,6 +33,7 @@ out-test/**
 out-vscode-test/**
 tests-vscode/**
 tests-runtime/**
+tests-live/**
 tsconfig.vscode-test.json
 .vscode-test.mjs
 .github/**
@@ -42,8 +45,7 @@ fetch-stargazers.log
 # Fossil. `mcp-permission-server.js` is the wrapper for the CLI-NATIVE
 # permission path (`--permission-prompt-tool`); it requires
 # dist/mcp/permissionServer.js, which does not exist and is built by nothing —
-# neither `--permission-prompt-tool` nor `permissionServer` appears anywhere in
-# src/. It is kept in the repo (the native path may be worth resurrecting) but
+# the new native bridge uses stdio directly, not this old wrapper. It
 # must not ship as a dead entrypoint.
 resources/mcp-permission-server.js
 

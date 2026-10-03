@@ -40,6 +40,8 @@ import {
   MIN_NODE_VERSION,
   LOCAL_CLI_PREFIX
 } from '../constants';
+import { killProcessTree } from '../utils/processKill';
+import { quoteSetupExecutable } from '../utils/installerShell';
 import { getPlatformInfo, canWriteNpmGlobalDir, getNpmPrefix, resetPlatformInfoCache } from '../utils/platform';
 
 const execAsync = promisify(exec);
@@ -86,6 +88,9 @@ export class SetupManager {
   private _discoveryService: CliDiscoveryService | undefined;
   /** Last node --version result (reused by getWizardStatusCached's zero-exec path). */
   private _lastNodeVersion: string | undefined;
+  private readonly _installWatchers = new Map<string, () => void>();
+  private readonly _installRuns = new Map<string, Promise<InstallResult>>();
+
   /** Single-flight guard for the background wizard status refresh. */
   private _backgroundWizardRefresh: Promise<void> | null = null;
 
@@ -104,6 +109,7 @@ export class SetupManager {
     discoveryService?: CliDiscoveryService
   ) {
     this._extensionContext = context;
+    context.subscriptions?.push({ dispose: () => { for (const stop of this._installWatchers.values()) { stop(); } } });
     this._providerManager = providerManager;
     this._discoveryService = discoveryService;
     // An install or sign-in that flips a CLI's state reaches every panel now,
@@ -259,6 +265,7 @@ export class SetupManager {
     if (/engine.*node|requires.*node|minimum.*version|Unsupported.*engine|EBADENGINE/i.test(stderr)) {
       return 'version';
     }
+    if (/ENOENT|command not found|is not recognized/i.test(stderr)) { return 'not-found'; }
     if (exitCode === null) {
       return 'timeout';
     }
@@ -270,9 +277,9 @@ export class SetupManager {
    */
   private _getSuggestedFix(category: InstallErrorCategory, installCommand: string): string {
     const fixes: Record<InstallErrorCategory, string> = {
-      'permission': `No write permission to npm global directory. Mysti installed to ~/.mysti/cli instead.\n\nTo install globally, either:\n\u2022 Run with sudo: sudo ${installCommand}\n\u2022 Fix npm permissions: npm config set prefix ~/.npm-global\n\u2022 See https://docs.npmjs.com/resolving-eacces-permissions-errors`,
+      'permission': 'The global and user-local installation attempts failed. Choose a writable npm prefix or install manually. See https://docs.npmjs.com/resolving-eacces-permissions-errors',
       'network': 'Check your internet connection and proxy settings. If behind a firewall, try: npm config list to verify proxy settings.',
-      'version': `Node.js ${MIN_NODE_VERSION}+ is required. Visit nodejs.org to install the latest LTS version, or run: nvm install --lts`,
+      'version': 'This CLI requires a newer or supported Node.js version. Check the required version in the error details and install a compatible LTS release from nodejs.org.',
       'not-found': 'npm is not installed. Install Node.js from nodejs.org or use nvm (https://github.com/nvm-sh/nvm).',
       'command-failed': `Installation failed. Try running the install command manually in a terminal: ${installCommand}`,
       'timeout': 'Installation timed out. Check your network speed and try again.',
@@ -439,26 +446,30 @@ export class SetupManager {
       };
     }
 
-    // Step 1: Check Node.js version
-    onProgress?.('checking', 'Checking system requirements...', 5);
-    const nodeCheck = await this._checkNodeVersion();
-    if (!nodeCheck.meets) {
-      const suggestedFix = this._getSuggestedFix('version', provider.getInstallCommand());
-      return {
-        success: false,
-        installed: false,
-        authenticated: false,
-        error: nodeCheck.error || `Node.js ${MIN_NODE_VERSION}+ required`,
-        errorCategory: 'version',
-        suggestedFix
-      };
-    }
-
-    // Step 2: Check if already installed
+    // Check installation before requiring any npm prerequisites.
     onProgress?.('checking', 'Checking CLI installation...', 10);
     const discovery = await provider.discoverCli();
 
     if (!discovery.found) {
+      // Native CLIs and HTTP providers do not require Node merely to connect.
+      if (provider.capabilities.supportsAutoInstall) {
+        // Check the npm runtime before a new installation.
+        onProgress?.('checking', 'Checking system requirements...', 15);
+        const nodeCheck = await this._checkNodeVersion();
+        if (!nodeCheck.meets) {
+          const suggestedFix = this._getSuggestedFix('version', provider.getInstallCommand());
+          return {
+            success: false,
+            installed: false,
+            authenticated: false,
+            error: nodeCheck.error || `Node.js ${MIN_NODE_VERSION}+ required`,
+            errorCategory: 'version',
+            suggestedFix
+          };
+        }
+
+      }
+
       // Step 3: Try to auto-install
       onProgress?.('installing', `Installing ${provider.displayName} CLI...`, 20);
       const installResult = await this.autoInstallCli(providerId, onProgress);
@@ -502,6 +513,18 @@ export class SetupManager {
    * Auto-install CLI via npm with permission fallback and retry logic
    */
   async autoInstallCli(
+    providerId: string,
+    onProgress?: (step: string, message: string, progress?: number) => void
+  ): Promise<InstallResult> {
+    const running = this._installRuns.get(providerId);
+    if (running) { return running; }
+    const run = this._autoInstallCli(providerId, onProgress);
+    this._installRuns.set(providerId, run);
+    try { return await run; }
+    finally { if (this._installRuns.get(providerId) === run) { this._installRuns.delete(providerId); } }
+  }
+
+  private async _autoInstallCli(
     providerId: string,
     onProgress?: (step: string, message: string, progress?: number) => void
   ): Promise<InstallResult> {
@@ -574,14 +597,14 @@ export class SetupManager {
         if (localResult.success) {
           onProgress?.('installing', 'Verifying local installation...', 65);
 
-          const localDiscovery = await provider.discoverCli();
+          const localDiscovery = await provider.discoverCli(true);
           if (localDiscovery.found) {
             await this._recordInstall(providerId);
             return { success: true };
           }
         }
 
-        // Local install failed too — show error with sudo instructions
+        // Local installation failed too; report recovery without claiming success.
         const suggestedFix = this._getSuggestedFix('permission', installCommand);
         return {
           success: false,
@@ -607,7 +630,7 @@ export class SetupManager {
           if (localResult.success) {
             onProgress?.('installing', 'Verifying local installation...', 65);
 
-            const localDiscovery = await provider.discoverCli();
+            const localDiscovery = await provider.discoverCli(true);
             if (localDiscovery.found) {
               await this._recordInstall(providerId);
               return { success: true, attemptNumber: result.attemptNumber };
@@ -627,7 +650,7 @@ export class SetupManager {
       onProgress?.('installing', 'Verifying installation...', 70);
 
       // Verify installation
-      const discovery = await provider.discoverCli();
+      const discovery = await provider.discoverCli(true);
       if (!discovery.found) {
         return {
           success: false,
@@ -674,10 +697,12 @@ export class SetupManager {
       };
     }
 
-    // Transform "npm install -g <pkg>" -> "npm install --prefix ~/.mysti/cli <pkg>"
-    const localCommand = originalCommand
-      .replace(/\s+-g\s+/, ` --prefix "${localPrefix}" `)
-      .replace(/\s+--global\s+/, ` --prefix "${localPrefix}" `);
+    // Keep the global layout, but place it in the user's writable prefix.
+    // Some CLIs (including Cline) do not expose a launcher in a local install.
+    const quotedPrefix = process.platform === 'win32'
+      ? `"${localPrefix}"`
+      : "'" + localPrefix.replace(/'/g, "'\"'\"'") + "'";
+    const localCommand = originalCommand.replace(/^(npm\s+(?:install|i))\s+/, `$1 --prefix ${quotedPrefix} `);
 
     console.log(`[Mysti] SetupManager: Trying local install: ${localCommand}`);
 
@@ -714,11 +739,22 @@ export class SetupManager {
       };
     }
 
-    const authCommand = provider.getAuthCommand();
+    if (providerId === 'openrouter' || providerId === 'localai') {
+      await vscode.commands.executeCommand('workbench.action.openSettings', providerId === 'openrouter' ? 'mysti.openrouter.apiKey' : 'mysti.localaiEndpoint');
+      return { authenticated: false, error: 'Configure the provider connection in Settings, then refresh detection.' };
+    }
+
+    let authCommand = provider.getAuthCommand();
+    const discovery = await provider.discoverCli();
+    if (discovery.path && path.isAbsolute(discovery.path)) {
+      authCommand = authCommand.replace(/^\S+/, quoteSetupExecutable(discovery.path));
+    }
+    const executableDirs = [discovery.path, this._npmPath].filter((file): file is string => !!file && path.isAbsolute(file)).map(file => path.dirname(file));
     console.log(`[Mysti] SetupManager: Running auth command: ${authCommand}`);
 
     const terminal = vscode.window.createTerminal({
       name: `${provider.displayName} Authentication`,
+      env: executableDirs.length ? { PATH: [...executableDirs, process.env.PATH || process.env.Path || ''].join(path.delimiter) } : undefined,
       shellPath: process.platform === 'win32' ? 'cmd.exe' : '/bin/bash'
     });
 
@@ -751,49 +787,16 @@ export class SetupManager {
       };
     }
 
-    // Handle GCA method for Gemini
-    if (method === 'gca' && providerId === 'google-gemini') {
-      process.env['GOOGLE_GENAI_USE_GCA'] = 'true';
-      console.log('[Mysti] SetupManager: Set GOOGLE_GENAI_USE_GCA=true');
-
-      const terminal = vscode.window.createTerminal({
-        name: 'Gemini GCA Setup',
-        shellPath: process.platform === 'win32' ? 'cmd.exe' : (process.env.SHELL || '/bin/bash')
-      });
-      terminal.show();
-
-      if (process.platform === 'win32') {
-        // Persist to the user's environment (no shell rc file on Windows).
-        terminal.sendText('setx GOOGLE_GENAI_USE_GCA true');
-        terminal.sendText('echo Done! Restart VS Code (and any terminals) for the change to take effect.');
-      } else {
-        // Pick the rc file + syntax for the user's actual shell, not a hardcoded
-        // ~/.zshrc (which silently does nothing for bash/fish users).
-        const shell = path.basename(process.env.SHELL || 'bash');
-        let profile: string;
-        let line: string;
-        if (shell.includes('fish')) {
-          profile = '~/.config/fish/config.fish';
-          line = 'set -gx GOOGLE_GENAI_USE_GCA true';
-          terminal.sendText('mkdir -p ~/.config/fish');
-        } else if (shell.includes('zsh')) {
-          profile = '~/.zshrc';
-          line = 'export GOOGLE_GENAI_USE_GCA=true';
-        } else {
-          // bash / sh and friends
-          profile = process.platform === 'darwin' ? '~/.bash_profile' : '~/.bashrc';
-          line = 'export GOOGLE_GENAI_USE_GCA=true';
-        }
-        terminal.sendText(`echo "Adding GOOGLE_GENAI_USE_GCA to ${profile} (${shell})..."`);
-        terminal.sendText(`echo '${line}' >> ${profile}`);
-        terminal.sendText(`echo "Done! Run 'source ${profile}' or restart your terminal."`);
-      }
-
-      // Auth mutation — drop the cached status so subsequent reads re-probe
-      this._discoveryService?.invalidate(providerId);
-
-      const authStatus = await provider.checkAuthentication();
-      return authStatus;
+    if (!this.getAuthOptions(providerId).some(option => option.action === method)) {
+      return { authenticated: false, error: 'This authentication method is not supported by this provider.' };
+    }
+    if (method === 'api-key') {
+      apiKey = apiKey?.trim() || (await vscode.window.showInputBox({
+        title: `${provider.displayName} API key`, password: true, ignoreFocusOut: true,
+        prompt: 'Enter your API key. This connection lasts until VS Code restarts.',
+        validateInput: value => value.trim() ? undefined : 'Enter an API key.'
+      }))?.trim();
+      if (!apiKey) { return { authenticated: false, error: 'API-key entry cancelled. Choose a sign-in method to try again.' }; }
     }
 
     // Handle API key method
@@ -845,6 +848,18 @@ export class SetupManager {
       docsUrl: string;
       authInstructions: string[];
     }> = {
+      'openrouter': {
+        docsUrl: 'https://openrouter.ai/keys',
+        authInstructions: ['Create an OpenRouter API key, then enter it in Mysti settings: mysti.openrouter.apiKey.', 'No local CLI installation is required. Refresh detection after saving.']
+      },
+      'ollama': {
+        docsUrl: 'https://ollama.com/download',
+        authInstructions: ['Start Ollama and pull a model before chatting: ollama pull <model>', 'For a remote server, configure mysti.ollamaEndpoint in Settings. No account sign-in is required.']
+      },
+      'localai': {
+        docsUrl: 'https://github.com/mudler/LocalAI/releases/latest',
+        authInstructions: ['Start LocalAI using your chosen installation method and load a model.', 'Configure mysti.localaiEndpoint and, if required, mysti.localaiApiKey in Settings, then refresh detection.']
+      },
       'claude-code': {
         docsUrl: 'https://docs.anthropic.com/claude/docs/claude-code',
         authInstructions: [
@@ -855,19 +870,19 @@ export class SetupManager {
         ]
       },
       'openai-codex': {
-        docsUrl: 'https://platform.openai.com/docs/guides/codex',
+        docsUrl: 'https://developers.openai.com/codex/cli',
         authInstructions: [
-          'Option 1: Run "codex auth login" to sign in with ChatGPT account',
+          'Option 1: Run "codex login" to sign in with ChatGPT account',
           'Option 2: Set OPENAI_API_KEY environment variable',
           'Requires ChatGPT Plus/Pro subscription or API credits'
         ]
       },
       'google-gemini': {
-        docsUrl: 'https://ai.google.dev/gemini-api/docs/aistudio-quickstart',
+        docsUrl: 'https://geminicli.com/docs/get-started/authentication/',
         authInstructions: [
           'Option 1: Run "gemini" and sign in with your Google account',
           'Option 2: Set GEMINI_API_KEY environment variable',
-          'Option 3: Set GOOGLE_GENAI_USE_GCA=true for Google Cloud subscribers'
+          'Option 3: Configure Google Cloud credentials, GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION, then select Vertex AI in Gemini'
         ]
       },
       'cursor': {
@@ -882,7 +897,7 @@ export class SetupManager {
 
     const config = providerConfigs[providerId] || {
       docsUrl: undefined,
-      authInstructions: ['Run the authentication command shown above']
+      authInstructions: [providerId === 'openrouter' ? provider.getAuthCommand() : `After installation, run: ${provider.getAuthCommand()}`]
     };
 
     return {
@@ -914,11 +929,11 @@ export class SetupManager {
           action: 'api-key'
         },
         {
-          id: 'gca',
-          label: 'Google Cloud Auth (GCA)',
-          description: 'Use Application Default Credentials for Cloud subscribers',
+          id: 'vertex-ai',
+          label: 'Vertex AI / Google Cloud',
+          description: 'Configure Cloud credentials, project and location first, then select Vertex AI in the CLI',
           icon: '☁️',
-          action: 'gca'
+          action: 'cli-login'
         }
       ];
     }
@@ -1080,6 +1095,12 @@ export class SetupManager {
       console.warn(`[Mysti] SetupManager: status probe failed for ${providerId}:`, error);
       return undefined;
     }
+  }
+
+  /** A post-upgrade check must bypass both discovery and provider probe caches. */
+  async refreshProviderStatus(providerId: string): Promise<CliStatus | undefined> {
+    const statuses = await this._discoveryService?.refresh(providerId);
+    return statuses?.find(status => status.providerId === providerId);
   }
 
   /**
@@ -1256,42 +1277,54 @@ export class SetupManager {
   ): Promise<{ success: boolean; output?: string; error?: string; exitCode?: number }> {
     return new Promise((resolve) => {
       let proc;
+      // GUI-launched editors may discover npm outside PATH. Include its sibling
+      // node binary too: npm's shebang uses /usr/bin/env node on Unix.
+      const env = { ...process.env, npm_config_engine_strict: 'true' } as NodeJS.ProcessEnv;
+      if (this._npmPath && path.isAbsolute(this._npmPath)) {
+        const pathKey = Object.keys(env).find(key => key.toLowerCase() === 'path') || 'PATH';
+        env[pathKey] = path.dirname(this._npmPath) + path.delimiter + (env[pathKey] || '');
+      }
 
       if (useLoginShell && process.platform !== 'win32') {
         const shell = process.env.SHELL || '/bin/bash';
         proc = spawn(shell, ['-l', '-c', command], {
-          stdio: ['ignore', 'pipe', 'pipe']
+          stdio: ['ignore', 'pipe', 'pipe'],
+          detached: true,
+          env
         });
         console.log(`[Mysti] SetupManager: Running command with login shell: ${command}`);
       } else {
         proc = spawn(command, [], {
           shell: true,
-          stdio: ['ignore', 'pipe', 'pipe']
+          stdio: ['ignore', 'pipe', 'pipe'],
+          detached: process.platform !== 'win32',
+          env
         });
       }
 
       let stdout = '';
       let stderr = '';
+      let timedOut = false;
 
       proc.stdout?.on('data', (data: Buffer) => {
-        stdout += data.toString();
+        stdout = (stdout + data.toString()).slice(-1024 * 1024);
       });
 
       proc.stderr?.on('data', (data: Buffer) => {
-        stderr += data.toString();
+        stderr = (stderr + data.toString()).slice(-1024 * 1024);
       });
 
       const timeoutId = setTimeout(() => {
-        proc.kill();
-        resolve({
-          success: false,
-          error: 'Command timed out',
-          exitCode: undefined
+        timedOut = true;
+        // Finish stopping npm and its lifecycle-script children before a retry.
+        void killProcessTree(proc, 1000, { label: 'Installer', useProcessGroup: process.platform !== 'win32', initialSignal: 'SIGKILL' }).finally(() => {
+          resolve({ success: false, error: 'Command timed out', exitCode: undefined });
         });
       }, timeout);
 
       proc.on('close', (code: number | null) => {
         clearTimeout(timeoutId);
+        if (timedOut) { return; }
         if (code === 0) {
           resolve({ success: true, output: stdout, exitCode: 0 });
         } else {
@@ -1335,18 +1368,30 @@ export class SetupManager {
    * replace it once the engine floor reaches 1.93.
    */
   watchForInstall(providerId: string, terminal?: vscode.Terminal, intervalMs = 5000, timeoutMs = 10 * 60_000): void {
+    this._installWatchers.get(providerId)?.();
     const discovery = this._discoveryService;
     if (!discovery) { return; }
     const deadline = Date.now() + timeoutMs;
+    let busy = false, stopped = false;
     const check = async (): Promise<void> => {
-      const [status] = await discovery.refresh(providerId).catch(() => []);
-      if (status?.found || Date.now() > deadline) { stop(); }
+      if (busy || stopped) { return; }
+      busy = true;
+      try {
+        const [status] = await discovery.refresh(providerId).catch(() => []);
+        if (status?.found || Date.now() > deadline) { stop(); }
+      } finally { busy = false; }
     };
     const timer = setInterval(() => { void check(); }, intervalMs);
     const closed = vscode.window.onDidCloseTerminal((t) => {
       if (terminal && t === terminal) { stop(); void discovery.refresh(providerId).catch(() => []); }
     });
-    function stop(): void { clearInterval(timer); closed.dispose(); }
+    const stop = (): void => {
+      stopped = true;
+      clearInterval(timer);
+      closed.dispose();
+      if (this._installWatchers.get(providerId) === stop) { this._installWatchers.delete(providerId); }
+    };
+    this._installWatchers.set(providerId, stop);
   }
 
   /**

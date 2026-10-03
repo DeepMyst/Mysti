@@ -332,7 +332,7 @@ Mysti работает с вашими существующими подписк
 | CLI-инструмент | Подписка | Установка |
 |---------------|----------|-----------|
 | **Claude Code** (рекомендуется) | Anthropic API или Claude Pro/Max | `npm install -g @anthropic-ai/claude-code` |
-| **GitHub Copilot CLI** | GitHub Copilot Pro/Pro+/Business | `npm install -g @github/copilot-cli` |
+| **GitHub Copilot CLI** | GitHub Copilot Pro/Pro+/Business | `npm install -g @github/copilot` |
 | **Gemini CLI** | Google AI API или Gemini Advanced | `npm install -g @google/gemini-cli` |
 | **Codex CLI** | OpenAI API | Следуйте руководству по установке OpenAI |
 | **Cline** | Зависит от провайдера модели | `npm install -g cline` |
@@ -366,12 +366,12 @@ npm install -g @anthropic-ai/claude-code
 claude auth login
 
 # Или GitHub Copilot CLI (доступ к Claude, GPT-5, Gemini через GitHub)
-npm install -g @github/copilot-cli
+npm install -g @github/copilot
 copilot  # затем используйте команду /login
 
 # Или Gemini CLI
 npm install -g @google/gemini-cli
-gemini auth login
+gemini
 
 # Или Cursor
 curl https://cursor.com/install -fsS | bash
@@ -379,7 +379,7 @@ agent login
 
 # Или OpenClaw
 npm install -g openclaw@latest && openclaw onboard --install-daemon
-openclaw login
+openclaw onboard
 
 # Или OpenCode
 npm i -g opencode-ai@latest
@@ -460,7 +460,7 @@ qwen  # затем введите /auth
 | Настройка | По умолчанию | Описание |
 |-----------|-------------|----------|
 | `mysti.defaultProvider` | `claude-code` | Основной ИИ-провайдер |
-| `mysti.claudePath` | `claude` | Путь к CLI Claude |
+| `mysti.claudeCodePath` | `claude` | Путь к CLI Claude |
 | `mysti.codexPath` | `codex` | Путь к CLI Codex |
 | `mysti.geminiPath` | `gemini` | Путь к CLI Gemini |
 | `mysti.copilotPath` | `copilot` | Путь к CLI Copilot |

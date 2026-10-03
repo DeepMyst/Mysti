@@ -93,7 +93,7 @@ describe('Mysti Canvas — real VS Code host', function () {
       for (const page of context.pages()) {
         page.on('console', message => {
           if (/canvas:|Content Security Policy/.test(message.text())) {
-            console.log('[Mysti test] webview console:', message.text());
+            console.log('[Mysti test] webview console:', message.location().url, message.text());
           }
         });
       }
@@ -204,7 +204,7 @@ describe('Mysti Canvas — real VS Code host', function () {
     // Re-open so the client re-reports with pages present.
     await vscode.commands.executeCommand('mysti.openCanvas');
     const live = await waitFor(
-      d => d.rendered !== null && d.rendered.pages > 0,
+      d => d.rendered !== null && d.rendered.pages > 0 && d.rendered.pages === d.pages,
       'the webview to report a render WITH artboards',
     );
     assert.ok(live.rendered);
@@ -241,7 +241,14 @@ describe('Mysti Canvas — real VS Code host', function () {
     assert.strictEqual(await artboard.getAttribute('sandbox'), 'allow-scripts');
     const design = artboard.contentFrame();
     await design.getByRole('heading', { name: 'Welcome back', exact: true }).waitFor({ state: 'visible' });
-    const email = design.locator('input[type="email"]');
+    // UI.Field is a labelled text input; the login scaffold does not declare
+    // an HTML email type. Locate the control by its accessible user-facing name.
+    const email = design.getByLabel('Email', { exact: true });
+    // A visible field alone can pass with broken CSS. Verify real computed
+    // styles inside the sandbox without relaxing either frame's CSP.
+    const styles = await email.evaluate((element: any) => ({ padding: element.ownerDocument.defaultView.getComputedStyle(element).paddingTop, width: element.getBoundingClientRect().width })) as { padding: string; width: number };
+    assert.strictEqual(styles.padding, '10px');
+    assert.ok(styles.width > 100, 'the field lost its layout styling');
     await email.fill('canvas-test@example.invalid');
     assert.strictEqual(await email.inputValue(), 'canvas-test@example.invalid');
   });

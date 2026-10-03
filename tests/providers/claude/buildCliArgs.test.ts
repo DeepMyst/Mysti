@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { TestableClaudeProvider } from '../../helpers/providerFactory';
 import { createClaudeSession } from '../../helpers/sessionFactory';
@@ -27,6 +28,32 @@ describe('ClaudeCodeProvider.buildCliArgs', () => {
     session = createClaudeSession();
   });
 
+  afterEach(() => provider.dispose());
+
+  it('passes independent Ultracode settings and removes the temporary file on disposal', () => {
+    const args = provider.buildCliArgs(defaultSettings({ ultracode: true, effortLevel: 'low' }), session);
+    const file = args[args.indexOf('--settings') + 1];
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ ultracode: true });
+    expect(args[args.indexOf('--effort') + 1]).toBe('low');
+    const off = provider.buildCliArgs(defaultSettings({ ultracode: false }), session);
+    expect(JSON.parse(fs.readFileSync(off[off.indexOf('--settings') + 1], 'utf8'))).toEqual({ ultracode: false });
+    provider.dispose();
+    expect(fs.existsSync(file)).toBe(false);
+  });
+
+  it('blocks Ultracode on an older CLI with an actionable version requirement', () => {
+    (provider as any)._cachedCliVersion = '2.1.278';
+    expect(() => provider.buildCliArgs(defaultSettings({ ultracode: true }), session)).toThrow('version >= 2.1.284');
+    expect(() => provider.buildCliArgs(defaultSettings({ ultracode: false }), session)).not.toThrow();
+  });
+
+  it('passes Ultracode through persistent sessions without altering effort', () => {
+    (provider as any)._cachedCliVersion = '2.1.286';
+    const args = provider.buildPersistentCliArgs(defaultSettings({ ultracode: true, effortLevel: 'medium' }), session)!;
+    expect(JSON.parse(fs.readFileSync(args[args.indexOf('--settings') + 1], 'utf8'))).toEqual({ ultracode: true });
+    expect(args[args.indexOf('--effort') + 1]).toBe('medium');
+  });
+
   it('should include base flags', () => {
     const args = provider.buildCliArgs(defaultSettings(), session);
     expect(args).toContain('--output-format');
@@ -49,13 +76,13 @@ describe('ClaudeCodeProvider.buildCliArgs', () => {
     expect(args).toContain('plan');
   });
 
-  it('should skip permissions for full-access + edit-automatically', () => {
+  it('should retain native host permissions for full-access + edit-automatically', () => {
     const args = provider.buildCliArgs(defaultSettings({
       accessLevel: 'full-access',
       mode: 'edit-automatically',
     }), session);
-    expect(args).toContain('--dangerously-skip-permissions');
-    expect(args).not.toContain('--permission-mode');
+    expect(args).not.toContain('--dangerously-skip-permissions');
+    expect(args[args.indexOf('--permission-mode') + 1]).toBe('default');
   });
 
   it('should include --resume with session ID', () => {

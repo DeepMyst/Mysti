@@ -175,6 +175,7 @@ export class KimiCodeProvider extends BaseCliProvider {
     // by PATH (BaseCliProvider.prepareAttachments). This backend has file-read
     // tools, so it can open what it is given.
     supportsImages: true,
+    supportsFileAttachments: true,
     supportsAutoInstall: false,  // installed via the official script/Homebrew (wizard shows the OS command)
     supportsPromptEnhancement: false,
     thinkingStyle: 'streamed',

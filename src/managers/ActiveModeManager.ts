@@ -11,6 +11,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { gatewayDeviceSigner } from '../providers/openclaw/OpenClawDeviceIdentity';
 import * as vscode from 'vscode';
 import {
   OpenClawGateway,
@@ -62,7 +63,7 @@ export class ActiveModeManager {
       'openclawGatewayUrl', 'ws://127.0.0.1:18789'
     );
     const token = readOpenClawToken();
-    this._gateway = new OpenClawGateway(gatewayUrl, token);
+    this._gateway = new OpenClawGateway(gatewayUrl, token, gatewayDeviceSigner(_context.secrets));
   }
 
   // --- Lifecycle ---

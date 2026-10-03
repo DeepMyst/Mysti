@@ -44,6 +44,7 @@ function createHarness() {
   const questions = new SubAgentQuestionBroker();
   const classify = vi.fn(async (_content: string) => ({ questions: [], planOptions: [plan] }));
   const provider = Object.assign(Object.create(ChatViewProvider.prototype), {
+    _modelCliUpgrades: new Map(),
     _extensionUri: vscode.Uri.file('/mock'),
     _extensionContext: { extension: { packageJSON: { version: '0.0.0' } } },
     _pendingPlans: new PendingPlanStore(),

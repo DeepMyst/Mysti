@@ -50,6 +50,7 @@ import { CliDiscoveryService } from './services/CliDiscoveryService';
 import { ModelRegistryService } from './services/ModelRegistryService';
 import { ModelAnnouncementService } from './services/ModelAnnouncementService';
 import { CliUpdateService } from './services/CliUpdateService';
+import { ProactiveManager } from './managers/ProactiveManager';
 import { DeepMystAuthManager } from './managers/DeepMystAuthManager';
 import { AnnouncementManager } from './managers/AnnouncementManager';
 import { ConnectionsPanelManager } from './managers/ConnectionsPanelManager';
@@ -201,6 +202,9 @@ export async function activate(context: vscode.ExtensionContext) {
     context.extensionUri, deepMystAuthManager, mcpConfigManager,
   );
   context.subscriptions.push(connectionsPanelManager);
+  const proactiveManager = new ProactiveManager(context, deepMystAuthManager);
+  context.subscriptions.push(proactiveManager);
+  context.subscriptions.push(vscode.commands.registerCommand('mysti.openProactive', () => proactiveManager.open()));
 
   // Load the stored key, then reconcile CLI MCP configs to the signed-in +
   // toggle state (writes the broker entry when on, strips any prior/legacy

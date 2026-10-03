@@ -72,6 +72,7 @@ function harness(overrides: Record<string, unknown> = {}) {
     }
   });
   const provider = Object.assign(Object.create(ChatViewProvider.prototype), {
+    _modelCliUpgrades: new Map(),
     _hub: null,
     _sidebarId: 'sidebar',
     _extensionUri: vscode.Uri.file('/mock'),

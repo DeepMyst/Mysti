@@ -15,6 +15,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { meetsCliVersion } from '../../services/CliModelUpgrade';
 import { BaseCliProvider, PanelSessionState } from '../base/BaseCliProvider';
 import type {
   CliDiscoveryResult,
@@ -45,6 +46,7 @@ import { toolKind } from '../../utils/toolNames';
 import { clampEffort } from '../../utils/effort';
 import { killProcessTree, isProcessLive } from '../../utils/processKill';
 import { PROCESS_KILL_GRACE_PERIOD_MS } from '../../constants';
+import { handleClaudeControl, initializeClaudeControl, isClaudeControlFailure, type ClaudeControlState } from './ClaudeControlProtocol';
 
 /**
  * Extended per-panel session state for Claude Code provider.
@@ -85,6 +87,7 @@ export function reportedContextWindow(modelUsage: unknown, model?: string): numb
 }
 
 export interface ClaudeSessionState extends PanelSessionState {
+  control?: ClaudeControlState;
   activeToolCalls: Map<number, { id: string; name: string; inputJson: string }>;
   lastUsageStats: { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } | null;
   hasStreamedText: boolean;
@@ -253,6 +256,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     supportsStreaming: true,
     supportsThinking: true,
     supportsToolUse: true,
+    supportsNativeApproval: true,
     supportsSessions: true,
     supportsNativeCompact: true,
     supportsPersistentProcess: true,
@@ -265,6 +269,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     thinkingLevelEffective: true,  // levels map to real token budgets (getThinkingTokens)
     effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],  // native --effort; CLI clamps per model
     effortDefault: 'high',
+    supportsUltracode: true,
     planMode: 'native',            // sole emitter of exit_plan_mode
     sessionKind: 'cli-resume',     // --resume with CLI-issued session IDs
     nativeInstructionFile: 'CLAUDE.md',  // loaded by the CLI itself; Mysti does not resend it
@@ -373,6 +378,28 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     return 'npm install -g @anthropic-ai/claude-code';
   }
 
+  private _ultracodeSettingsDir?: string;
+
+  override dispose(): void {
+    super.dispose();
+    if (this._ultracodeSettingsDir) {
+      fs.rmSync(this._ultracodeSettingsDir, { recursive: true, force: true });
+      this._ultracodeSettingsDir = undefined;
+    }
+  }
+
+  private _ultracodeSettings(settings: Settings): string {
+    const version = this.getCachedCliVersion();
+    if (settings.ultracode && version && !meetsCliVersion(version, '2.1.284')) {
+      throw new Error('Ultracode for this model requires Claude Code version >= 2.1.284. Upgrade Claude Code to keep Ultracode and effort independent.');
+    }
+    // A file avoids passing JSON quotes through cmd.exe or a configured shell.
+    this._ultracodeSettingsDir ??= fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-claude-settings-'));
+    const file = path.join(this._ultracodeSettingsDir, settings.ultracode ? 'ultracode-on.json' : 'ultracode-off.json');
+    fs.writeFileSync(file, JSON.stringify({ ultracode: !!settings.ultracode }), { mode: 0o600 });
+    return file;
+  }
+
   // ============================================================================
   // Slash command menu: Claude-specific commands
   // ============================================================================
@@ -476,6 +503,8 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     // supported tier instead of hard-failing the CLI spawn (Plan 18 4.4 —
     // Codex already clamps). Valid tiers pass through unchanged; the CLI still
     // clamps per-model on its side.
+    // Explicit false prevents a saved CLI default overriding Mysti's toggle.
+    args.push('--settings', this._ultracodeSettings(settings));
     const effort = clampEffort(settings.effortLevel, this.capabilities.effortLevels);
     if (effort) {
       args.push('--effort', effort);
@@ -506,7 +535,11 @@ export class ClaudeCodeProvider extends BaseCliProvider {
    * The process stays alive and accepts new messages as JSON lines on stdin.
    */
   protected buildPersistentCliArgs(settings: Settings, session: PanelSessionState): string[] | null {
+    (session as ClaudeSessionState).control = {
+      settings: { mode: settings.mode, accessLevel: settings.accessLevel }, initialized: false,
+    };
     const args: string[] = [
+      '--print', '--permission-prompt-tool', 'stdio',
       '--output-format', 'stream-json',
       '--input-format', 'stream-json',
       '--include-partial-messages',
@@ -527,6 +560,8 @@ export class ClaudeCodeProvider extends BaseCliProvider {
 
     // Reasoning effort (Claude Code parity). Clamped like the single-shot path
     // so an invalid settings.json value degrades instead of erroring (Plan 18 4.4).
+    // Explicit false prevents a saved CLI default overriding Mysti's toggle.
+    args.push('--settings', this._ultracodeSettings(settings));
     const effort = clampEffort(settings.effortLevel, this.capabilities.effortLevels);
     if (effort) {
       args.push('--effort', effort);
@@ -550,7 +585,17 @@ export class ClaudeCodeProvider extends BaseCliProvider {
    * Claude CLI expects JSON messages on stdin:
    * {"type":"user","message":{"role":"user","content":[{"type":"text","text":"..."}]}}
    */
-  protected _formatPersistentInput(prompt: string, _session: PanelSessionState): string {
+  protected requiresPersistentTransport(): boolean { return true; }
+
+  protected _persistentSettingsMatch(session: PanelSessionState, settings: Settings): boolean {
+    const control = (session as ClaudeSessionState).control;
+    return super._persistentSettingsMatch(session, settings)
+      && control?.settings.mode === settings.mode && control?.settings.accessLevel === settings.accessLevel;
+  }
+
+  protected _formatPersistentInput(prompt: string, session: PanelSessionState): string {
+    const state = (session as ClaudeSessionState).control;
+    if (state) { return initializeClaudeControl(state, prompt); }
     const message = {
       type: 'user',
       message: {
@@ -605,7 +650,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
   protected _isResponseBoundary(line: string): boolean {
     try {
       const data = JSON.parse(line.trim());
-      return data.type === 'result';
+      return data.type === 'result' || isClaudeControlFailure(data);
     } catch {
       return false;
     }
@@ -659,15 +704,9 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       return;
     }
 
-    // All non-plan/non-read-only modes: bypass CLI-level permissions with --dangerously-skip-permissions.
-    // Claude CLI's interactive permission prompt tries to read from stdin, which is already closed
-    // (we pipe the prompt and call stdin.end()). This causes the process to hang or crash.
-    // The stream-level tool-use gate in ChatViewProvider intercepts tool_use events and shows
-    // permission cards in the webview UI for user approval when settings require it.
-    // IMPORTANT: Use ONLY --dangerously-skip-permissions. Do NOT combine with --permission-mode
-    // bypassPermissions — the two flags conflict and can cause exit code null.
-    args.push('--dangerously-skip-permissions');
-    console.log(`[Mysti] Claude: Bypassing CLI permissions (stream gate handles UI prompts) [mode=${mode}, access=${accessLevel}]`);
+    // The PreToolUse hook forces native host review even when local allow
+    // rules would otherwise skip can_use_tool. Never bypass that protocol.
+    args.push('--permission-mode', 'default');
   }
 
   /**
@@ -740,6 +779,12 @@ export class ClaudeCodeProvider extends BaseCliProvider {
 
     try {
       const data = JSON.parse(line);
+
+      if (data.type === 'control_request' || data.type === 'control_response') {
+        const chunk = handleClaudeControl(data, claudeSession.control, session.persistentProcess, this._nativeApprovalRequests(session));
+        if (isClaudeControlFailure(data)) { this.disposePersistentProcess(session.panelId); }
+        return chunk;
+      }
 
       // Handle stream_event wrapper
       if (data.type === 'stream_event') {
@@ -1101,59 +1146,9 @@ export class ClaudeCodeProvider extends BaseCliProvider {
    */
   protected async prepareAttachments(
     attachments: Attachment[] | undefined,
-    _args: string[]
+    args: string[]
   ): Promise<(() => Promise<void>) | null> {
-    if (!attachments || attachments.length === 0) {
-      return null;
-    }
-
-    const allAttachments = attachments.filter(a => a.type === 'image' || a.type === 'file');
-    if (allAttachments.length === 0) {
-      return null;
-    }
-
-    // Write attachments to workspace .mysti/tmp/ so Claude Code CLI has guaranteed filesystem access
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    const wsRoot = workspaceFolders?.[0]?.uri.fsPath;
-    const attachmentDir = wsRoot
-      ? path.join(wsRoot, '.mysti', 'tmp')
-      : os.tmpdir();
-
-    await fs.promises.mkdir(attachmentDir, { recursive: true });
-
-    const tempFiles: string[] = [];
-
-    for (const att of allAttachments) {
-      if (att.filePath && !att.base64Data) {
-        // File from disk via attach button — already has path
-        console.log(`[Mysti] Claude: Attachment from disk: ${att.fileName} -> ${att.filePath}`);
-      } else if (att.base64Data) {
-        // Clipboard/dropped file — write to workspace temp dir
-        const ext = att.fileName.split('.').pop() || (att.type === 'image' ? (att.mimeType.split('/')[1] || 'png') : 'bin');
-        const tempPath = path.join(attachmentDir, `mysti-attachment-${att.id}.${ext}`);
-        const buffer = Buffer.from(att.base64Data, 'base64');
-        await fs.promises.writeFile(tempPath, buffer);
-        tempFiles.push(tempPath);
-        att.filePath = tempPath;
-        console.log(`[Mysti] Claude: Wrote ${att.type} attachment to workspace: ${att.fileName} -> ${tempPath}`);
-      }
-    }
-
-    // Return cleanup function if we created any temp files
-    if (tempFiles.length > 0) {
-      return async () => {
-        for (const tempFile of tempFiles) {
-          try {
-            await fs.promises.unlink(tempFile);
-            console.log(`[Mysti] Claude: Cleaned up temp attachment: ${tempFile}`);
-          } catch {
-            // Ignore cleanup errors
-          }
-        }
-      };
-    }
-
-    return null;
+    return super.prepareAttachments(attachments, args);
   }
 
   /**
@@ -1171,7 +1166,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     _systemContext?: string
   ): Promise<string> {
     // Skip systemContext for Claude — it's injected as real system instructions via --append-system-prompt in buildCliArgs()
-    let prompt = await super.buildPromptAsync(content, context, conversation, settings, persona, agentConfig, attachments, undefined);
+    let prompt = await super.buildPromptAsync(content, context, conversation, settings, persona, agentConfig, undefined, undefined);
 
     // Prepend attachment file references so Claude sees them first and uses its Read tool
     const imageAttachments = (attachments || []).filter(a => a.type === 'image' && a.filePath);

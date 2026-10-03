@@ -183,6 +183,8 @@ export interface ProviderCapabilities {
   effortLevels?: EffortLevel[];
   /** The backend's default effort tier when the setting is unset (e.g. Claude 'high'). */
   effortDefault?: EffortLevel;
+  /** Supports Claude's independent Ultracode workflow setting. */
+  supportsUltracode?: boolean;
   /** Plan-mode support level */
   planMode: PlanModeSupport;
   /** Honest session/continuity semantics */
@@ -497,7 +499,7 @@ export interface ICliProvider {
   setNativeApprovalHost?(host: NativeApprovalHost | undefined): void;
 
   // CLI Discovery
-  discoverCli(): Promise<CliDiscoveryResult>;
+  discoverCli(force?: boolean): Promise<CliDiscoveryResult>;
   getCliPath(): string;
 
   /**

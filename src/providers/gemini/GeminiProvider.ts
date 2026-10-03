@@ -135,6 +135,7 @@ export class GeminiProvider extends BaseCliProvider {
     // by PATH (BaseCliProvider.prepareAttachments). This backend has file-read
     // tools, so it can open what it is given.
     supportsImages: true,
+    supportsFileAttachments: true,
     supportsAutoInstall: true,
     supportsPromptEnhancement: false,
     // Plan 02 Phase 1 capability matrix

@@ -1,0 +1,76 @@
+{
+  "checkedAt": "2026-10-01T04:38:39.232Z",
+  "platform": "linux",
+  "arch": "arm64",
+  "node": "v24.21.0",
+  "scope": "Actual npm global-layout installs into temporary prefixes and launcher/version checks. No sign-in or inference.",
+  "results": [
+    {
+      "id": "claude-code",
+      "package": "@anthropic-ai/claude-code",
+      "version": "2.1.286",
+      "install": {
+        "ok": true,
+        "code": 0,
+        "timedOut": false,
+        "output": "added 2 packages in 7s\nnpm warn install-scripts 1 package has install scripts not yet covered by allowScripts:\nnpm warn install-scripts   @anthropic-ai/claude-code@2.1.286 (postinstall: node install.cjs)\nnpm warn install-scripts\nnpm warn install-scripts Run `npm install -g --allow-scripts=@anthropic-ai/claude-code` to allow these scripts once, or `npm config set allow-scripts=@anthropic-ai/claude-code --location=user` to allow them for all global installs."
+      },
+      "launcherPresent": true,
+      "launch": {
+        "ok": true,
+        "code": 0,
+        "timedOut": false,
+        "output": "2.1.286 (Claude Code)"
+      }
+    },
+    {
+      "id": "openai-codex",
+      "package": "@openai/codex",
+      "version": "0.159.3",
+      "install": {
+        "ok": true,
+        "code": 0,
+        "timedOut": false,
+        "output": "added 2 packages in 12s"
+      },
+      "launcherPresent": true,
+      "launch": {
+        "ok": true,
+        "code": 0,
+        "timedOut": false,
+        "output": "codex-cli 0.159.3"
+      }
+    },
+    {
+      "id": "google-gemini",
+      "package": "@google/gemini-cli",
+      "version": "0.62.0",
+      "install": {
+        "ok": true,
+        "code": 0,
+        "timedOut": false,
+        "output": "added 7 packages in 18s\nnpm warn install-scripts 2 packages have install scripts not yet covered by allowScripts:\nnpm warn install-scripts   @github/keytar@7.10.6 (install: node script/install.js || npm run build)\nnpm warn install-scripts   node-pty@1.0.0 (install: node-gyp rebuild; postinstall: node scripts/post-install.js)\nnpm warn install-scripts\nnpm warn install-scripts Run `npm install -g --allow-scripts=@github/keytar,node-pty` to allow these scripts once, or `npm config set allow-scripts=@github/keytar,node-pty --location=user` to allow them for all global installs."
+      },
+      "launcherPresent": true,
+      "launch": {
+        "ok": true,
+        "code": 0,
+        "timedOut": false,
+        "output": "0.62.0"
+      }
+    },
+    {
+      "id": "cline",
+      "package": "cline",
+      "version": "3.0.67",
+      "install": {
+        "ok": false,
+        "code": null,
+        "timedOut": true,
+        "output": "i-provider@4.8.0\nnpm warn Found: peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn\nnpm warn Could not resolve dependency:\nnpm warn peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn ERESOLVE overriding peer dependency\nnpm warn While resolving: @jerome-benoit/sap-ai-provider@4.8.0\nnpm warn Found: peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn\nnpm warn Could not resolve dependency:\nnpm warn peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn ERESOLVE overriding peer dependency\nnpm warn While resolving: @jerome-benoit/sap-ai-provider@4.8.0\nnpm warn Found: peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn\nnpm warn Could not resolve dependency:\nnpm warn peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn ERESOLVE overriding peer dependency\nnpm warn While resolving: @jerome-benoit/sap-ai-provider@4.8.0\nnpm warn Found: peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn\nnpm warn Could not resolve dependency:\nnpm warn peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn ERESOLVE overriding peer dependency\nnpm warn While resolving: @jerome-benoit/sap-ai-provider@4.8.0\nnpm warn Found: peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn\nnpm warn Could not resolve dependency:\nnpm warn peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn ERESOLVE overriding peer dependency\nnpm warn While resolving: @jerome-benoit/sap-ai-provider@4.8.0\nnpm warn Found: peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn\nnpm warn Could not resolve dependency:\nnpm warn peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn ERESOLVE overriding peer dependency\nnpm warn While resolving: @jerome-benoit/sap-ai-provider@4.8.0\nnpm warn Found: peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn\nnpm warn Could not resolve dependency:\nnpm warn peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn ERESOLVE overriding peer dependency\nnpm warn While resolving: @jerome-benoit/sap-ai-provider@4.8.0\nnpm warn Found: peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn\nnpm warn Could not resolve dependency:\nnpm warn peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn ERESOLVE overriding peer dependency\nnpm warn While resolving: @jerome-benoit/sap-ai-provider@4.8.0\nnpm warn Found: peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn\nnpm warn Could not resolve dependency:\nnpm warn peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn ERESOLVE overriding peer dependency\nnpm warn While resolving: @jerome-benoit/sap-ai-provider@4.8.0\nnpm warn Found: peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn\nnpm warn Could not resolve dependency:\nnpm warn peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn ERESOLVE overriding peer dependency\nnpm warn While resolving: @jerome-benoit/sap-ai-provider@4.8.0\nnpm warn Found: peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn\nnpm warn Could not resolve dependency:\nnpm warn peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn ERESOLVE overriding peer dependency\nnpm warn While resolving: @jerome-benoit/sap-ai-provider@4.8.0\nnpm warn Found: peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn\nnpm warn Could not resolve dependency:\nnpm warn peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn ERESOLVE overriding peer dependency\nnpm warn While resolving: @jerome-benoit/sap-ai-provider@4.8.0\nnpm warn Found: peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn\nnpm warn Could not resolve dependency:\nnpm warn peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn ERESOLVE overriding peer dependency\nnpm warn While resolving: @jerome-benoit/sap-ai-provider@4.8.0\nnpm warn Found: peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn\nnpm warn Could not resolve dependency:\nnpm warn peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn ERESOLVE overriding peer dependency\nnpm warn While resolving: @jerome-benoit/sap-ai-provider@4.8.0\nnpm warn Found: peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn\nnpm warn Could not resolve dependency:\nnpm warn peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn ERESOLVE overriding peer dependency\nnpm warn While resolving: @jerome-benoit/sap-ai-provider@4.8.0\nnpm warn Found: peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn\nnpm warn Could not resolve dependency:\nnpm warn peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn ERESOLVE overriding peer dependency\nnpm warn While resolving: @jerome-benoit/sap-ai-provider@4.8.0\nnpm warn Found: peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn\nnpm warn Could not resolve dependency:\nnpm warn peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn ERESOLVE overriding peer dependency\nnpm warn While resolving: @jerome-benoit/sap-ai-provider@4.8.0\nnpm warn Found: peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn\nnpm warn Could not resolve dependency:\nnpm warn peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn ERESOLVE overriding peer dependency\nnpm warn While resolving: @jerome-benoit/sap-ai-provider@4.8.0\nnpm warn Found: peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn\nnpm warn Could not resolve dependency:\nnpm warn peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn ERESOLVE overriding peer dependency\nnpm warn While resolving: @jerome-benoit/sap-ai-provider@4.8.0\nnpm warn Found: peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn\nnpm warn Could not resolve dependency:\nnpm warn peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn ERESOLVE overriding peer dependency\nnpm warn While resolving: @jerome-benoit/sap-ai-provider@4.8.0\nnpm warn Found: peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn\nnpm warn Could not resolve dependency:\nnpm warn peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn ERESOLVE overriding peer dependency\nnpm warn While resolving: @jerome-benoit/sap-ai-provider@4.8.0\nnpm warn Found: peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn\nnpm warn Could not resolve dependency:\nnpm warn peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn ERESOLVE overriding peer dependency\nnpm warn While resolving: @jerome-benoit/sap-ai-provider@4.8.0\nnpm warn Found: peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn\nnpm warn Could not resolve dependency:\nnpm warn peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn ERESOLVE overriding peer dependency\nnpm warn While resolving: @jerome-benoit/sap-ai-provider@4.8.0\nnpm warn Found: peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn\nnpm warn Could not resolve dependency:\nnpm warn peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn ERESOLVE overriding peer dependency\nnpm warn While resolving: @jerome-benoit/sap-ai-provider@4.8.0\nnpm warn Found: peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn\nnpm warn Could not resolve dependency:\nnpm warn peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn ERESOLVE overriding peer dependency\nnpm warn While resolving: @jerome-benoit/sap-ai-provider@4.8.0\nnpm warn Found: peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn\nnpm warn Could not resolve dependency:\nnpm warn peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn ERESOLVE overriding peer dependency\nnpm warn While resolving: @jerome-benoit/sap-ai-provider@4.8.0\nnpm warn Found: peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn\nnpm warn Could not resolve dependency:\nnpm warn peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn ERESOLVE overriding peer dependency\nnpm warn While resolving: @jerome-benoit/sap-ai-provider@4.8.0\nnpm warn Found: peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn\nnpm warn Could not resolve dependency:\nnpm warn peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn ERESOLVE overriding peer dependency\nnpm warn While resolving: @jerome-benoit/sap-ai-provider@4.8.0\nnpm warn Found: peer ai@\"^5.0.0 || ^6.0.0\" from the root project\nnpm warn\nnpm warn Could not resolve dependency:\nnpm warn peer ai@\"^5.0.0 || ^6.0.0\" from the root project"
+      }
+    }
+  ],
+  "completion": "partial",
+  "limitation": "Docker daemon became unresponsive after three completed results. Remaining installs are unverified, not failed. Task-owned container removal also timed out; pending names: mysti-installer-validation, mysti-manual-cursor, mysti-manual-kimi. Docker was not restarted because unrelated user containers were running."
+}

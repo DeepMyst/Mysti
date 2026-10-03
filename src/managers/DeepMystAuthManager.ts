@@ -340,7 +340,10 @@ export class DeepMystAuthManager implements vscode.Disposable {
    * state only shows the message (CSRF guard, as in completeSignIn).
    */
   failSignIn(error: string, state?: string): void {
-    vscode.window.showErrorMessage(`DeepMyst sign-in failed: ${error}`);
+    const detail = /^Request failed with status code 403\.?$/i.test(error.trim())
+      ? 'DeepMyst denied the connection (403). Open the DeepMyst dashboard, check your active organization and API-key permissions, then retry sign-in.'
+      : error;
+    vscode.window.showErrorMessage(`DeepMyst sign-in failed: ${detail}`);
     if (state) { this._pending.get(state)?.('failed'); }
   }
 
