@@ -651,6 +651,63 @@ describe('Plan 28 Phase 5 — the chrome diet and the palette', () => {
   }, 20000);
 });
 
+describe('Brainstorm terminal composer state', () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE).each(['brainstormComplete', 'brainstormError'])('clears the working prompt after %s', async (type) => {
+    const pg = await newPanelPage();
+    try {
+      await pg.fill('#message-input', 'Compare the designs');
+      await pg.click('#send-btn');
+      expect(await pg.locator('#message-input').getAttribute('placeholder')).toContain('Working');
+      await pg.evaluate(type => window.dispatchEvent(new MessageEvent('message', { data: {
+        type, payload: type === 'brainstormComplete' ? { unifiedSolution: 'Use the simpler design.' } : { error: 'Provider unavailable' },
+      } })), type);
+      expect(await pg.locator('#message-input').getAttribute('placeholder')).toContain('Ask anything');
+      expect(await pg.locator('#send-btn').isEnabled()).toBe(true);
+      expect(await pg.locator('#stop-btn').isVisible()).toBe(false);
+    } finally { await pg.context().close(); }
+  }, 20000);
+});
+
+describe('MiniMax composer selection', () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('offers the registered MiniMax adapter and preserves the draft when selected', async () => {
+    const pg = await newPanelPage();
+    try {
+      await pg.fill('#message-input', 'Review the entry point');
+      await pg.click('#agent-select-btn');
+      await pg.click('#agent-menu [data-agent="minimax"]');
+      expect(await pg.inputValue('#message-input')).toBe('Review the entry point');
+      const changes = await pg.evaluate(() => (window as unknown as { __posted: Array<{type: string; payload?: {provider: string}}> }).__posted.filter(m => m.type === 'updateSettings'));
+      expect(changes.some(m => m.payload?.provider === 'minimax')).toBe(true);
+    } finally { await pg.context().close(); }
+  }, 20000);
+});
+
+describe('Second opinion respondent identity', () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('excludes the streamed respondent after a mention override and preserves restored attribution', async () => {
+    const pg = await newPanelPage();
+    const receive = (type: string, payload: unknown) => pg.evaluate(m => {
+      window.dispatchEvent(new MessageEvent('message', { data: m }));
+    }, { type, payload });
+    try {
+      // Composer stays on Claude; Codex is the actual respondent.
+      await receive('messageAdded', { id: 'q', role: 'user', content: 'Which retry failures need tests?' });
+      await receive('responseStarted', { provider: 'openai-codex' });
+      await receive('responseChunk', { type: 'text', content: 'Test ambiguous payment outcomes.' });
+      await receive('responseComplete', { usage: { input_tokens: 12, output_tokens: 8 },
+        message: { id: 'a', role: 'assistant', provider: 'openai-codex', content: 'Test ambiguous payment outcomes.' } });
+      expect(await pg.locator('[data-id="a"]').getAttribute('data-provider')).toBe('openai-codex');
+      await pg.locator('[data-id="a"] [data-second-opinion]').click();
+      expect(await pg.locator('.second-opinion-item[data-agent="openai-codex"]').count()).toBe(0);
+      expect(await pg.locator('.second-opinion-item[data-agent="claude-code"]').count()).toBe(1);
+      await pg.locator('.second-opinion-item[data-agent="claude-code"]').click();
+      const sent = await pg.evaluate(() => (window as unknown as { __posted: Array<{type: string; payload?: {content: string}}> }).__posted.find(m => m.type === 'sendMessage'));
+      expect(sent?.payload?.content).toBe('@claude-code Which retry failures need tests?');
+      await receive('messageAdded', { id: 'restored', role: 'assistant', provider: 'openai-codex', content: 'Saved answer' });
+      expect(await pg.locator('[data-id="restored"]').getAttribute('data-provider')).toBe('openai-codex');
+    } finally { await pg.context().close(); }
+  }, 20000);
+});
+
 describe('Plan 28 Phase 6 — a team is a verb', () => {
   it.skipIf(CHROMIUM_UNAVAILABLE)('finds the question an answer was answering', async () => {
     await page!.evaluate(() => {

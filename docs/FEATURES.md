@@ -82,7 +82,7 @@ Each chat panel (sidebar or tab) maintains its own independent context. Adding a
 
 ## Providers
 
-Mysti offers its coordinator plus 15 registered backends through CLI, ACP, WebSocket and HTTP transports. See [PROVIDERS.md](PROVIDERS.md) for complete setup guides.
+Mysti offers its coordinator plus 16 registered backends through CLI, ACP, WebSocket and HTTP transports. See [PROVIDERS.md](PROVIDERS.md) for complete setup guides.
 
 | Provider | Best For |
 |----------|----------|
