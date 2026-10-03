@@ -16,6 +16,8 @@ Explicit `then` handoffs pass the completed result to the next agent. Potential 
 
 New live assignment cards render provider identity, progress, output, tool activity, retries and failures. Role-based collaboration events that previously had no chat renderer now appear. Cards are scoped by run and participant so repeated agents and late chunks do not overwrite another response.
 
+The model/effort footer now stays synchronized when effort or Ultracode changes. Visual review found and corrected a duplicate HTML ID that left its displayed value stale.
+
 ## Included from the accumulated release
 
 - Consistent model/effort/Ultracode controls where supported, action and slash menus, provider setup/upgrade handling, and dictation through the editor's speech support.

@@ -10,6 +10,7 @@ All notable changes to the Mysti extension will be documented in this file.
 - Independent advisory assignments run concurrently through the bounded collaborator pool. Explicit handoffs retain order; file writers serialize, and failed prerequisites block dependent tasks.
 - Live collaboration cards now render separate identities, output, tools, retries and errors. Final attributed results persist in conversation history; late events cannot update a closed group.
 - Child routing clears an inherited routed-model override so a model selected for one provider does not leak into another.
+- The composer footer now reflects effort and Ultracode changes immediately; the effort slider no longer shares its HTML ID with the footer label.
 
 ### Release presentation
 

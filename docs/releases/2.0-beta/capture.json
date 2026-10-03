@@ -1,6 +1,6 @@
 {
   "version": "2.0.0",
-  "capturedAt": "2026-10-03T08:30:53.365Z",
+  "capturedAt": "2026-10-03T08:39:21.540Z",
   "source": "Shipped chat and Proactive webviews",
   "data": "Deterministic sample responses and evidence; no live agent or connected-account calls",
   "command": "npm run demo:record",

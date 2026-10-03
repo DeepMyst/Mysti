@@ -13,6 +13,8 @@ This report describes the release candidate in this branch. It is not a claim th
 
 An intermediate run concurrent with native/editor and media workloads hit two existing Canvas compiler test timeouts. The final broad run passed unchanged assertions without those competing workloads. No timeout threshold was relaxed.
 
+Visual review exposed a duplicate effort-slider/footer HTML ID. New browser assertions reproduced the stale footer; the corrected controls pass the menu and collaboration suites (14 tests). Recording now checks footer synchronization and rejects broken visible images. A Windows CI failure also exposed a test-only second save racing the click-triggered Canvas save; the journey now explicitly verifies and awaits the automatic save, with all six journey tests passing locally.
+
 ## Live provider check
 
 An opt-in test ran inside real VS Code **1.140.0 on macOS**, using installed **Claude Code 2.1.288** and **Codex CLI 0.153.4**. With Codex selected, one tagged prompt asked both providers for an independent TTL-cache opinion under read-only settings. Both returned their own responses, their cards completed, and the final combined response retained participant attribution. The native editor suite reported **11 passed**, including this live check.
@@ -39,6 +41,6 @@ Marketing assets are excluded from the installed payload. The README uses PNG/GI
 
 The extracted final pre-release VSIX passed the same **11 native editor tests**, including the authenticated two-provider assignment test. [Live capture](README.md#live-provider-evidence) records the actual packaged run.
 
-SHA-256: `812657132dfb9f77297f12e703ff712a88c551c99b90b247705f5d98d13bba50`.
+SHA-256: `c6c10b4e2b5523cb34ddf125c06397b6368bbb6c06598f9c102b7bcb67ad7365`.
 
 Package shape passes: runtime dependencies and walkthrough assets are present, development source maps/types are excluded, and the new release media is not installed with the extension. The existing walkthrough screenshots remain intentionally bundled.

@@ -90,6 +90,7 @@ async function record(browser, name, action) {
    const slider=page.locator('#model-menu input[type="range"]');await slider.focus();await page.keyboard.press('ArrowRight');await pause(page,1000);
    await page.keyboard.press('Escape');await page.click('#tools-menu-btn');await pause(page,900);
    const ultra=page.locator('#tools-menu [role="switch"]');if(await ultra.count())await ultra.click();
+   if (await page.locator('#model-menu-btn #model-menu-effort').textContent() !== 'Extra High · Ultracode') throw new Error('Composer footer is not synchronized with the menu controls');
    await pause(page,1000);
   });
   await record(browser,'proactive-inbox',async page=>{

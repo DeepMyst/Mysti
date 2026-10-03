@@ -3029,7 +3029,7 @@
             levels.forEach(function() { dots.appendChild(document.createElement('i')); });
           }
           var slider = row.querySelector('input');
-          slider.id = row.closest('.composer-menu').id + '-effort';
+          slider.id = row.closest('.composer-menu').id + '-effort-slider';
           row.querySelector('label').htmlFor = slider.id;
           var index = Math.max(0, effortSelectInline.selectedIndex);
           slider.max = String(levels.length - 1);
