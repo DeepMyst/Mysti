@@ -73,6 +73,15 @@ describe('OpenCode HTTP transport', () => {
     expect(chunks.filter(c => c.type === 'text').map(c => c.content).join('')).toBe('Hello 世界');
     expect(chunks.at(-1)?.type).toBe('done'); expect(deleted).toBe(1);
   });
+  it('delivers native tool output on the tool card', async () => {
+    const result = collect(); await ready();
+    event('message.part.updated', { part: { sessionID: 'owned', id: 'tool-part', type: 'tool', callID: 'call', tool: 'read',
+      state: { status: 'completed', input: { filePath: 'README.md' }, output: 'File contents' } } });
+    await new Promise(resolve => setTimeout(resolve, 10)); finish();
+    const chunks = await result;
+    expect(chunks.find(c => c.type === 'tool_result')?.toolCall).toMatchObject({ id: 'call', status: 'completed', output: 'File contents' });
+  });
+
   it('waits for host approval before replying to the server', async () => {
     let allow!: (value: boolean) => void;
     const handler = vi.fn(() => new Promise<boolean>(resolve => { allow = resolve; }));

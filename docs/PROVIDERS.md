@@ -534,3 +534,7 @@ import other server sessions or automatically discover network hosts. Verified
 against OpenCode 1.18.29 for health and permission acknowledgement, and local HTTP
 fixtures for streaming, approval, errors and cancellation. Authenticated model
 completion across real WSL/Docker networks remains a release validation task.
+
+The live free-tier probe returned an upstream HTTP 403 restricting external-client
+use. A healthy OpenCode server and a discovered model do not guarantee model
+entitlement; connect an upstream provider/account permitted for remote clients.

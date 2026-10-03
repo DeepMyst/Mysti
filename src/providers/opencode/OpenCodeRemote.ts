@@ -147,7 +147,7 @@ export class OpenCodeRemote {
               const toolCall = { status: 'running' as const, id: part.callID ?? part.id, name: normalizeToolName(part.tool ?? 'tool'), input: part.state.input ?? {} };
               if (part.state.status === 'running') { yield { type: 'tool_use', toolCall }; }
               if (part.state.status === 'completed' || part.state.status === 'error') {
-                yield { type: 'tool_result', toolCall: { ...toolCall, status: part.state.status === 'error' ? 'failed' : 'completed' }, content: part.state.output ?? part.state.error ?? '' };
+                yield { type: 'tool_result', toolCall: { ...toolCall, status: part.state.status === 'error' ? 'failed' : 'completed', output: part.state.output ?? part.state.error ?? '' }, content: part.state.output ?? part.state.error ?? '' };
               }
             }
           } else if (event.type === 'message.part.delta' && p.partID && p.messageID !== messageID && p.field === 'text') {

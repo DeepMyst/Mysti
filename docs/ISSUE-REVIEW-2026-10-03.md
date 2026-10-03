@@ -42,3 +42,12 @@ Issue fixes add focused regressions and use the same hosted gates before merge.
 HTTP fixture success does not establish authenticated remote model completion,
 MiniMax account access, enterprise SSO, or every user's OS configuration. No Open
 VSX publication is claimed until the registry contains the tested artifact.
+
+Focused verification during this pass: 117 tests for the older Windows/context/
+Opus/OpenClaw reports; 377 tests across all suites affected by the interrupted
+full local run, including remote setup and transport. TypeScript and lint pass
+(467 existing warnings, zero errors); actionlint accepts the publication workflow.
+A live model request through OpenCode 1.18.29 reached its upstream provider but
+received HTTP 403: its free tier rejects external-client use. The adapter reported
+an error and cleaned up the session. A paid/authenticated upstream completion
+therefore remains unverified; no bypass of the free-tier restriction was attempted.
