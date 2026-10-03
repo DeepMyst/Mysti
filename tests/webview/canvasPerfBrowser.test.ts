@@ -167,9 +167,10 @@ async function measurePan(moves: number): Promise<PanReport> {
     const tick = (t: number) => { frames.push(t - last); last = t; raf = requestAnimationFrame(tick); };
     raf = requestAnimationFrame(tick);
 
-    const opts = { bubbles: true, cancelable: true, pointerId: 1, isPrimary: true, button: 0, buttons: 1 };
+    const opts = { bubbles: true, cancelable: true, pointerId: 1, isPrimary: true, button: 1, buttons: 4 };
     view.dispatchEvent(new PointerEvent('pointerdown', { ...opts, clientX: 700, clientY: 450 }));
 
+    const before = document.getElementById('page-stage')!.style.transform;
     const t0 = performance.now();
     for (let i = 0; i < n; i++) {
       window.dispatchEvent(new PointerEvent('pointermove', {
@@ -177,6 +178,7 @@ async function measurePan(moves: number): Promise<PanReport> {
       }));
     }
     const moveBatchMs = performance.now() - t0;
+    if (document.getElementById('page-stage')!.style.transform === before) { throw new Error('Pan driver did not move the board'); }
     window.dispatchEvent(new PointerEvent('pointerup', { ...opts, clientX: 900, clientY: 560, buttons: 0 }));
 
     await new Promise(r => setTimeout(r, 200));
@@ -240,9 +242,10 @@ async function measurePacedPan(zoom: number, ticks: number): Promise<{ p50: numb
     await new Promise(r => setTimeout(r, 300));
 
     const view = document.getElementById('board-scroll')!;
-    const opts = { bubbles: true, cancelable: true, pointerId: 1, isPrimary: true, button: 0, buttons: 1 };
+    const opts = { bubbles: true, cancelable: true, pointerId: 1, isPrimary: true, button: 1, buttons: 4 };
     view.dispatchEvent(new PointerEvent('pointerdown', { ...opts, clientX: 700, clientY: 450 }));
 
+    const before = document.getElementById('page-stage')!.style.transform;
     const frames: number[] = [];
     await new Promise<void>(resolve => {
       let i = 0;
@@ -259,6 +262,7 @@ async function measurePacedPan(zoom: number, ticks: number): Promise<{ p50: numb
     });
     window.dispatchEvent(new PointerEvent('pointerup', { ...opts, clientX: 900, clientY: 560, buttons: 0 }));
 
+    if (document.getElementById('page-stage')!.style.transform === before) { throw new Error('Paced pan driver did not move the board'); }
     const sorted = [...frames].sort((a, b) => a - b);
     const at = (q: number) => sorted[Math.floor(sorted.length * q)] ?? 0;
     return {
