@@ -106,6 +106,11 @@ Mocha loads it in its optional parallel worker pool. Our editor tests explicitly
 run serially, and none of these packages ships in the VSIX. The release maintainer
 owns this exception: keep parallel execution disabled and remove the exception
 when a compatible patched serializer is available or the runner is replaced.
+Mocha's optional watch path also brings in `chokidar 3 → braces 3.0.3`
+([deep-pattern stack exhaustion](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm)).
+There is no compatible upstream fix yet. Our editor runner does not enable watch
+or accept user-provided globs, and this development graph is excluded from the
+VSIX. The release maintainer owns removing this exception when patched.
 Serializer 7.0.5 requires Node 20, so overriding it into the minimum editor would
 violate its declared runtime support.
 
@@ -196,3 +201,8 @@ transport behavior, persistence and UI state simultaneously.
 The 2.0.0 candidate uses `npm run package:pre-release`, including the CI artifact tested by the packaged-editor jobs. Keep the numeric package version and lockfile synchronized; the pre-release marker lives in VSIX metadata, not a semver suffix. The README badge reports the published Marketplace version, which may differ from a candidate checkout.
 
 Inspect PNG/GIF/video assets and relative links before publication. Assets under `docs/` stay out of the VSIX but must exist at the repository URLs used by its README. Preserve sample-data labels on deterministic captures; record live-provider validation separately. Do not promote a package to stable by merely removing the word BETA: require a reviewed newer version and a deliberate channel change.
+
+Playwright remains pinned to 1.58.2: later releases require Node 20 and terminate
+VS Code 1.86's Node 18.17.1 host on import. Because it is an external runtime
+dependency, upgrading it requires a deliberate editor-support decision and real
+minimum-editor validation, even when newer development Node passes every test.
