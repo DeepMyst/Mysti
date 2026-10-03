@@ -498,3 +498,39 @@ catalogs, including localized webview chrome. Conversation text, code and agent
 outputs retain their original language. Newer beta features without a catalog
 entry fall back to English. Translation resources ship in the VSIX; contributors
 can run `npm run verify:localization` to check keys and placeholders.
+
+### OpenCode in WSL, Docker or a remote server
+
+Use **Mysti: Configure OpenCode Remote Server** from the Command Palette. Enter
+`http://localhost:4096` for a locally forwarded server, or an HTTPS endpoint for
+another machine. Enter the project directory **as the server sees it**, such as
+`/home/me/project`, and its server password. **Mysti: Test OpenCode Server
+Connection** checks health and connected model providers. No OpenCode CLI is
+required on the editor's machine in this mode.
+
+Run `opencode auth login` and `opencode serve` on the server. For Docker, publish
+the server port to loopback on the host; for WSL use localhost forwarding. The
+server must be reachable from the VS Code extension host (which can itself run
+inside Remote SSH or a dev container). OpenCode uses HTTP Basic authentication:
+set `OPENCODE_SERVER_PASSWORD` on the server; the default username is `opencode`.
+Mysti keeps the password in endpoint-specific VS Code SecretStorage. A custom
+username is available as `mysti.opencodeRemoteUsername`.
+
+`mysti.opencodeEndpoint` and `mysti.opencodeRemoteDirectory` are machine-scoped.
+Clearing the endpoint restores local CLI mode. Remote mode uses HTTP and SSE,
+not WebSocket. See the [OpenCode server documentation](https://opencode.ai/docs/server/).
+
+Each turn creates an isolated remote session, checks that the server accepted
+its permission rules, and replays Mysti conversation context. Native tool
+requests wait for Mysti approval; read-only and plan modes cannot approve writes.
+Stop aborts the request and its owned server session, and late approval clicks
+cannot resume it. The session is removed after the turn; Mysti keeps its local
+conversation. Server models appear in discovery as `provider/model` identifiers.
+
+This beta transport supports text context and streaming answers/reasoning. Local
+file/image attachments, server question dialogs and the experimental permission
+v2 protocol are not supported; those paths report an explicit error. It does not
+import other server sessions or automatically discover network hosts. Verified
+against OpenCode 1.18.29 for health and permission acknowledgement, and local HTTP
+fixtures for streaming, approval, errors and cancellation. Authenticated model
+completion across real WSL/Docker networks remains a release validation task.

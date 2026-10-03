@@ -206,3 +206,20 @@ Playwright remains pinned to 1.58.2: later releases require Node 20 and terminat
 VS Code 1.86's Node 18.17.1 host on import. Because it is an external runtime
 dependency, upgrading it requires a deliberate editor-support decision and real
 minimum-editor validation, even when newer development Node passes every test.
+
+### Open VSX publication
+
+The manual **Publish reviewed VSIX to Open VSX** workflow accepts the numeric ID
+of a successful `CI` push run on `main`. It also requires successful editor
+integration for the same commit, downloads that run's `mysti-vsix` artifact,
+checks its DeepMyst/mysti identity and pre-release metadata, and publishes the
+exact file with pinned `ovsx@1.2.0`. It does not rebuild the extension.
+
+Before dispatch, the publisher must accept the Open VSX publisher agreement,
+control the `DeepMyst` namespace, and configure the repository's `OVSX_PAT`
+secret. Follow the [registry publishing guide](https://github.com/EclipseFdn/open-vsx.org/wiki/Publishing-Extensions).
+Never put the token in workflow inputs or the command line. Missing credentials,
+failed source checks, an expired artifact or an already-published version fail
+the job; they do not silently skip publication. This workflow publishes only the
+beta channel. Review the printed version and SHA256 in the job log, then verify
+the listing in Open VSX. Until that succeeds, issue #29 remains pending.

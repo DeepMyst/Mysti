@@ -280,6 +280,14 @@
         "title": "Open Proactive Inbox",
         "category": "Mysti",
         "icon": "$(bell)"
+      },
+      {
+        "command": "mysti.configureOpenCodeRemote",
+        "title": "Mysti: Configure OpenCode Remote Server"
+      },
+      {
+        "command": "mysti.testOpenCodeConnection",
+        "title": "Mysti: Test OpenCode Server Connection"
       }
     ],
     "menus": {
@@ -2113,6 +2121,24 @@
           "default": "",
           "scope": "machine",
           "description": "Custom MiniMax persona instructions."
+        },
+        "mysti.opencodeEndpoint": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "OpenCode HTTP server URL. Empty uses the local CLI. HTTP is allowed only on loopback; remote hosts require HTTPS."
+        },
+        "mysti.opencodeRemoteDirectory": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Absolute project directory on the OpenCode server (for example /home/user/project in WSL). Empty uses its default directory."
+        },
+        "mysti.opencodeRemoteUsername": {
+          "type": "string",
+          "default": "opencode",
+          "scope": "machine",
+          "description": "OpenCode HTTP Basic authentication username. Configure the password through provider setup."
         }
       }
     },

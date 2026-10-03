@@ -68,8 +68,9 @@ interface Harness {
 }
 
 function createHarness(): Harness {
+  const persisted = new Map<string, unknown>();
   const extensionContext: any = {
-    globalState: { get: (_k: string, d?: unknown) => d, update: async () => undefined },
+    globalState: { get: (k: string, d?: unknown) => persisted.get(k) ?? d, update: async (k: string, v: unknown) => { persisted.set(k, v); } },
     workspaceState: { get: (_k: string, d?: unknown) => d, update: async () => undefined },
     subscriptions: [] as { dispose(): void }[],
     extensionPath: '/mock/extension-does-not-exist',
@@ -287,6 +288,17 @@ describe('the model a panel reports is the model it runs', () => {
       const changed = h.messages.filter(m => m.type === 'modelChanged');
       expect(changed).toHaveLength(1);
       expect(changed[0].payload).toEqual({ model: 'gpt-6-astra', provider: 'openai-codex', customModel: '' });
+    });
+
+    it('restores each provider selection after switching away and back (#33)', async () => {
+      selectAgent(h, 'claude-code');
+      await (h.provider as any)._handleUpdateSettings({ model: 'claude-opus-5', customModel: '' }, 'sidebar');
+      await (h.provider as any)._handleUpdateSettings({ provider: 'openai-codex' }, 'sidebar');
+      await (h.provider as any)._handleUpdateSettings({ model: 'gpt-6-astra', customModel: '' }, 'sidebar');
+      await (h.provider as any)._handleUpdateSettings({ provider: 'claude-code' }, 'sidebar');
+      expect(h.panelState.settingsOverrides.model).toBe('claude-opus-5');
+      await (h.provider as any)._handleUpdateSettings({ provider: 'openai-codex' }, 'sidebar');
+      expect(h.panelState.settingsOverrides.model).toBe('gpt-6-astra');
     });
 
     it('a provider switch answers with the model that provider will use', async () => {

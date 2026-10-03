@@ -6613,6 +6613,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this._contextManager.setAutoContext(settings.contextMode === 'auto');
     }
     if (settings.model !== undefined) {
+      const selectedProvider = settings.provider ?? (panelId ? this._getPanelProvider(panelId) : config.get<string>('defaultProvider', DEFAULT_PROVIDER));
+      if (!isPseudoAgentId(selectedProvider) && validateModelName(settings.model).valid) {
+        const selections = this._extensionContext.globalState.get<Record<string, string>>('mysti.providerModelSelections', {});
+        await this._extensionContext.globalState.update('mysti.providerModelSelections', { ...selections, [selectedProvider]: settings.model });
+      }
       if (panelId) {
         // Store per-panel — don't contaminate other panels
         const panelState = this._panelStates.get(panelId);
@@ -6679,7 +6684,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const storedModel = panelId
           ? (this._panelStates.get(panelId)?.settingsOverrides?.model || config.get<string>('defaultModel', ''))
           : config.get<string>('defaultModel', '');
-        const resolvedModel = storedModel ? this._resolveModelForProvider(storedModel, settings.provider) : '';
+        const selections = this._extensionContext.globalState.get<Record<string, string>>('mysti.providerModelSelections', {});
+        const savedModel = Object.prototype.hasOwnProperty.call(selections, settings.provider) ? selections[settings.provider] : undefined;
+        const preferredModel = settings.model ?? (typeof savedModel === 'string' && validateModelName(savedModel).valid ? savedModel : storedModel);
+        const resolvedModel = preferredModel ? this._resolveModelForProvider(preferredModel, settings.provider) : '';
         if (resolvedModel && resolvedModel !== storedModel) {
           if (panelId) {
             const panelState = this._panelStates.get(panelId);
@@ -6703,7 +6711,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const settingsAny = settings as Record<string, unknown>;
     if ('customModel' in settingsAny) {
       const customModel = settingsAny['customModel'] as string;
-      const provider = settings.provider || config.get<string>('defaultProvider', DEFAULT_PROVIDER);
+      const provider = settings.provider || (panelId ? this._getPanelProvider(panelId) : config.get<string>('defaultProvider', DEFAULT_PROVIDER));
       const settingKey = getCustomModelSettingKey(provider);
       if (settingKey) {
         if (!customModel) {

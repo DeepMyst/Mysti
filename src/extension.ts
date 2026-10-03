@@ -12,6 +12,7 @@
  */
 
 import * as vscode from 'vscode';
+import { registerOpenCodeRemoteSetup } from './providers/opencode/setup';
 import * as nodePath from 'path';
 import { ChatViewProvider } from './providers/ChatViewProvider';
 import { isWizardStep } from './chat/onboarding';
@@ -164,6 +165,7 @@ export async function activate(context: vscode.ExtensionContext) {
   contextManager = new ContextManager(context);
   conversationManager = new ConversationManager(context);
   providerManager = new ProviderManager(context);
+  registerOpenCodeRemoteSetup(context, providerManager);
 
   // Plan 03 Phase 3a: cached CLI discovery. Constructed BEFORE the
   // background provider init below so it seeds from every onProviderReady

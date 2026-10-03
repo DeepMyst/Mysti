@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — issue review
+
+- OpenCode remote HTTP/SSE connections for WSL, Docker and HTTPS servers, with setup and connection-test commands, SecretStorage credentials and native tool approvals.
+- Remember each provider's selected model when switching agents, and apply custom-model changes to the correct panel provider.
+- Allow Brainstorm deliberation beyond 90 seconds; bound and parallelize provider-readiness checks so discovery cannot leave analysis waiting indefinitely.
+- Prepare publication of the exact tested beta VSIX to Open VSX (publisher credentials still required).
+
+
 All notable changes to the Mysti extension will be documented in this file.
 
 ## Unreleased — review follow-up
