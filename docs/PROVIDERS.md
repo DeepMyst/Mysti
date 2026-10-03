@@ -1,6 +1,6 @@
 # AI Providers
 
-Mysti offers its own coordinator plus 15 registered agent backends. You only need one to get started — install any two to unlock Brainstorm Mode.
+Mysti offers its own coordinator plus 16 registered agent backends. You only need one to get started — install any two to unlock Brainstorm Mode.
 
 ## Provider Overview
 
@@ -22,6 +22,7 @@ Mysti offers its own coordinator plus 15 registered agent backends. You only nee
 | Ollama | Local server | Running Ollama and an installed model |
 | LocalAI | HTTP endpoint | Running LocalAI and an installed model |
 | OpenRouter | HTTP | Your OpenRouter key and an available model |
+| MiniMax | HTTP | API key stored through provider setup, or `MINIMAX_API_KEY` |
 
 Model lists and entitlements change. Use Mysti's model dropdown and Refresh Models for the current catalog. Custom entries are stored per provider in `mysti.customModels`; a provider-specific model override takes precedence. Manus source exists but is not registered or selectable in this release.
 
@@ -470,3 +471,30 @@ Click the settings gear icon in the Mysti sidebar to access the full settings pa
 The settings and slash menus use the registered capability manifest. Claude and Codex stream text, reasoning, tool activity and usage; both support native session continuity. Claude additionally supports native compaction. Hermes and Kimi use ACP sessions and approvals. Ollama and LocalAI display tool-call proposals without executing them; OpenRouter is chat-only. The Mysti coordinator has its own tools, collaboration, memory and spend controls.
 
 For the complete feature inventory and measured validation status, see the [feature review](../plans/34-feature-review.md). Automated parser coverage is distinct from account-backed validation.
+
+## MiniMax
+
+Select MiniMax and choose **Authenticate / Configure API key**. The host opens a
+password field and saves the key in VS Code SecretStorage. No CLI is installed.
+A configured key is checked by the API on the first request; a rejected key
+returns an authentication card. Keys are never sent to the chat webview.
+
+The adapter streams text, separate reasoning and reported token usage. It is a
+completion backend: it does not execute tools or edit files. The coordinator can
+assign it advisory work, while coding agents perform changes. Model selections
+and explicit routed models are honored; unsupported effort controls stay hidden.
+
+`MiniMax-M2.7` and `MiniMax-M2.7-highspeed` have 204,800-token context windows,
+per [MiniMax's API documentation](https://platform.minimax.io/docs/api-reference/text-openai-api).
+The machine-scoped `mysti.minimaxBaseUrl` accepts only MiniMax's international or
+China HTTPS API endpoint; redirects are refused. Stop, panel disposal and replaced
+turns cancel their own HTTP request. Transport and setup are fixture-tested;
+a paid MiniMax account was not available for an authenticated live smoke test.
+
+## Russian interface
+
+VS Code's Russian locale enables the contributed command/settings and runtime
+catalogs, including localized webview chrome. Conversation text, code and agent
+outputs retain their original language. Newer beta features without a catalog
+entry fall back to English. Translation resources ship in the VSIX; contributors
+can run `npm run verify:localization` to check keys and placeholders.

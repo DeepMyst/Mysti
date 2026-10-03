@@ -2290,7 +2290,7 @@
     "compile:release": "node scripts/generate-core-agent-manifest.js --check && npm run check:vendor && webpack --mode production",
     "watch": "npm run build:core-manifest && webpack --mode development --watch",
     "compile:dev": "npm run build:core-manifest && webpack --mode development",
-    "lint": "node scripts/check-provider-literals.js && node scripts/generate-core-agent-manifest.js --check && eslint src --ext ts && eslint media --ext js",
+    "lint": "node scripts/check-provider-literals.js && node scripts/generate-core-agent-manifest.js --check && npm run verify:localization && eslint src --ext ts && eslint media --ext js",
     "lint:provider-literals": "node scripts/check-provider-literals.js",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",

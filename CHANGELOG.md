@@ -2,6 +2,13 @@
 
 All notable changes to the Mysti extension will be documented in this file.
 
+## Unreleased — review follow-up
+
+- Integrate Russian command/settings catalogs and webview chrome while preserving user and agent text.
+- Add MiniMax API setup with SecretStorage, model routing, reasoning/usage streaming and isolated cancellation.
+- Repair translated README star-history links using the official service.
+- Reconcile dependency updates, patch browser libraries, and preserve VS Code 1.86 runtime support.
+
 ## [2.0.0] — Mysti 2.0 BETA (pre-release candidate)
 
 ### Fixed

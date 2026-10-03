@@ -85,7 +85,7 @@ You only need **one** configured agent to begin. Provider subscriptions, API acc
 | --- | --- |
 | Coding agents | Claude Code, OpenAI Codex, Google Gemini CLI, GitHub Copilot CLI, Cline, Cursor |
 | Additional coding tools | OpenClaw, OpenCode, Qwen Code, Hermes, Continue, Kimi Code |
-| Local / API endpoints | Ollama, LocalAI, OpenRouter |
+| Local / API endpoints | Ollama, LocalAI, OpenRouter, MiniMax |
 | Mysti coordinator | DeepMyst account, with optional configured local execution and delegation |
 
 The UI follows each adapter's capabilities. Model availability, effort, Ultracode, attachments, native approvals, and authentication are provider-specific. An adapter being included is not a claim that every provider/version/account combination has been live-tested. [Compatibility and setup](docs/PROVIDERS.md).
