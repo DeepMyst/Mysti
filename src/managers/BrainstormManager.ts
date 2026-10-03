@@ -12,9 +12,10 @@
  */
 
 import * as vscode from 'vscode';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID as uuidv4 } from 'crypto';
 import { ProviderManager } from './ProviderManager';
-import type { PersonaConfig } from '../providers/base/IProvider';
+import type { NativeApprovalHandler, PersonaConfig } from '../providers/base/IProvider';
+import { getProviderDisplayMeta } from '../providers/base/ProviderManifest';
 import type {
   ContextItem,
   Settings,
@@ -30,65 +31,30 @@ import type {
 import { BRAINSTORM_SILENCE_TIMEOUT_MS } from '../constants';
 
 /**
- * Agent color and icon definitions
+ * Brainstorm-specific emoji badges per agent. Display identity
+ * (name/color) comes from the Provider Manifest (Plan 02 Phase 1) —
+ * only this brainstorm styling stays local.
  */
-const AGENT_STYLES: Record<AgentType, { color: string; icon: string; displayName: string }> = {
-  'claude-code': {
-    color: '#8B5CF6', // Purple
-    icon: '🟣',
-    displayName: 'Claude'
-  },
-  'openai-codex': {
-    color: '#10B981', // Green
-    icon: '🟢',
-    displayName: 'Codex'
-  },
-  'google-gemini': {
-    color: '#4285F4', // Google Blue
-    icon: '🔵',
-    displayName: 'Gemini'
-  },
-  'cline': {
-    color: '#F59E0B', // Amber
-    icon: '🟠',
-    displayName: 'Cline'
-  },
-  'github-copilot': {
-    color: '#6366F1', // Indigo
-    icon: '🟡',
-    displayName: 'Copilot'
-  },
-  'cursor': {
-    color: '#00A3FF', // Cursor Blue
-    icon: '🔷',
-    displayName: 'Cursor'
-  },
-  'openclaw': {
-    color: '#E11D48', // Rose
-    icon: '🔴',
-    displayName: 'OpenClaw'
-  },
-  'opencode': {
-    color: '#22C55E', // Green
-    icon: '🟩',
-    displayName: 'OpenCode'
-  },
-  'ollama': {
-    color: '#FFFFFF', // White
-    icon: '🦙',
-    displayName: 'Ollama'
-  },
-  'localai': {
-    color: '#06B6D4', // Cyan
-    icon: '🏠',
-    displayName: 'LocalAI'
-  },
-  'qwen-code': {
-    color: '#6C5CE7', // Purple
-    icon: '🟪',
-    displayName: 'Qwen'
-  }
+const AGENT_BRAINSTORM_ICONS: Record<AgentType, string> = {
+  'claude-code': '🟣',
+  'openai-codex': '🟢',
+  'google-gemini': '🔵',
+  'cline': '🟠',
+  'github-copilot': '🟡',
+  'cursor': '🔷',
+  'openclaw': '🔴',
+  'opencode': '🟩',
+  'ollama': '🦙',
+  'localai': '🏠',
+  'qwen-code': '🟪',
+  'hermes': '🟤',
+  'continue': '⏩',
+  'openrouter': '🔀',
+  'kimi-code': '🌙'
 };
+
+const FALLBACK_AGENT_COLOR = '#888888';
+const FALLBACK_AGENT_ICON = '🤖';
 
 /**
  * BrainstormManager - Orchestrates multi-agent team collaboration
@@ -99,6 +65,8 @@ export class BrainstormManager {
   private _providerManager: ProviderManager;
   // Per-panel session tracking for isolated brainstorm sessions
   private _panelSessions: Map<string, BrainstormSession> = new Map();
+  private _activeRuns = new Map<string, AbortController>();
+  private readonly _nativeApprovals = new Map<AbortController, NativeApprovalHandler | undefined>();
 
   constructor(context: vscode.ExtensionContext, providerManager: ProviderManager) {
     this._extensionContext = context;
@@ -118,8 +86,8 @@ export class BrainstormManager {
     const config = vscode.workspace.getConfiguration('mysti');
     // Read user-selected agents from settings (pick 2 of 7)
     const selectedAgents = config.get<AgentType[]>('brainstorm.agents', ['claude-code', 'openai-codex']);
-    // Ensure we have exactly 2 valid agents
-    const validAgents = selectedAgents.filter(a => AGENT_STYLES[a]).slice(0, 2);
+    // Ensure we have exactly 2 valid agents (validated against the manifest's display registry)
+    const validAgents = selectedAgents.filter(a => !!getProviderDisplayMeta(a)).slice(0, 2);
     const agents = validAgents.length === 2 ? validAgents : ['claude-code', 'openai-codex'] as AgentType[];
 
     // Support new strategy setting with backward compat for old discussionMode
@@ -156,7 +124,11 @@ export class BrainstormManager {
       'opencode': 'opencode',
       'ollama': 'ollama',
       'localai': 'localai',
-      'qwen-code': 'qwenCode'
+      'qwen-code': 'qwenCode',
+      'hermes': 'hermes',
+      'continue': 'continue',
+      'openrouter': 'openrouter',
+      'kimi-code': 'kimiCode'
     };
     const agentKey = agentKeyMap[agentId] || 'claude';
 
@@ -201,13 +173,17 @@ export class BrainstormManager {
    * Build agent configurations for the session
    */
   private _buildAgentConfigs(agentIds: AgentType[]): AgentConfig[] {
-    return agentIds.map(id => ({
-      id,
-      displayName: AGENT_STYLES[id].displayName,
-      color: AGENT_STYLES[id].color,
-      icon: AGENT_STYLES[id].icon,
-      persona: this._getPersonaConfig(id)
-    }));
+    return agentIds.map(id => {
+      // Display identity from the Provider Manifest (Plan 02 Phase 1)
+      const meta = getProviderDisplayMeta(id);
+      return {
+        id,
+        displayName: meta?.displayName ?? id,
+        color: meta?.color ?? FALLBACK_AGENT_COLOR,
+        icon: AGENT_BRAINSTORM_ICONS[id] ?? FALLBACK_AGENT_ICON,
+        persona: this._getPersonaConfig(id)
+      };
+    });
   }
 
   /**
@@ -240,6 +216,49 @@ export class BrainstormManager {
     panelId?: string
   ): AsyncGenerator<BrainstormStreamChunk> {
     const sessionId = panelId || 'default';
+    if (this._activeRuns.has(sessionId)) {
+      this.cancelSession(sessionId);
+    }
+    const controller = new AbortController();
+    this._activeRuns.set(sessionId, controller);
+    this._nativeApprovals.set(controller, this._providerManager.captureNativeApprovalHandler(sessionId, controller.signal));
+    let completed = false;
+    try {
+      // The outer iterator also listens for Stop while provider discovery or
+      // a child stream is pending. A cancelled run cannot start another phase.
+      for await (const chunk of this._iterateWithSilenceTimeout(
+        this._startBrainstormSession(query, context, settings, sessionId, controller.signal),
+        null,
+        controller.signal
+      )) {
+        if (chunk.type === 'done') { completed = true; }
+        yield chunk;
+      }
+      completed = true;
+    } catch (error) {
+      if (!controller.signal.aborted) { throw error; }
+      yield { type: 'done' };
+    } finally {
+      // A consumer breaking out of the stream is also an unclean end. Never
+      // let an older run's cleanup cancel its replacement in the same panel.
+      if (this._activeRuns.get(sessionId) === controller) {
+        if (!completed && !controller.signal.aborted) {
+          this.cancelSession(sessionId);
+        }
+        this._activeRuns.delete(sessionId);
+      }
+      controller.abort();
+      this._nativeApprovals.delete(controller);
+    }
+  }
+
+  private async *_startBrainstormSession(
+    query: string,
+    context: ContextItem[],
+    settings: Settings,
+    sessionId: string,
+    signal: AbortSignal
+  ): AsyncGenerator<BrainstormStreamChunk> {
     const brainstormConfig = this._getConfig();
 
     // B8: Validate no duplicate agents
@@ -254,6 +273,7 @@ export class BrainstormManager {
 
     // Validate provider availability and authentication
     const { available, unavailable, unavailableReasons } = await this._validateProviderAvailability(brainstormConfig.agents);
+    signal.throwIfAborted();
 
     if (unavailable.length > 0) {
       const reasons = unavailable.map(id => unavailableReasons.get(id) || id).join('; ');
@@ -277,6 +297,7 @@ export class BrainstormManager {
 
     // Validate synthesis agent
     const synthesisAvailable = await this._validateProviderAvailability([brainstormConfig.synthesisAgent]);
+    signal.throwIfAborted();
     if (synthesisAvailable.unavailable.length > 0) {
       console.warn(`[Mysti] Brainstorm: Synthesis agent ${brainstormConfig.synthesisAgent} unavailable, using ${available[0]}`);
       validatedConfig.synthesisAgent = available[0];
@@ -295,7 +316,8 @@ export class BrainstormManager {
       convergenceHistory: [],
       unifiedSolution: null,
       createdAt: Date.now(),
-      updatedAt: Date.now()
+      updatedAt: Date.now(),
+      childPanels: []
     };
 
     this._panelSessions.set(sessionId, session);
@@ -323,16 +345,22 @@ export class BrainstormManager {
       }
 
       // Complete
-      yield { type: 'phase_change', phase: 'complete' };
       session.phase = 'complete';
+      yield { type: 'phase_change', phase: 'complete' };
       yield { type: 'done' };
 
     } catch (error) {
+      if (signal.aborted) { throw error; }
       console.error('[Mysti] Brainstorm: Error in session', error);
       yield {
         type: 'agent_error',
         content: error instanceof Error ? error.message : 'Unknown error in brainstorm session'
       };
+      // 5.2: the webview derives brainstormComplete from `done` — without it
+      // the error path left the UI waiting forever. Mark the session terminal
+      // too so isSessionActive() doesn't report a dead session as running.
+      session.phase = 'complete';
+      yield { type: 'done' };
     }
   }
 
@@ -422,7 +450,7 @@ export class BrainstormManager {
         });
 
       const contributions = new Map<AgentType, string>();
-      for await (const chunk of this._interleaveGenerators(generators)) {
+      for await (const chunk of this._interleaveGenerators(generators, this._activeRuns.get(sessionId)?.signal)) {
         yield chunk;
         // Accumulate contributions from discussion_text chunks
         if (chunk.type === 'discussion_text' && chunk.agentId && chunk.content) {
@@ -437,8 +465,13 @@ export class BrainstormManager {
         roleAssignments
       });
 
-      // Assess convergence
-      if (config.autoConverge && round < config.maxDiscussionRounds) {
+      // 5.3a: assess convergence after EVERY round, including the last. The
+      // final round's assessment still feeds the UI (convergence_update) and
+      // the synthesis prompt's convergence status, even though there is no
+      // next round left to skip — previously the `round < maxDiscussionRounds`
+      // guard meant the default 2-round debate was only ever assessed once,
+      // with no stability data, making 'converged' unreachable.
+      if (config.autoConverge) {
         const convergence = this._assessConvergence(sessionId, round);
         session.convergenceHistory.push(convergence);
         yield { type: 'convergence_update', convergence, roundNumber: round };
@@ -609,7 +642,7 @@ export class BrainstormManager {
       this._streamAgentResponse(innovatorAgent, innovatorPrompt, context, settings, sessionId)
     ];
 
-    yield* this._interleaveGenerators(generators);
+    yield* this._interleaveGenerators(generators, this._activeRuns.get(sessionId)?.signal);
 
     // Check if we have responses to cross-review
     const completeAgents = this._getCompleteAgents(sessionId);
@@ -649,7 +682,7 @@ export class BrainstormManager {
     ];
 
     const contributions = new Map<AgentType, string>();
-    for await (const chunk of this._interleaveGenerators(crossReviewGens)) {
+    for await (const chunk of this._interleaveGenerators(crossReviewGens, this._activeRuns.get(sessionId)?.signal)) {
       yield chunk;
       if (chunk.type === 'discussion_text' && chunk.agentId && chunk.content) {
         const existing = contributions.get(chunk.agentId) || '';
@@ -756,7 +789,7 @@ export class BrainstormManager {
         });
 
       const refinerContributions = new Map<AgentType, string>();
-      for await (const chunk of this._interleaveGenerators(refinerGens)) {
+      for await (const chunk of this._interleaveGenerators(refinerGens, this._activeRuns.get(sessionId)?.signal)) {
         yield chunk;
         if (chunk.type === 'discussion_text' && chunk.agentId && chunk.content) {
           const existing = refinerContributions.get(chunk.agentId) || '';
@@ -772,7 +805,13 @@ export class BrainstormManager {
 
       // Parse convergence score from facilitator summary
       if (config.autoConverge) {
-        const convergence = this._assessConvergence(sessionId, round);
+        // 5.3b: delphi pushes discussion rounds in facilitator/refiner PAIRS
+        // (roundNumber round*2-1 / round*2). Stride 2 makes the heuristic's
+        // position-stability (and oscillation) comparisons pair each agent's
+        // refinement with its PREVIOUS refinement (even pushes) — not with the
+        // facilitator summary, which is a different role and made "stability"
+        // meaningless.
+        const convergence = this._assessConvergence(sessionId, round, 2);
         // B5: Broadened regex to match common convergence score phrasings
         const scoreMatch = facilitatorSummary.match(/(?:convergence|consensus|agreement)\s*(?:score|level|rating)?:?\s*(\d+)\s*\/\s*10/i);
         if (scoreMatch) {
@@ -784,8 +823,11 @@ export class BrainstormManager {
         session.convergenceHistory.push(convergence);
         yield { type: 'convergence_update', convergence, roundNumber: round };
 
-        if (convergence.recommendation === 'converged') {
-          console.log(`[Mysti] Brainstorm: Delphi converged at round ${round}`);
+        // 5.3c: break on 'stalled' too (like debate) — grinding through more
+        // facilitator/refinement rounds after a detected stall only burns
+        // tokens restating the same positions.
+        if (convergence.recommendation === 'converged' || convergence.recommendation === 'stalled') {
+          console.log(`[Mysti] Brainstorm: Delphi ${convergence.recommendation} at round ${round}`);
           break;
         }
       }
@@ -828,27 +870,150 @@ export class BrainstormManager {
       this._streamAgentResponse(agent, query, context, settings, sessionId)
     );
 
-    yield* this._interleaveGenerators(generators);
+    yield* this._interleaveGenerators(generators, this._activeRuns.get(sessionId)?.signal);
   }
 
   /**
    * B1: Iterate an async generator with a resettable silence timeout.
-   * If no chunk is received for `timeoutMs`, rejects with an error.
+   * If no chunk is received for `timeoutMs`, rejects with an error. A null
+   * timeout applies cancellation alone to the outer session iterator.
    */
   private async *_iterateWithSilenceTimeout<T>(
     generator: AsyncGenerator<T>,
-    timeoutMs: number = BRAINSTORM_SILENCE_TIMEOUT_MS
+    timeoutMs: number | null = BRAINSTORM_SILENCE_TIMEOUT_MS,
+    signal?: AbortSignal
   ): AsyncGenerator<T> {
     const iterator = generator[Symbol.asyncIterator]();
-    while (true) {
-      const result = await Promise.race([
-        iterator.next(),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`Agent silent for ${Math.round(timeoutMs / 1000)}s — aborting`)), timeoutMs)
-        )
-      ]);
-      if (result.done) { return; }
-      yield result.value;
+    // Single resettable timer: cleared after every chunk (before re-arming) and on
+    // completion/error, so chatty streams don't accumulate one live timer per chunk.
+    let silenceTimer: ReturnType<typeof setTimeout> | undefined;
+    let completed = false;
+    let rejectPending: ((reason: unknown) => void) | undefined;
+    const onAbort = () => rejectPending?.(signal?.reason);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    const clearSilenceTimer = () => {
+      if (silenceTimer !== undefined) {
+        clearTimeout(silenceTimer);
+        silenceTimer = undefined;
+      }
+    };
+    try {
+      while (true) {
+        signal?.throwIfAborted();
+        const pending: Promise<IteratorResult<T>>[] = [];
+        if (signal) {
+          // Keep only the current wait reachable from the abort listener. A
+          // shared never-settling abort promise accumulates a race per chunk.
+          pending.push(new Promise<never>((_, reject) => { rejectPending = reject; }));
+        }
+        // next() executes source code synchronously until its first await; it
+        // may trigger Stop itself. The abort receiver must already be armed.
+        pending.push(iterator.next());
+        if (timeoutMs !== null) {
+          pending.push(new Promise<never>((_, reject) => {
+            silenceTimer = setTimeout(() => reject(new Error(`Agent silent for ${Math.round(timeoutMs / 1000)}s — aborting`)), timeoutMs);
+          }));
+        }
+        const result = await Promise.race(pending);
+        rejectPending = undefined;
+        clearSilenceTimer();
+        signal?.throwIfAborted();
+        if (result.done) {
+          completed = true;
+          return;
+        }
+        yield result.value;
+      }
+    } finally {
+      clearSilenceTimer();
+      rejectPending = undefined;
+      signal?.removeEventListener('abort', onAbort);
+      if (!completed) {
+        // return() can remain queued behind a provider's hung next(). Request
+        // cleanup without waiting; cancelRequest terminates its process.
+        try {
+          void iterator.return?.(undefined)?.catch(() => { /* cleanup errors are non-fatal */ });
+        } catch { /* synchronous cleanup errors are non-fatal */ }
+      }
+    }
+  }
+
+  /**
+   * Composite panel key for a brainstorm child stream. Dispatching children
+   * under their own key (not the parent panelId) is what makes cancelSession's
+   * composite cancels land on real processes (S1) and keeps brainstorm from
+   * resuming the panel's main chat session when an agent equals the panel's
+   * provider (S4).
+   */
+  private _childPanelId(sessionId: string, agentId: AgentType): string {
+    return `${sessionId}-brainstorm-${agentId}`;
+  }
+
+  /**
+   * Brainstorm children are analysis-only: force read-only access so the
+   * provider's CLI-level permission mode is the enforcement. The stream-level
+   * tool-use gate is NOT wired on the brainstorm path, so anything looser
+   * here would let agents write files/run commands with no prompts (S2).
+   */
+  private _childSettings(settings: Settings, agentId: AgentType): Settings {
+    return {
+      ...settings,
+      provider: agentId,
+      model: this._providerManager.getProviderDefaultModel(agentId),
+      accessLevel: 'read-only'
+    };
+  }
+
+  /**
+   * Record a child dispatch on the session (deduped) so cancel/teardown can
+   * reach every child — including a synthesis agent that isn't in `agents`.
+   */
+  private _registerChild(sessionId: string, agentId: AgentType): string {
+    this._activeRuns.get(sessionId)?.signal.throwIfAborted();
+    const childPanelId = this._childPanelId(sessionId, agentId);
+    const session = this._panelSessions.get(sessionId);
+    if (session) {
+      session.childPanels = session.childPanels || [];
+      if (!session.childPanels.some(c => c.panelId === childPanelId)) {
+        session.childPanels.push({ panelId: childPanelId, providerId: agentId });
+      }
+    }
+    return childPanelId;
+  }
+
+  /** Every strategy/phase uses the same explicit parent approval destination. */
+  private async *_sendChildMessage(
+    sessionId: string,
+    agentId: AgentType,
+    prompt: string,
+    context: ContextItem[],
+    settings: Settings,
+    persona?: PersonaConfig
+  ): AsyncGenerator<import('../types').StreamChunk> {
+    const controller = this._activeRuns.get(sessionId);
+    controller?.signal.throwIfAborted();
+    const parent = controller ? this._nativeApprovals.get(controller) : undefined;
+    const childPanelId = this._registerChild(sessionId, agentId);
+    let active = true;
+    const registration = this._providerManager.setNativeApprovalHandlerForPanel(childPanelId, async request => {
+      if (!active || controller?.signal.aborted || request.signal.aborted) { return 'cancelled'; }
+      if (request.panelId !== childPanelId || request.defaultDecision === 'deny' || !parent) { return false; }
+      const approved = await parent({ ...request, panelId: sessionId });
+      return active && !controller?.signal.aborted && !request.signal.aborted ? approved : 'cancelled';
+    });
+    const retire = () => {
+      active = false;
+      registration.dispose();
+      controller?.signal.removeEventListener('abort', retire);
+    };
+    controller?.signal.addEventListener('abort', retire, { once: true });
+    try {
+      controller?.signal.throwIfAborted();
+      yield* this._providerManager.sendMessageToProvider(
+        agentId, prompt, context, this._childSettings(settings, agentId), null, persona, childPanelId
+      );
+    } finally {
+      retire();
     }
   }
 
@@ -864,22 +1029,18 @@ export class BrainstormManager {
   ): AsyncGenerator<BrainstormStreamChunk> {
     const session = this._panelSessions.get(sessionId)!;
     const agentResponse = session.agentResponses.get(agent.id)!;
+    const signal = this._activeRuns.get(sessionId)?.signal;
     agentResponse.status = 'streaming';
 
     try {
-      const stream = this._providerManager.sendMessageToProvider(
-        agent.id,
-        query,
-        context,
-        { ...settings, provider: agent.id, model: this._providerManager.getProviderDefaultModel(agent.id) },
-        null,
-        agent.persona,
-        sessionId
-      );
+      const stream = this._sendChildMessage(sessionId, agent.id, query, context, settings, agent.persona);
 
       let agentUsage: import('../types').UsageStats | undefined;
+      // Providers emit tool_use twice per tool (start/stop pair) — surface
+      // each tool invocation once.
+      const surfacedToolIds = new Set<string>();
       // B1: Wrap with silence-based timeout
-      for await (const chunk of this._iterateWithSilenceTimeout(stream)) {
+      for await (const chunk of this._iterateWithSilenceTimeout(stream, BRAINSTORM_SILENCE_TIMEOUT_MS, signal)) {
         if (chunk.type === 'text' && chunk.content) {
           agentResponse.content += chunk.content;
           yield {
@@ -894,16 +1055,24 @@ export class BrainstormManager {
             agentId: agent.id,
             content: chunk.content
           };
+        } else if (chunk.type === 'tool_use') {
+          // S2 visibility: children run read-only (enforced via _childSettings),
+          // but tool activity must still be visible in the timeline, not
+          // silently dropped. Ride the thinking channel — it renders per-agent
+          // and never feeds the synthesis input (agentResponse.content).
+          const toolKey = chunk.toolCall?.id || `${surfacedToolIds.size}`;
+          if (!surfacedToolIds.has(toolKey)) {
+            surfacedToolIds.add(toolKey);
+            yield {
+              type: 'agent_thinking',
+              agentId: agent.id,
+              content: `\n[tool] ${chunk.toolCall?.name || 'tool'}\n`
+            };
+          }
         } else if (chunk.type === 'done' && chunk.usage) {
           agentUsage = chunk.usage;
         } else if (chunk.type === 'error') {
-          agentResponse.status = 'error';
-          yield {
-            type: 'agent_error',
-            agentId: agent.id,
-            content: chunk.content
-          };
-          return;
+          throw new Error(chunk.content || `Agent ${agent.id} reported an error`);
         }
       }
 
@@ -915,6 +1084,8 @@ export class BrainstormManager {
       };
 
     } catch (error) {
+      if (signal?.aborted) { throw error; }
+      this._providerManager.cancelRequest(this._childPanelId(sessionId, agent.id));
       agentResponse.status = 'error';
       yield {
         type: 'agent_error',
@@ -936,19 +1107,12 @@ export class BrainstormManager {
     role: DiscussionRole,
     roundNumber: number
   ): AsyncGenerator<BrainstormStreamChunk> {
+    const signal = this._activeRuns.get(sessionId)?.signal;
     try {
-      const stream = this._providerManager.sendMessageToProvider(
-        agent.id,
-        prompt,
-        context,
-        { ...settings, provider: agent.id, model: this._providerManager.getProviderDefaultModel(agent.id) },
-        null,
-        agent.persona,
-        sessionId
-      );
+      const stream = this._sendChildMessage(sessionId, agent.id, prompt, context, settings, agent.persona);
 
       // B1: Wrap with silence-based timeout
-      for await (const chunk of this._iterateWithSilenceTimeout(stream)) {
+      for await (const chunk of this._iterateWithSilenceTimeout(stream, BRAINSTORM_SILENCE_TIMEOUT_MS, signal)) {
         if (chunk.type === 'text' && chunk.content) {
           yield {
             type: 'discussion_text',
@@ -957,10 +1121,14 @@ export class BrainstormManager {
             discussionRole: role,
             roundNumber
           };
+        } else if (chunk.type === 'error') {
+          throw new Error(chunk.content || `Discussion agent ${agent.id} reported an error`);
         }
       }
 
     } catch (error) {
+      if (signal?.aborted) { throw error; }
+      this._providerManager.cancelRequest(this._childPanelId(sessionId, agent.id));
       yield {
         type: 'discussion_error',
         agentId: agent.id,
@@ -981,34 +1149,42 @@ export class BrainstormManager {
     sessionId: string
   ): AsyncGenerator<BrainstormStreamChunk> {
     const session = this._panelSessions.get(sessionId)!;
+    const signal = this._activeRuns.get(sessionId)?.signal;
     const synthesisPrompt = this._buildSynthesisPrompt(sessionId);
 
     console.log(`[Mysti] Brainstorm: Synthesis by ${synthesisAgentId}`);
 
     try {
-      const stream = this._providerManager.sendMessageToProvider(
-        synthesisAgentId,
-        synthesisPrompt,
-        context,
-        { ...settings, provider: synthesisAgentId, model: this._providerManager.getProviderDefaultModel(synthesisAgentId) },
-        null,
-        undefined,
-        sessionId
-      );
+      const stream = this._sendChildMessage(sessionId, synthesisAgentId, synthesisPrompt, context, settings);
 
       let synthesis = '';
-      for await (const chunk of stream) {
+      // 5.1: wrap in the silence timeout like every other brainstorm stream
+      // (a hung synthesis previously stalled to the 5-min process timeout),
+      // and treat a streamed 'error' chunk OR an empty accumulated synthesis
+      // at stream end as failure — providers surface CLI failures as
+      // {type:'error'} chunks, not throws, so an error-only stream completed
+      // "normally" with an empty synthesis and the fallback chain never fired.
+      for await (const chunk of this._iterateWithSilenceTimeout(stream, BRAINSTORM_SILENCE_TIMEOUT_MS, signal)) {
         if (chunk.type === 'text' && chunk.content) {
           synthesis += chunk.content;
           yield {
             type: 'synthesis_text',
             content: chunk.content
           };
+        } else if (chunk.type === 'error') {
+          throw new Error(chunk.content || `Synthesis agent ${synthesisAgentId} reported an error`);
         }
+      }
+      if (!synthesis.trim()) {
+        throw new Error(`Synthesis agent ${synthesisAgentId} returned an empty synthesis`);
       }
 
       session.unifiedSolution = synthesis;
     } catch (error) {
+      if (signal?.aborted) { throw error; }
+      // W4 review: a silence-timeout abandons the stream but the child CLI
+      // kept running — cancel it before failing over.
+      this._providerManager.cancelRequest(this._childPanelId(sessionId, synthesisAgentId));
       // B3: Notify UI before attempting fallback
       console.warn(`[Mysti] Brainstorm: Synthesis agent ${synthesisAgentId} failed, trying fallback`);
       const fallbackAgent = session.agents.find(a => a.id !== synthesisAgentId);
@@ -1019,27 +1195,28 @@ export class BrainstormManager {
           content: `Primary synthesis agent (${synthesisAgentId}) failed. Retrying with ${fallbackAgent.displayName}...`
         };
         try {
-          const fallbackStream = this._providerManager.sendMessageToProvider(
-            fallbackAgent.id,
-            synthesisPrompt,
-            context,
-            { ...settings, provider: fallbackAgent.id, model: this._providerManager.getProviderDefaultModel(fallbackAgent.id) },
-            null,
-            undefined,
-            sessionId
-          );
+          const fallbackStream = this._sendChildMessage(sessionId, fallbackAgent.id, synthesisPrompt, context, settings);
 
           let synthesis = '';
-          for await (const chunk of fallbackStream) {
+          // 5.1: same hardening as the primary loop — silence timeout, error
+          // chunks and empty output all fail over to the concatenation path.
+          for await (const chunk of this._iterateWithSilenceTimeout(fallbackStream, BRAINSTORM_SILENCE_TIMEOUT_MS, signal)) {
             if (chunk.type === 'text' && chunk.content) {
               synthesis += chunk.content;
               yield { type: 'synthesis_text', content: chunk.content };
+            } else if (chunk.type === 'error') {
+              throw new Error(chunk.content || `Fallback synthesis agent ${fallbackAgent.id} reported an error`);
             }
+          }
+          if (!synthesis.trim()) {
+            throw new Error(`Fallback synthesis agent ${fallbackAgent.id} returned an empty synthesis`);
           }
           session.unifiedSolution = synthesis;
           return;
-        } catch {
-          // Both failed
+        } catch (error) {
+          if (signal?.aborted) { throw error; }
+          // Both failed — cancel the abandoned fallback child too (W4 review).
+          this._providerManager.cancelRequest(this._childPanelId(sessionId, fallbackAgent.id));
         }
       }
 
@@ -1527,9 +1704,17 @@ Your updated recommendation incorporating insights from the facilitator summary.
   // ============================================================================
 
   /**
-   * Assess convergence after a discussion round using heuristic analysis
+   * Assess convergence after a discussion round using heuristic analysis.
+   *
+   * @param roundStride How many entries back in `session.discussionRounds`
+   *   the previous COMPARABLE round lives (5.3b). Debate/red-team push one
+   *   entry per round → stride 1 compares consecutive rounds. Delphi pushes
+   *   facilitator/refiner PAIRS per round → stride 2 compares an agent's
+   *   refinement with its previous refinement (same agent, same role) instead
+   *   of with the facilitator's summary. The oscillation check (B4) uses
+   *   2×stride for the same reason.
    */
-  private _assessConvergence(sessionId: string, round: number): ConvergenceMetrics {
+  private _assessConvergence(sessionId: string, round: number, roundStride: number = 1): ConvergenceMetrics {
     const session = this._panelSessions.get(sessionId)!;
     const lastRound = session.discussionRounds[session.discussionRounds.length - 1];
 
@@ -1561,9 +1746,10 @@ Your updated recommendation incorporating insights from the facilitator summary.
           if (matches) {disagreementCount += matches.length;}
         }
 
-        // Position stability: compare with previous round contribution
-        if (session.discussionRounds.length >= 2) {
-          const prevRound = session.discussionRounds[session.discussionRounds.length - 2];
+        // Position stability: compare with the previous COMPARABLE round's
+        // contribution (stride entries back — see roundStride doc above).
+        if (session.discussionRounds.length >= 1 + roundStride) {
+          const prevRound = session.discussionRounds[session.discussionRounds.length - 1 - roundStride];
           const prevContribution = prevRound.contributions.get(agentId);
           if (prevContribution && prevContribution.trim()) {
             positionStability.set(agentId, this._calculateTextSimilarity(prevContribution, contribution));
@@ -1577,14 +1763,28 @@ Your updated recommendation incorporating insights from the facilitator summary.
     const agreementRatio = hasEmptyContribution ? 0.5 : (total > 0 ? agreementCount / total : 0.5);
 
     const stabilityValues = Array.from(positionStability.values());
-    const avgStability = stabilityValues.length > 0
+    // 5.3a: with no cross-round stability data (e.g. the first assessed
+    // round), EXCLUDE stability instead of fabricating a 0.5 neutral — the
+    // old default both dragged the score down and made the 0.8 stability
+    // gate unreachable, so a 2-round debate could never report 'converged'.
+    const hasStability = stabilityValues.length > 0;
+    const avgStability = hasStability
       ? stabilityValues.reduce((a, b) => a + b, 0) / stabilityValues.length
       : 0.5;
 
-    const overallConvergence = (agreementRatio * 0.6) + (avgStability * 0.4);
+    const overallConvergence = hasStability
+      ? (agreementRatio * 0.6) + (avgStability * 0.4)
+      : agreementRatio; // documented: agreement-ratio-only score when stability is unknowable
 
     let recommendation: 'continue' | 'converged' | 'stalled' = 'continue';
-    if (!hasEmptyContribution && agreementRatio >= 0.7 && avgStability >= 0.8) {
+    // W4 review: 'converged' REQUIRES cross-round stability evidence — waiving
+    // it when absent let a debate end after the very first assessed round on
+    // agreement keywords alone (critiques are full of "I agree… but"),
+    // skipping the rebuttal phase entirely. Without stability data the honest
+    // recommendation is 'continue'; the score above still reports the
+    // agreement-only number to the UI. At the default maxDiscussionRounds=2
+    // the final round HAS stability data, so 'converged' stays reachable.
+    if (!hasEmptyContribution && agreementRatio >= 0.7 && hasStability && avgStability >= 0.8) {
       recommendation = 'converged';
     } else if (session.convergenceHistory.length >= 2) {
       const prevConvergence = session.convergenceHistory[session.convergenceHistory.length - 1];
@@ -1593,8 +1793,9 @@ Your updated recommendation incorporating insights from the facilitator summary.
         recommendation = 'stalled';
       }
       // B4: Detect oscillation — round N similar to round N-2 but different from N-1
-      if (recommendation === 'continue' && session.discussionRounds.length >= 3) {
-        const twoRoundsAgo = session.discussionRounds[session.discussionRounds.length - 3];
+      // (comparable rounds are `roundStride` entries apart, so N-2 comparable = 2×stride back)
+      if (recommendation === 'continue' && session.discussionRounds.length >= 1 + 2 * roundStride) {
+        const twoRoundsAgo = session.discussionRounds[session.discussionRounds.length - 1 - 2 * roundStride];
         let oscillating = true;
         for (const [agentId, contribution] of lastRound.contributions.entries()) {
           const oldContribution = twoRoundsAgo.contributions.get(agentId);
@@ -1664,56 +1865,104 @@ Your updated recommendation incorporating insights from the facilitator summary.
   /**
    * Interleave chunks from multiple async generators
    * Uses result queue to capture all completions and prevent race condition data loss
+   *
+   * 5.4 hardening:
+   * (a) every child `next()` carries a rejection handler — a child that
+   *     rejects (children normally catch their own errors, so this is
+   *     defense-in-depth) is converted to a terminal result plus one
+   *     agent_error chunk, instead of killing the whole interleave and
+   *     orphaning the sibling's pending promise as an unhandled rejection;
+   * (b) try/finally — when the CONSUMER breaks/returns (or a yield throws),
+   *     every still-active child generator gets `.return()` so it isn't left
+   *     suspended at a yield forever.
    */
   private async *_interleaveGenerators(
-    generators: AsyncGenerator<BrainstormStreamChunk>[]
+    generators: AsyncGenerator<BrainstormStreamChunk>[],
+    signal?: AbortSignal
   ): AsyncGenerator<BrainstormStreamChunk> {
     type IteratorType = AsyncIterator<BrainstormStreamChunk>;
-    type ResultType = { iterator: IteratorType; result: IteratorResult<BrainstormStreamChunk> };
+    type ResultType = {
+      iterator: IteratorType;
+      result: IteratorResult<BrainstormStreamChunk>;
+      /** 5.4a: set when the child REJECTED instead of yielding — terminal for that child. */
+      failed?: boolean;
+      error?: unknown;
+    };
 
     const iterators = generators.map(g => g[Symbol.asyncIterator]());
     const active = new Set<IteratorType>(iterators);
 
     // Queue to store completed results (prevents race condition data loss)
     const resultQueue: ResultType[] = [];
-
-    // Start all iterators
     const pending = new Map<IteratorType, Promise<ResultType>>();
-    for (const iterator of iterators) {
+
+    // Advance one child, capturing rejection as a terminal per-child result
+    // (5.4a) so the chain itself can never reject.
+    const advance = (iterator: IteratorType): Promise<ResultType> => {
       const promise = iterator.next()
-        .then(result => ({ iterator, result }))
+        .then(
+          (result): ResultType => ({ iterator, result }),
+          (error): ResultType => ({
+            iterator,
+            result: { done: true, value: undefined },
+            failed: true,
+            error
+          })
+        )
         .then(r => {
           resultQueue.push(r);
           return r;
         });
       pending.set(iterator, promise);
+      return promise;
+    };
+
+    // Start all iterators
+    for (const iterator of iterators) {
+      advance(iterator);
     }
 
-    while (active.size > 0) {
-      const activePending = Array.from(active)
-        .filter(it => pending.has(it))
-        .map(it => pending.get(it)!);
+    try {
+      while (active.size > 0) {
+        signal?.throwIfAborted();
+        const activePending = Array.from(active)
+          .filter(it => pending.has(it))
+          .map(it => pending.get(it)!);
 
-      if (activePending.length === 0) {break;}
+        if (activePending.length === 0) {break;}
 
-      await Promise.race(activePending);
+        await Promise.race(activePending);
+        signal?.throwIfAborted();
 
-      while (resultQueue.length > 0) {
-        const { iterator, result } = resultQueue.shift()!;
-        pending.delete(iterator);
+        while (resultQueue.length > 0) {
+          const { iterator, result, failed, error } = resultQueue.shift()!;
+          pending.delete(iterator);
 
-        if (result.done) {
-          active.delete(iterator);
-        } else {
-          yield result.value;
-          const promise = iterator.next()
-            .then(r => ({ iterator, result: r }))
-            .then(r => {
-              resultQueue.push(r);
-              return r;
-            });
-          pending.set(iterator, promise);
+          if (failed) {
+            // 5.4a: terminal for this child only — the sibling keeps streaming.
+            active.delete(iterator);
+            console.error('[Mysti] Brainstorm: Interleaved agent stream rejected', error);
+            yield {
+              type: 'agent_error',
+              content: error instanceof Error ? error.message : 'Agent stream failed unexpectedly'
+            };
+          } else if (result.done) {
+            active.delete(iterator);
+          } else {
+            yield result.value;
+            advance(iterator);
+          }
         }
+      }
+    } finally {
+      // 5.4b: close any child still suspended at a yield (consumer broke, or
+      // a yield above threw). Fire-and-forget — a hung child's return() may
+      // never settle, and cancellation is handled separately via
+      // cancelSession — but swallow rejections so none escape as unhandled.
+      for (const iterator of active) {
+        try {
+          void iterator.return?.(undefined)?.catch(() => { /* child cleanup errors are non-fatal */ });
+        } catch { /* synchronous return() failures are non-fatal */ }
       }
     }
   }
@@ -1723,23 +1972,70 @@ Your updated recommendation incorporating insights from the facilitator summary.
    */
   public cancelSession(panelId?: string): void {
     const sessionId = panelId || 'default';
+    this._activeRuns.get(sessionId)?.abort();
     const session = this._panelSessions.get(sessionId);
     if (session) {
       console.log('[Mysti] Brainstorm: Cancelling session for panel', sessionId);
-      // B9: Cancel the main session process AND each agent's process
+      // B9/S1: cancel the main session process AND every child actually
+      // dispatched (children run under composite keys, so these cancels
+      // resolve to the owning provider's live process). The agents-derived
+      // keys are kept as a backstop for sessions created before childPanels
+      // existed; the recorded set additionally covers a synthesis agent
+      // that isn't one of the two participants.
       this._providerManager.cancelRequest(sessionId);
+      const childIds = new Set<string>(
+        (session.childPanels || []).map(c => c.panelId)
+      );
       for (const agent of session.agents) {
-        this._providerManager.cancelRequest(`${sessionId}-brainstorm-${agent.id}`);
+        childIds.add(this._childPanelId(sessionId, agent.id));
+      }
+      for (const childId of childIds) {
+        this._providerManager.cancelRequest(childId);
       }
       session.phase = 'complete';
+      // Stop = unclean end: also retire the children's CLI sessions so the
+      // next brainstorm can't --resume a mid-kill session. (Clean `done` ends
+      // deliberately KEEP the sessions — composite keys already isolate them
+      // from the main chat, and keeping them preserves cross-turn brainstorm
+      // continuity.)
+      this.disposeChildSessions(sessionId);
     }
   }
 
   /**
-   * Clear the session for a specific panel
+   * Dispose the provider-side sessions of every child this panel's brainstorm
+   * dispatched. Called when a session finishes (done/error) so the next
+   * brainstorm in the same panel starts fresh CLI sessions instead of
+   * resuming the previous brainstorm's, and so persistent-process providers
+   * (e.g. hermes) don't keep a live child process per finished session.
+   * Keeps the in-memory session record — the UI still reads it after `done`.
+   */
+  public disposeChildSessions(panelId?: string): void {
+    const sessionId = panelId || 'default';
+    const session = this._panelSessions.get(sessionId);
+    if (!session?.childPanels?.length) {
+      return;
+    }
+    for (const child of session.childPanels) {
+      // Target the recorded provider directly: the panel→provider map entry
+      // is dropped when a stream completes, so provider-resolving variants
+      // would fall back to the default provider and no-op.
+      this._providerManager.disposePersistentProcessForProvider(child.providerId, child.panelId);
+    }
+    session.childPanels = [];
+  }
+
+  /**
+   * Clear the session for a specific panel (panel dispose / new conversation):
+   * tear down child provider sessions, then drop the record.
    */
   public clearSession(panelId?: string): void {
     const sessionId = panelId || 'default';
+    if (this._activeRuns.has(sessionId)) {
+      this.cancelSession(sessionId);
+    } else {
+      this.disposeChildSessions(sessionId);
+    }
     this._panelSessions.delete(sessionId);
   }
 }

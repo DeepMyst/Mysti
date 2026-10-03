@@ -31,7 +31,7 @@
 
 <p align="center">
   <strong>Your AI Coding team for VSCode</strong><br>
-  <em>12 AI providers — Claude Code, Codex, Gemini, Copilot, Cline, Cursor, OpenClaw, Manus, OpenCode, Qwen Code, Ollama & LocalAI — working solo or in teams</em><br>
+  <em>15 AI providers — Claude Code, Codex, Gemini, Copilot, Cline, Cursor, OpenClaw, OpenCode, Qwen Code, Ollama, LocalAI, Hermes, Continue, OpenRouter & Kimi Code — working solo or in teams</em><br>
   <em>Wisdom of the crowd where the collective intelligence of several agents outperforms a single one.</em>
 </p>
 
@@ -54,9 +54,9 @@
 
 ## What's New in v0.4.0
 
-### 4 New Providers (12 Total)
+### Mysti and 15 Agent Backends
 
-Mysti now supports **12 AI providers** — added **OpenCode**, **Qwen Code**, **Ollama**, and **LocalAI** alongside Claude Code, Codex, Gemini, GitHub Copilot, Cline, Cursor, OpenClaw, and Manus. Run local models with Ollama/LocalAI or use cloud providers like OpenCode and Qwen Code. Each provider has its own authentic logo in the UI.
+Choose the Mysti coordinator or one of 15 registered backends: Claude Code, Codex, Gemini, Cline, GitHub Copilot, Cursor, OpenClaw, OpenCode, Qwen Code, Hermes, Kimi Code, Continue, Ollama, LocalAI, and OpenRouter. See the [provider guide](docs/PROVIDERS.md) for setup and permission limitations. Manus is not registered in this release.
 
 ### Qwen Code
 
@@ -95,7 +95,8 @@ ext install DeepMyst.mysti
 
 ## Choose Your AI
 
-Mysti works with the AI coding tools you already have. **No extra subscriptions needed.**
+Mysti connects the AI coding tools you already use through one interface.
+Authentication, model availability and usage charges depend on the selected provider.
 
 <p align="center">
   <img src="docs/gifs/agent switching.gif" alt="Agent Switching" width="450">
@@ -114,6 +115,10 @@ Mysti works with the AI coding tools you already have. **No extra subscriptions 
 | **Qwen Code** | Alibaba's AI coding agent, deep reasoning |
 | **Ollama** | Local LLM inference, privacy-first, no subscription |
 | **LocalAI** | Self-hosted AI models, full control |
+| **Hermes** | NousResearch's self-improving agent — skills, persistent memory, 300+ models via Nous Portal/OpenRouter |
+| **Continue** | Open-source coding agent (cn CLI) — hub assistants, custom rules, any model |
+| **OpenRouter** | Unified API to 300+ models (OpenAI-compatible) — free by default |
+| **Kimi Code** | Moonshot AI's terminal coding agent (kimi CLI) — Kimi K2.7 Code / K3, up to 1M context, via ACP |
 
 **Switch providers with one click. No lock-in.**
 
@@ -122,7 +127,7 @@ Mysti works with the AI coding tools you already have. **No extra subscriptions 
 | vs Copilot/Cursor | Mysti Advantage |
 |-------------------|-----------------|
 | Single AI | **Multi-agent brainstorming** — two AIs collaborate with 5 strategies |
-| Locked to one provider | **12 providers** — Claude, Codex, Gemini, Copilot, Cline, Cursor, OpenClaw, Manus, OpenCode, Qwen, Ollama, LocalAI |
+| Locked to one provider | **15 providers** — Claude, Codex, Gemini, Copilot, Cline, Cursor, OpenClaw, OpenCode, Qwen, Ollama, LocalAI, Hermes, Continue, OpenRouter, Kimi Code |
 | Black box | **Full permission control** — read-only to full-access |
 | Generic responses | **16 personas** — architect, debugger, security expert... |
 | Manual workflow | **Autonomous mode** — AI works independently with safety controls |
@@ -148,7 +153,7 @@ Mysti works with the AI coding tools you already have. **No extra subscriptions 
 
 ## Brainstorm Mode
 
-**Want a second opinion?** Enable Brainstorm Mode and let two AI agents tackle your problem together. **Choose any 2 of 12 agents** from the settings panel.
+**Want a second opinion?** Enable Brainstorm Mode and let two AI agents tackle your problem together. **Choose two available agents** from the settings panel.
 
 <p align="center">
   <img src="docs/gifs/brainstorm example.gif" alt="Brainstorm Mode" width="700">
@@ -334,25 +339,26 @@ Fine-tune every aspect of Mysti including token budgets, access levels, and brai
 
 ## Requirements
 
-**Already paying for Claude, ChatGPT, Gemini, or GitHub Copilot? You're ready to go.**
-
-Mysti works with your existing subscriptions—no additional costs!
+Use a VS Code version supported by `engines.vscode` in [package.json](package.json)
+and configure a supported backend. Check that backend's authentication and usage
+requirements; subscription access and API access may differ.
 
 | CLI Tool | Subscription | Install |
 |----------|--------------|---------|
 | **Claude Code** (recommended) | Anthropic API or Claude Pro/Max | `npm install -g @anthropic-ai/claude-code` |
-| **GitHub Copilot CLI** | GitHub Copilot Pro/Pro+/Business | `npm install -g @github/copilot-cli` |
+| **GitHub Copilot CLI** | GitHub Copilot Pro/Pro+/Business | `npm install -g @github/copilot` |
 | **Gemini CLI** | Google AI API or Gemini Advanced | `npm install -g @google/gemini-cli` |
-| **Codex CLI** | OpenAI API | Follow OpenAI's installation guide |
+| **Codex CLI** | OpenAI API | `npm install -g @openai/codex` |
 | **Cline** | Depends on model provider | `npm install -g cline` |
-| **Cursor** | Cursor subscription | `curl https://cursor.com/install -fsS \| bash` |
+| **Cursor** | Cursor subscription | macOS/Linux: `curl https://cursor.com/install -fsS \| bash` · Windows: `irm 'https://cursor.com/install?win32=true' \| iex` |
 | **OpenClaw** | OpenClaw account | `npm install -g openclaw@latest && openclaw onboard --install-daemon` |
 | **OpenCode** | Provider API keys (Anthropic, OpenAI, etc.) | `npm i -g opencode-ai@latest` |
 | **Qwen Code** | Qwen OAuth or API keys | `npm install -g @qwen-code/qwen-code@latest` |
 | **Ollama** | Local (no subscription needed) | [Install from ollama.com](https://ollama.com) |
-| **LocalAI** | Local (no subscription needed) | [Install from localai.io](https://localai.io) |
+| **LocalAI** | Local (no subscription needed) | [Docker / binaries](https://localai.io/basics/getting_started/) |
 
-You only need **one** CLI to get started. Install **any two** to unlock Brainstorm Mode.
+Configure **one** supported backend to get started. Brainstorm uses **two**
+available agents. HTTP providers such as OpenRouter do not require a provider CLI.
 
 ---
 
@@ -375,20 +381,20 @@ npm install -g @anthropic-ai/claude-code
 claude auth login
 
 # Or GitHub Copilot CLI (access Claude, GPT-5, Gemini via GitHub)
-npm install -g @github/copilot-cli
+npm install -g @github/copilot
 copilot  # then use /login command
 
 # Or Gemini CLI
 npm install -g @google/gemini-cli
-gemini auth login
+gemini
 
-# Or Cursor
+# Or Cursor (macOS/Linux; on Windows PowerShell: irm 'https://cursor.com/install?win32=true' | iex)
 curl https://cursor.com/install -fsS | bash
 agent login
 
 # Or OpenClaw
 npm install -g openclaw@latest && openclaw onboard --install-daemon
-openclaw login
+openclaw onboard
 
 # Or OpenCode
 npm i -g opencode-ai@latest
@@ -469,7 +475,7 @@ Stay in control of what the AI can do:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `mysti.defaultProvider` | `claude-code` | Primary AI provider |
-| `mysti.claudePath` | `claude` | Path to Claude CLI |
+| `mysti.claudeCodePath` | `claude` | Path to Claude CLI |
 | `mysti.codexPath` | `codex` | Path to Codex CLI |
 | `mysti.geminiPath` | `gemini` | Path to Gemini CLI |
 | `mysti.copilotPath` | `copilot` | Path to Copilot CLI |
@@ -541,13 +547,14 @@ Stay in control of what the AI can do:
 
 | Guide | Description |
 |-------|-------------|
-| [Providers](docs/PROVIDERS.md) | All 12 providers — setup, models, features |
+| [Providers](docs/PROVIDERS.md) | Provider setup, models and features |
 | [Brainstorm Mode](docs/BRAINSTORM.md) | 5 strategies, convergence, team selection |
 | [Personas & Skills](docs/PERSONAS-AND-SKILLS.md) | 16 personas, 12 skills, custom agents |
 | [Autonomous Mode](docs/AUTONOMOUS-MODE.md) | Safety system, memory, continuation modes |
 | [@-Mentions](docs/MENTIONS.md) | Agent routing and file context |
 | [Compaction](docs/COMPACTION.md) | Context management and summarization |
 | [Architecture](docs/ARCHITECTURE.md) | Technical internals and extension points |
+| [Maintenance](docs/MAINTENANCE.md) | Development checks, dependency updates and release verification |
 | [Features](docs/FEATURES.md) | Complete feature reference |
 
 ---
@@ -575,6 +582,7 @@ Thanks to everyone who has helped make Mysti better!
 <a href="https://github.com/MostlyKIGuess"><img src="https://avatars.githubusercontent.com/u/135974627?v=4" width="60" height="60" style="border-radius:50%" alt="MostlyKIGuess" /></a>
 <a href="https://github.com/a-programmers-programmer"><img src="https://avatars.githubusercontent.com/u/161260774?v=4" width="60" height="60" style="border-radius:50%" alt="a-programmers-programmer" /></a>
 <a href="https://github.com/patrick-fu"><img src="https://avatars.githubusercontent.com/u/20736775?v=4" width="60" height="60" style="border-radius:50%" alt="patrick-fu" /></a>
+<a href="https://github.com/3em0"><img src="https://avatars.githubusercontent.com/u/59153706?v=4" width="60" height="60" style="border-radius:50%" alt="3em0" /></a>
 
 Want to join them? Check out the [Contributing](#contributing) section below.
 
@@ -603,7 +611,7 @@ If Mysti has been useful to you, consider giving it a star — it helps others d
 We welcome contributions! Whether it's bug reports, feature requests, or code contributions.
 
 - **Good First Issues**: Look for [`good first issue`](https://github.com/DeepMyst/Mysti/labels/good%20first%20issue) labels
-- **Development**: Press `F5` in VS Code to launch Extension Development Host
+- **Development**: Use Node from `.nvmrc`, run `npm ci` and `npm run watch`, then press `F5` in VS Code
 - **Pull Requests**: Fork, create a feature branch, and submit a PR
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.

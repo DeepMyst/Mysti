@@ -332,7 +332,7 @@ Mystiは既存のサブスクリプションで動作 — 追加コストなし�
 | CLIツール | サブスクリプション | インストール |
 |----------|-------------------|-------------|
 | **Claude Code**（推奨） | Anthropic API または Claude Pro/Max | `npm install -g @anthropic-ai/claude-code` |
-| **GitHub Copilot CLI** | GitHub Copilot Pro/Pro+/Business | `npm install -g @github/copilot-cli` |
+| **GitHub Copilot CLI** | GitHub Copilot Pro/Pro+/Business | `npm install -g @github/copilot` |
 | **Gemini CLI** | Google AI API または Gemini Advanced | `npm install -g @google/gemini-cli` |
 | **Codex CLI** | OpenAI API | OpenAIのインストールガイドに従う |
 | **Cline** | モデルプロバイダーに依存 | `npm install -g cline` |
@@ -366,12 +366,12 @@ npm install -g @anthropic-ai/claude-code
 claude auth login
 
 # または GitHub Copilot CLI（GitHubからClaude、GPT-5、Geminiにアクセス）
-npm install -g @github/copilot-cli
+npm install -g @github/copilot
 copilot  # その後 /login コマンドを使用
 
 # または Gemini CLI
 npm install -g @google/gemini-cli
-gemini auth login
+gemini
 
 # または Cursor
 curl https://cursor.com/install -fsS | bash
@@ -379,7 +379,7 @@ agent login
 
 # または OpenClaw
 npm install -g openclaw@latest && openclaw onboard --install-daemon
-openclaw login
+openclaw onboard
 
 # または OpenCode
 npm i -g opencode-ai@latest
@@ -460,7 +460,7 @@ AIの操作権限を制御：
 | 設定 | デフォルト | 説明 |
 |------|----------|------|
 | `mysti.defaultProvider` | `claude-code` | 主要AIプロバイダー |
-| `mysti.claudePath` | `claude` | Claude CLIパス |
+| `mysti.claudeCodePath` | `claude` | Claude CLIパス |
 | `mysti.codexPath` | `codex` | Codex CLIパス |
 | `mysti.geminiPath` | `gemini` | Gemini CLIパス |
 | `mysti.copilotPath` | `copilot` | Copilot CLIパス |

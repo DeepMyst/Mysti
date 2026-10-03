@@ -332,7 +332,7 @@ Mysti는 기존 구독으로 작동 — 추가 비용 없음!
 | CLI 도구 | 구독 | 설치 |
 |----------|------|------|
 | **Claude Code** (추천) | Anthropic API 또는 Claude Pro/Max | `npm install -g @anthropic-ai/claude-code` |
-| **GitHub Copilot CLI** | GitHub Copilot Pro/Pro+/Business | `npm install -g @github/copilot-cli` |
+| **GitHub Copilot CLI** | GitHub Copilot Pro/Pro+/Business | `npm install -g @github/copilot` |
 | **Gemini CLI** | Google AI API 또는 Gemini Advanced | `npm install -g @google/gemini-cli` |
 | **Codex CLI** | OpenAI API | OpenAI 설치 가이드 참조 |
 | **Cline** | 모델 프로바이더에 따라 다름 | `npm install -g cline` |
@@ -366,12 +366,12 @@ npm install -g @anthropic-ai/claude-code
 claude auth login
 
 # 또는 GitHub Copilot CLI (GitHub를 통해 Claude, GPT-5, Gemini 액세스)
-npm install -g @github/copilot-cli
+npm install -g @github/copilot
 copilot  # 그런 다음 /login 명령 사용
 
 # 또는 Gemini CLI
 npm install -g @google/gemini-cli
-gemini auth login
+gemini
 
 # 또는 Cursor
 curl https://cursor.com/install -fsS | bash
@@ -379,7 +379,7 @@ agent login
 
 # 또는 OpenClaw
 npm install -g openclaw@latest && openclaw onboard --install-daemon
-openclaw login
+openclaw onboard
 
 # 또는 OpenCode
 npm i -g opencode-ai@latest
@@ -460,7 +460,7 @@ AI가 할 수 있는 것을 제어:
 | 설정 | 기본값 | 설명 |
 |------|-------|------|
 | `mysti.defaultProvider` | `claude-code` | 기본 AI 프로바이더 |
-| `mysti.claudePath` | `claude` | Claude CLI 경로 |
+| `mysti.claudeCodePath` | `claude` | Claude CLI 경로 |
 | `mysti.codexPath` | `codex` | Codex CLI 경로 |
 | `mysti.geminiPath` | `gemini` | Gemini CLI 경로 |
 | `mysti.copilotPath` | `copilot` | Copilot CLI 경로 |

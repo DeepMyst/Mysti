@@ -1,0 +1,278 @@
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: var(--vscode-font-family);
+      font-size: var(--vscode-font-size);
+      color: var(--vscode-foreground);
+      background: var(--vscode-editor-background);
+      overflow: auto;
+    }
+
+    /* ── Header ── */
+    .vt-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 16px;
+      background: var(--vscode-sideBar-background);
+      border-bottom: 1px solid var(--vscode-panel-border);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    .vt-header-title {
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .vt-header-spacer { flex: 1; }
+    .vt-status-badge {
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 500;
+      text-transform: uppercase;
+    }
+    .vt-status-idle { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
+    .vt-status-running { background: #1a73e8; color: #fff; }
+    .vt-status-complete { background: #34a853; color: #fff; }
+    .vt-status-failed { background: #ea4335; color: #fff; }
+    .vt-status-cancelled { background: #9e9e9e; color: #fff; }
+
+    .vt-cancel-btn {
+      padding: 4px 12px;
+      border: 1px solid var(--vscode-button-border, transparent);
+      border-radius: 4px;
+      background: #ea4335;
+      color: #fff;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .vt-cancel-btn:hover { opacity: 0.9; }
+    .vt-cancel-btn.hidden { display: none; }
+
+    /* ── Config Form ── */
+    .vt-config {
+      max-width: 700px;
+      margin: 24px auto;
+      padding: 0 16px;
+    }
+    .vt-config.hidden { display: none; }
+    .vt-config h2 {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 16px;
+    }
+    .vt-form-group {
+      margin-bottom: 12px;
+    }
+    .vt-label {
+      display: block;
+      font-size: 12px;
+      font-weight: 500;
+      margin-bottom: 4px;
+      color: var(--vscode-descriptionForeground);
+    }
+    .vt-input, .vt-textarea, .vt-select {
+      width: 100%;
+      padding: 6px 8px;
+      border: 1px solid var(--vscode-input-border);
+      border-radius: 4px;
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      font-family: var(--vscode-font-family);
+      font-size: 13px;
+    }
+    .vt-textarea { resize: vertical; min-height: 80px; }
+    .vt-row { display: flex; gap: 12px; }
+    .vt-row .vt-form-group { flex: 1; }
+    .vt-checkbox-label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      cursor: pointer;
+      padding-top: 20px;
+    }
+    .vt-start-btn {
+      margin-top: 16px;
+      padding: 8px 24px;
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border: none;
+      border-radius: 4px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+    .vt-start-btn:hover { background: var(--vscode-button-hoverBackground); }
+
+    /* ── Progress View ── */
+    .vt-progress { display: none; padding: 16px; }
+    .vt-progress.active { display: block; }
+
+    .vt-main-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+    @media (max-width: 700px) {
+      .vt-main-grid { grid-template-columns: 1fr; }
+    }
+
+    /* Screenshot preview */
+    .vt-screenshot-panel {
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 6px;
+      overflow: hidden;
+      background: var(--vscode-editor-background);
+    }
+    .vt-screenshot-panel h3 {
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      background: var(--vscode-sideBar-background);
+      border-bottom: 1px solid var(--vscode-panel-border);
+    }
+    .vt-screenshot-container {
+      padding: 8px;
+      text-align: center;
+      min-height: 200px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--vscode-descriptionForeground);
+    }
+    .vt-screenshot-container img {
+      max-width: 100%;
+      max-height: 50vh;
+      border-radius: 4px;
+    }
+
+    /* Issues panel */
+    .vt-issues-panel {
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .vt-issues-panel h3 {
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      background: var(--vscode-sideBar-background);
+      border-bottom: 1px solid var(--vscode-panel-border);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .vt-issue-count {
+      background: var(--vscode-badge-background);
+      color: var(--vscode-badge-foreground);
+      padding: 1px 6px;
+      border-radius: 8px;
+      font-size: 11px;
+    }
+    .vt-issues-list {
+      max-height: 50vh;
+      overflow-y: auto;
+      padding: 4px 0;
+    }
+    .vt-issue-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 6px 12px;
+      font-size: 12px;
+      border-bottom: 1px solid var(--vscode-panel-border);
+    }
+    .vt-issue-item:last-child { border-bottom: none; }
+    .vt-severity {
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .vt-severity-critical { background: #ea4335; color: #fff; }
+    .vt-severity-major { background: #ff9800; color: #fff; }
+    .vt-severity-minor { background: #fbc02d; color: #000; }
+    .vt-severity-cosmetic { background: #90a4ae; color: #fff; }
+
+    /* Action Log */
+    .vt-action-log {
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 6px;
+      overflow: hidden;
+      margin-bottom: 16px;
+    }
+    .vt-action-log h3 {
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      background: var(--vscode-sideBar-background);
+      border-bottom: 1px solid var(--vscode-panel-border);
+    }
+    .vt-action-list {
+      max-height: 200px;
+      overflow-y: auto;
+      padding: 4px 0;
+    }
+    .vt-action-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 12px;
+      font-size: 12px;
+      font-family: var(--vscode-editor-font-family);
+      border-bottom: 1px solid var(--vscode-panel-border);
+    }
+    .vt-action-item:last-child { border-bottom: none; }
+    .vt-action-icon {
+      width: 14px;
+      flex-shrink: 0;
+      text-align: center;
+    }
+    .vt-action-icon.done { color: #34a853; }
+    .vt-action-icon.running { color: #1a73e8; }
+    .vt-action-badge {
+      padding: 0 4px;
+      border-radius: 3px;
+      font-size: 10px;
+      background: var(--vscode-badge-background);
+      color: var(--vscode-badge-foreground);
+    }
+
+    /* Report Summary */
+    .vt-report {
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 6px;
+      padding: 12px 16px;
+      display: none;
+    }
+    .vt-report.active { display: block; }
+    .vt-report-row {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .vt-verdict {
+      padding: 4px 12px;
+      border-radius: 4px;
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .vt-verdict-pass { background: #34a853; color: #fff; }
+    .vt-verdict-partial { background: #ff9800; color: #fff; }
+    .vt-verdict-fail { background: #ea4335; color: #fff; }
+    .vt-report-stat {
+      font-size: 12px;
+      color: var(--vscode-descriptionForeground);
+    }
+
+    .vt-empty-state {
+      color: var(--vscode-descriptionForeground);
+      font-size: 12px;
+      padding: 12px;
+      text-align: center;
+    }

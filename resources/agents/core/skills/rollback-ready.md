@@ -1,60 +1,56 @@
 ---
 id: rollback-ready
 name: Rollback Ready
-description: Structures changes to be easily reversible
-icon: rollback-ready.png
+description: Structures every change so it can be reversed in minutes — atomic commits, flags, and compatible migrations
+icon: recycle
 category: reliability
 activationTriggers:
   - rollback
-  - revert
-  - deploy
-  - release
-  - safe
+  - revert this
+  - safe deploy
+  - feature flag
+  - reversible change
+  - undo migration
+  - backwards compatible
+  - release safely
+  - canary rollout
 ---
 
-# Instructions
+## Instructions
 
-Structure changes to be easily reversible. Maintain clear checkpoints for safe rollback.
+Structure every change so it can be undone in minutes without data loss or coordination. Keep each commit atomic and independently revertable, guard risky code paths behind flags, and never couple a schema change to the code deploy that depends on it. Before finishing, state the exact rollback step for the change you just made.
 
 ## Behavioral Guidelines
 
-- Keep commits atomic and revertable
-- Use feature flags for risky changes
-- Deploy database changes separately
-- Maintain backwards compatibility during transitions
-- Test rollback procedures
-- Document rollback steps
+- Make each commit a single reversible unit — one concern, no drive-by refactors mixed with behavior changes
+- Gate new or risky code paths behind a feature flag with the old path intact as the fallback
+- Ship database changes expand-then-contract: add columns/tables first, migrate readers, drop only after the code no longer references them
+- Deploy schema changes in a separate release from the code that requires them, so either can roll back alone
+- Keep APIs and serialized formats backwards compatible during transitions — old and new versions must coexist
+- Write and verify the down migration or revert path, don't just assume `git revert` applies cleanly
+- Name the monitoring signal (error rate, metric, log line) that would trigger a rollback decision
+- Document rollback steps next to the change (PR description, runbook, or migration comment), not in your head
 
-## Rollback Patterns
+## Workflow
 
-### Feature Flags
+1. Land backwards-compatible groundwork first (schema additions, flag plumbing, dual-write)
+2. Ship the new path behind a flag, defaulted off
+3. Enable for a small percentage; watch errors and key metrics
+4. Ramp gradually; rollback = flip the flag, not redeploy
+5. Remove the old path and contract the schema only after a stable bake period
+
 ```typescript
-if (featureFlags.isEnabled('new-checkout-flow')) {
+// Old path stays intact — rollback is a flag flip, not a revert
+if (flags.isEnabled('new-checkout-flow')) {
   return newCheckoutFlow(cart);
 }
 return legacyCheckoutFlow(cart);
 ```
 
-### Database Migrations
-```sql
--- Up: Add new column (backwards compatible)
-ALTER TABLE users ADD COLUMN phone VARCHAR(20);
-
--- Down: Remove column (safe rollback)
-ALTER TABLE users DROP COLUMN phone;
-```
-
-### Deployment Strategy
-1. Deploy backwards-compatible changes
-2. Enable feature flag for small %
-3. Monitor metrics and errors
-4. Gradually increase rollout
-5. Remove old code path after stable
-
 ## Checklist
 
-- [ ] Changes are atomic and revertable
-- [ ] Database changes are backwards compatible
-- [ ] Feature flags protect risky changes
-- [ ] Rollback procedure documented
-- [ ] Monitoring in place for issues
+- [ ] Each commit is atomic and reverts cleanly on its own
+- [ ] Risky paths are flag-gated with the old path as fallback
+- [ ] Schema changes are additive and deployed separately from dependent code
+- [ ] Down migration / revert path exists and has been sanity-checked
+- [ ] Rollback trigger signal and steps are documented with the change

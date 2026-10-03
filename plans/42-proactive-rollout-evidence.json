@@ -1,0 +1,52 @@
+{
+  "date": "2026-10-03",
+  "pull_request": "https://github.com/DeepMyst/DeepMyst-2.0/pull/1013",
+  "commit": "d0b96be08ce159811727acfb7b8ef26f1a0b9ff2",
+  "api": {
+    "deployment": "dep-db0a0b8ae00c73edcfm0",
+    "status": "live",
+    "verification_job": "job-db0a2t6gekts738qbgb0",
+    "verification_status": "succeeded",
+    "health_http_status": 200,
+    "unauthenticated_proactive_http_status": 401,
+    "route_count": 5
+  },
+  "worker": {
+    "deployment": "dep-db0a0b8ae00c73edcgkg",
+    "status": "live",
+    "verification_job": "job-db0a2tegekts738qbgig",
+    "verification_status": "succeeded",
+    "cron_registered": true,
+    "production_tick_completed": true
+  },
+  "database": {
+    "migration_heads": [
+      "181p",
+      "182m"
+    ],
+    "tables": [
+      "proactive_insights",
+      "proactive_responsibilities"
+    ],
+    "point_in_time_recovery": "AVAILABLE",
+    "requested_logical_export_completion": "not_confirmed"
+  },
+  "tests": {
+    "new_proactive_passed": 7,
+    "backend_passed": 6302,
+    "backend_failed": 37,
+    "backend_skipped": 35,
+    "new_failed_test_ids_vs_production_baseline": [],
+    "frontend_ci": "passed",
+    "security_checks": "existing_baseline_failures"
+  },
+  "extension": {
+    "version": "0.5.1",
+    "installed_locally": true,
+    "reload_required": true,
+    "marketplace_published": false
+  },
+  "live_connected_account_pilot": "pending_explicit_resource_selection",
+  "watches_created_during_deployment": 0,
+  "proxy_credential": "existing_compatible_server_key_reused_on_api_and_worker; dedicated_rotation_pending"
+}

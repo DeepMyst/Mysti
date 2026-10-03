@@ -12,71 +12,199 @@
  */
 
 import type { PermissionActionType, Settings } from '../types';
+import { ACTION_TOOLS, READ_ONLY_TOOLS, classifyCanvasTool, parseToolName } from './toolNames';
+import { resolveCanvasApproval } from '../canvas/resolveCanvasApproval';
+import { ACCESS_LEVELS, OPERATION_MODES } from './settingsClamp';
 
-/**
- * Tool-name → action-type classification map.
- * Only explicitly known write/destructive tools are listed.
- * Unknown tools default to 'file-read' (safe, no gate) to avoid
- * blocking non-destructive tools like Agent, TodoRead, ToolSearch, etc.
- */
-const WRITE_TOOLS: Record<string, PermissionActionType> = {
-  // File edit tools
-  'Edit': 'file-edit',
-  'edit_file': 'file-edit',
-  'replace_in_file': 'file-edit',
-  'insert_code_block': 'file-edit',
-  'rename_file': 'file-edit',
-  'apply_diff': 'file-edit',
-  'apply_patch': 'file-edit',
-  'NotebookEdit': 'file-edit',
-  // File create tools
-  'Write': 'file-create',
-  'write_to_file': 'file-create',
-  'create_file': 'file-create',
-  // File delete tools
-  'delete_file': 'file-delete',
-  'remove_file': 'file-delete',
-  // Multi-file edit tools
-  'MultiEdit': 'multi-file-edit',
-  'multi_edit': 'multi-file-edit',
-  // Bash/command tools
-  'Bash': 'bash-command',
-  'bash': 'bash-command',
-  'shell': 'bash-command',
-  'execute_command': 'bash-command',
-  'run_terminal_command': 'bash-command',
-};
+// The tool-name vocabulary (alias maps, action map, read-only allowlist,
+// semantic kinds) lives in utils/toolNames.ts — the single tool-name/kind
+// authority shared by this permission gate and the webview renderer.
+// normalizeToolName is re-exported here so existing consumers keep working;
+// parseToolName is exported alongside it for callers that need the MCP
+// provenance (which server a namespaced call came from) and not just the
+// canonical name.
+export { normalizeToolName, parseToolName } from './toolNames';
+export type { ParsedToolName } from './toolNames';
 
 /**
  * Classify a tool name into a PermissionActionType.
+ *
+ * FAIL-CLOSED: unknown tool names classify as 'bash-command' (high risk) so
+ * the stream gate prompts for them whenever mode/access requires approval.
+ * Every CLI provider runs with its native permissions bypassed (--yolo,
+ * --allow-all-tools, --approval-mode auto-edit, --force), so a fail-open
+ * default here would let unrecognized write/shell tools execute silently.
  */
 export function classifyToolAction(toolName: string): PermissionActionType {
-  return WRITE_TOOLS[toolName] || 'file-read';
+  // Normalize FIRST: MCP backends namespace every tool as `mcp__<server>__<tool>`,
+  // which matched neither table and so fell through to the fail-closed default —
+  // `mcp__mysti-canvas__list_pages` (a pure artifact read) classified as
+  // `bash-command` (Plan 20 §3.6). The parse keeps the server segment so the
+  // canvas classes below can be scoped to canvas provenance.
+  const parsed = parseToolName(toolName);
+  const key = parsed.name.toLowerCase();
+
+  // Plan 20 §3.6: canvas ops get their own authority class. Checked before the
+  // generic tables so `delete_page`/`edit_page` are not mistaken for source-tree
+  // writes — and scoped by provenance + a boundary denylist inside
+  // `classifyCanvasTool`, so `generate_visual` and a look-alike tool on a
+  // third-party MCP server both stay out of the lenient classes.
+  const canvasAction = classifyCanvasTool(parsed);
+  if (canvasAction) {
+    return canvasAction;
+  }
+
+  const known = ACTION_TOOLS[key];
+  if (known) {
+    return known;
+  }
+
+  if (READ_ONLY_TOOLS.has(key)) {
+    return 'file-read';
+  }
+
+  // Heuristic bucketing for unrecognized names so the permission card shows
+  // a sensible action/risk label.
+  if (/delete|remove/.test(key)) {
+    return 'file-delete';
+  }
+  if (/write|create/.test(key)) {
+    return 'file-create';
+  }
+  if (/edit|patch|replace|apply/.test(key)) {
+    return 'file-edit';
+  }
+  if (/bash|shell|exec|command|terminal/.test(key)) {
+    return 'bash-command';
+  }
+  if (/web|fetch|http|url|browser|download/.test(key)) {
+    return 'web-request';
+  }
+
+  // Unknown tool: fail closed — treat as command-level risk so the gate fires.
+  return 'bash-command';
 }
 
 /**
  * Determine if a tool_use should be gated with a permission card.
  * Returns true when mode/access settings require user approval for write operations.
- * All providers bypass CLI-level permissions (piped stdin can't prompt interactively).
- * This stream-level gate is the sole enforcement point.
+ * Native approval transports consult this policy before replying to the CLI.
+ * Legacy stream gates also use it, but notifications alone cannot guarantee
+ * that execution waited for host approval.
+ *
+ * Only tools on the explicit read-only allowlist skip the gate; unknown tools
+ * are gated (fail-closed) whenever the mode/access combination requires approval.
  */
-export function shouldGateToolUse(settings: Settings, toolName: string): boolean {
-  // Never gate read operations
+export function shouldGateToolUse(settings: Pick<Settings, 'mode' | 'accessLevel'>, toolName: string): boolean {
+  // Never gate read-only operations (explicit allowlist)
   const actionType = classifyToolAction(toolName);
-  if (actionType === 'file-read') {
+  if (isNeverGatedAction(actionType)) {
     return false;
   }
 
-  // Gate when mode is ask-before-edit (regardless of access level)
+  // Plan 20 §3.6: a canvas edit NEVER raises a blocking modal. Its approval
+  // surface, when settings call for one, is the in-canvas accept/reject card
+  // produced by staged mode — see `permissionSurfaceForTool` /
+  // `resolveCanvasApproval`. Returning true here would both block the stream on
+  // a modal the plan explicitly rules out AND double-approve an op the executor
+  // has already staged.
+  if (actionType === 'canvas-edit') {
+    return false;
+  }
+
+  // "Ask" — gate every change (edits AND commands).
   if (settings.mode === 'ask-before-edit') {
     return true;
   }
 
-  // Gate when access is ask-permission and mode doesn't bypass
+  // "Auto-edit" (edit-automatically + ask-permission): file edits/creates
+  // auto-apply, but commands, deletes, and network requests still ask — the
+  // Claude-Code "accept edits" tier. Without this branch, edit-automatically
+  // would auto-run everything (which is the "Full access" tier instead).
+  if (settings.mode === 'edit-automatically' && settings.accessLevel === 'ask-permission') {
+    return actionType === 'bash-command'
+      || actionType === 'file-delete'
+      || actionType === 'web-request'
+      // Plan 15 Phase 0: delegation is not an "edit" — it must still be gated in
+      // the accept-edits tier (only explicit full-access/autonomous bypasses it).
+      || actionType === 'delegate';
+  }
+
+  // "Default"/legacy — gate when access is ask-permission and mode doesn't bypass.
   if (settings.accessLevel === 'ask-permission' && settings.mode !== 'edit-automatically') {
     return true;
   }
 
-  // Don't gate for edit-automatically + full-access, plan modes, read-only, etc.
+  // Plan 23 B1 — FAIL CLOSED on anything unrecognized.
+  //
+  // Every branch above compares against a string LITERAL, and this function
+  // used to end in a bare `return false`. So a `mode` or `accessLevel` outside
+  // the known set matched nothing and landed on "no gate" — the permissive
+  // outcome — even though every CLI provider runs with its native permissions
+  // bypassed. The `@mysti` coordinator is the sharpest case: MystiLocalExec's
+  // gate closure calls straight into here with no CLI beneath it, so for
+  // coordinator write/edit/bash this is a single-layer control.
+  //
+  // `normalizeAuthoritySettings` coerces these at the boundary; this is the
+  // belt to that pair of braces, and it is what keeps the property true for any
+  // caller that builds a Settings object by hand.
+  // Compared as plain strings on purpose: TypeScript has narrowed both unions
+  // by this point and would reject (or silently elide) a re-test, but the whole
+  // hazard is a runtime value that never belonged to the union.
+  const knownAccess = ACCESS_LEVELS.includes(settings.accessLevel as string);
+  const knownMode = OPERATION_MODES.includes(settings.mode as string);
+  if (!knownAccess || !knownMode) { return true; }
+
+  // "Full access" + edit-automatically, plan modes, read-only → not gated here
+  // (read-only/plan are enforced by the provider's CLI permission mode, and the
+  // coordinator refuses local execution outright in those tiers — see
+  // ChatViewProvider._mystiLocalExecEnabled).
   return false;
+}
+
+/**
+ * Action types that are NEVER gated, on any transport, under any settings:
+ * reading a file, and reading the canvas (Plan 20 §3.6 — reading a design the
+ * user is already looking at is not a privileged act).
+ *
+ * Exported because the gate is re-implemented in a couple of places that must
+ * not drift from it (notably the autonomous branch of
+ * `ChatViewProvider._shouldGateToolUse`, which previously compared against the
+ * literal `'file-read'` and so would have gated every canvas read).
+ */
+export function isNeverGatedAction(actionType: PermissionActionType): boolean {
+  return actionType === 'file-read' || actionType === 'canvas-read';
+}
+
+/** True for the two canvas-authority action types (Plan 20 §3.6). */
+export function isCanvasAction(actionType: PermissionActionType): boolean {
+  return actionType === 'canvas-read' || actionType === 'canvas-edit';
+}
+
+/**
+ * Where a tool call's approval must be shown, if anywhere.
+ *
+ * - `'none'`        — no approval needed; run it.
+ * - `'modal'`       — the existing blocking permission card
+ *                     (`requestPermissionInline`).
+ * - `'canvas-card'` — an in-canvas accept/reject on the staged op. NEVER a
+ *                     modal: the op is staged by `CanvasOpExecutor`, the
+ *                     artifact is untouched until the user accepts, and the run
+ *                     continues meanwhile.
+ *
+ * One call answers both "is approval required?" and "on which surface?", so a
+ * caller cannot accidentally render a canvas approval as a stream-blocking
+ * modal (or vice-versa).
+ */
+export type PermissionSurface = 'none' | 'modal' | 'canvas-card';
+
+export function permissionSurfaceForTool(settings: Settings, toolName: string): PermissionSurface {
+  const actionType = classifyToolAction(toolName);
+  if (actionType === 'canvas-read') {
+    return 'none';
+  }
+  if (actionType === 'canvas-edit') {
+    return resolveCanvasApproval(settings) === 'staged' ? 'canvas-card' : 'none';
+  }
+  return shouldGateToolUse(settings, toolName) ? 'modal' : 'none';
 }

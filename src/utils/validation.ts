@@ -14,17 +14,21 @@
 /**
  * Model name validation
  *
- * Allowed: letters, digits, dots, hyphens, underscores, colons, slashes.
- * Must start with a letter or digit.
+ * Allowed: letters, digits, dots, hyphens, underscores, colons, slashes,
+ * square brackets. Must start with a letter or digit.
  * Covers all known model ID formats:
  *   claude-sonnet-4-5-20250929, gpt-5.2, gemini-3-pro,
- *   org/model:variant, openrouter:anthropic/claude
+ *   org/model:variant, openrouter:anthropic/claude,
+ *   claude-opus-4-6[1m]  (bracketed 1M-context variants)
  *
- * Excludes shell metacharacters (; | & ` $ ( ) { } < > " ' \ ! # ~ * ? spaces newlines)
- * to prevent injection when BaseCliProvider runs with shell:true.
+ * Excludes shell metacharacters (; | & ` $ ( ) { } < > " ' \ ! # ~ * ? spaces
+ * newlines) to prevent injection when BaseCliProvider runs with shell:true.
+ * Square brackets ARE permitted — some model ids use them — and are glob
+ * characters, so the shell:true spawn path quotes the model arg (see
+ * BaseCliProvider arg handling).
  */
 export const MODEL_NAME_MAX_LENGTH = 128;
-export const MODEL_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._\-:/]*$/;
+export const MODEL_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._\-:/[\]]*$/;
 
 export function validateModelName(model: string): { valid: boolean; error?: string } {
   if (!model || model.trim().length === 0) {
@@ -35,7 +39,7 @@ export function validateModelName(model: string): { valid: boolean; error?: stri
     return { valid: false, error: `Model name too long (max ${MODEL_NAME_MAX_LENGTH} characters)` };
   }
   if (!MODEL_NAME_PATTERN.test(trimmed)) {
-    return { valid: false, error: 'Model name contains invalid characters. Use only letters, numbers, dots, hyphens, underscores, colons, and slashes.' };
+    return { valid: false, error: 'Model name contains invalid characters. Use only letters, numbers, dots, hyphens, underscores, colons, slashes, and square brackets.' };
   }
   return { valid: true };
 }

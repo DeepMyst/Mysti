@@ -82,6 +82,17 @@ export class ManusProvider extends BaseCliProvider {
     supportsToolUse: false,
     supportsSessions: true,
     supportsAutoInstall: false,
+    supportsPromptEnhancement: false,
+    // Plan 02 Phase 1 capability matrix — DORMANT provider (unregistered;
+    // Plan 02 Open Question 1 decides revive-or-delete). Conservative values.
+    thinkingStyle: 'none',
+    thinkingLevelEffective: false,
+    planMode: 'detected',
+    sessionKind: 'none',
+    emitsToolResults: false,
+    emitsUsage: false,
+    usageConvention: 'none',   // Legacy/unregistered.
+    modelSelection: 'full',
   };
 
   protected _createSession(panelId: string): ManusSessionState {
@@ -355,7 +366,9 @@ export class ManusProvider extends BaseCliProvider {
     return process.env.MANUS_API_KEY || '';
   }
 
-  private _getEffectiveModel(settings: Settings): string | undefined {
+  protected _getEffectiveModel(settings: Settings): string | undefined {
+    // P2.3/P0.2b: an explicitly routed model wins over the per-provider custom-model config.
+    if (settings.routedModel) { return settings.routedModel; }
     const config = vscode.workspace.getConfiguration('mysti');
     const customModel = config.get<string>('manusModel', '');
     if (customModel) {

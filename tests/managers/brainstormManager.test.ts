@@ -3,7 +3,7 @@
  * Simulates user scenarios with mocked providers to verify brainstorm mode behavior
  * for Claude Code, Gemini, and Codex.
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { clearMockConfig } from '../helpers/mockVscode';
 import { MockProviderManager, createMockStream } from '../helpers/mockProviderManager';
 import {
@@ -13,7 +13,7 @@ import {
   makeTextChunks,
   collectChunks
 } from '../helpers/brainstormFactory';
-import type { BrainstormStreamChunk, StreamChunk } from '../../src/types';
+import type { CollaborationStrategy, StreamChunk } from '../../src/types';
 import { BRAINSTORM_SILENCE_TIMEOUT_MS } from '../../src/constants';
 
 describe('BrainstormManager', () => {
@@ -22,6 +22,11 @@ describe('BrainstormManager', () => {
   beforeEach(() => {
     clearMockConfig();
     mockPM = new MockProviderManager();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   // =========================================================================
@@ -114,17 +119,176 @@ describe('BrainstormManager', () => {
       pm.setProviderChunks('google-gemini', makeTextChunks(['Gemini completed its analysis.']));
 
       const settings = createMockSettings();
-      const chunks = await collectChunks(manager.startBrainstormSession('Test query', [], settings, 'panel-timeout'));
 
-      // Should have an agent_error for claude-code
-      const errors = chunks.filter(c => c.type === 'agent_error' && c.agentId === 'claude-code');
-      expect(errors.length).toBe(1);
-      expect(errors[0].content).toContain('silent');
+      // FAKE timers. The hang is `await new Promise(() => {})` — never a timer —
+      // so the ONLY real clock here is the manager's own silence `setTimeout`.
+      // Waiting it out for real cost 90 s, which was ~98% of the entire suite's
+      // wall clock on three CI runners. advanceTimersByTimeAsync flushes
+      // microtasks between fires, so the async generator actually progresses;
+      // advanceTimersByTime (sync) would fire the timer and then deadlock on the
+      // generator's pending await.
+      vi.useFakeTimers();
+      try {
+        const pending = collectChunks(manager.startBrainstormSession('Test query', [], settings, 'panel-timeout'));
+        await vi.advanceTimersByTimeAsync(BRAINSTORM_SILENCE_TIMEOUT_MS + 1_000);
+        const chunks = await pending;
 
-      // Gemini should still complete
-      const geminiComplete = chunks.filter(c => c.type === 'agent_complete' && c.agentId === 'google-gemini');
-      expect(geminiComplete.length).toBe(1);
-    }, BRAINSTORM_SILENCE_TIMEOUT_MS + 30000); // Allow enough time for the timeout
+        // Should have an agent_error for claude-code
+        const errors = chunks.filter(c => c.type === 'agent_error' && c.agentId === 'claude-code');
+        expect(errors.length).toBe(1);
+        expect(errors[0].content).toContain('silent');
+
+        // Gemini should still complete
+        const geminiComplete = chunks.filter(c => c.type === 'agent_complete' && c.agentId === 'google-gemini');
+        expect(geminiComplete.length).toBe(1);
+        expect(pm.cancelledPanelIds).toContain('panel-timeout-brainstorm-claude-code');
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it.each(['silence', 'error'] as const)('cancels a failed discussion child on %s and still synthesizes', async (failure) => {
+      vi.useFakeTimers();
+      const { manager, mockPM: pm } = createTestBrainstormManager(mockPM);
+      configureBrainstorm({ agents: ['claude-code', 'google-gemini'], strategy: 'debate', maxRounds: 1, autoConverge: false, synthesisAgent: 'claude-code' });
+      pm.setProviderAvailable('claude-code');
+      pm.setProviderAvailable('google-gemini');
+      let calls = 0;
+      pm.streamFactories.set('claude-code', () => ++calls === 2
+        ? createMockStream(failure === 'error' ? [{ type: 'error', content: 'Discussion failed' }] : [], { hang: failure === 'silence' })
+        : createMockStream(makeTextChunks(['Analysis and synthesis'])));
+      pm.setProviderChunks('google-gemini', makeTextChunks(['Gemini analysis']));
+
+      const pending = collectChunks(manager.startBrainstormSession('q', [], createMockSettings(), 'panel-discussion-failure'));
+      await vi.advanceTimersByTimeAsync(BRAINSTORM_SILENCE_TIMEOUT_MS);
+      const chunks = await pending;
+      expect(chunks.filter(c => c.type === 'discussion_error' && c.agentId === 'claude-code')).toHaveLength(1);
+      expect(pm.cancelledPanelIds).toContain('panel-discussion-failure-brainstorm-claude-code');
+      expect(chunks.some(c => c.type === 'synthesis_text')).toBe(true);
+      expect(chunks.at(-1)?.type).toBe('done');
+      expect(vi.getTimerCount()).toBe(0);
+    });
+  });
+
+  // =========================================================================
+  // 3b. Silence timer cleanup — per-chunk timer leak fix (part of #31)
+  // =========================================================================
+  describe('Silence timer cleanup (#31 timer leak)', () => {
+    type SilenceIterable = {
+      _iterateWithSilenceTimeout<T>(gen: AsyncGenerator<T>, timeoutMs?: number | null, signal?: AbortSignal): AsyncGenerator<T>;
+    };
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    function getIterate(manager: unknown) {
+      const m = manager as SilenceIterable;
+      return m._iterateWithSilenceTimeout.bind(m);
+    }
+
+    async function* makeChunks(count: number): AsyncGenerator<number> {
+      for (let i = 0; i < count; i++) {
+        yield i;
+      }
+    }
+
+    it('should keep at most one live timer per chunk and clear all on completion', async () => {
+      vi.useFakeTimers();
+      const { manager } = createTestBrainstormManager(mockPM);
+      const iterate = getIterate(manager);
+
+      const received: number[] = [];
+      for await (const value of iterate(makeChunks(5), 1000)) {
+        received.push(value);
+        // Timer is cleared before each chunk is yielded — no accumulation across chunks.
+        // (The pre-fix implementation leaked one un-cleared 90s timer per chunk.)
+        expect(vi.getTimerCount()).toBe(0);
+      }
+      expect(received).toEqual([0, 1, 2, 3, 4]);
+      // No timers left pending after the generator completes
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('should clear the pending timer when the source generator throws', async () => {
+      vi.useFakeTimers();
+      const { manager } = createTestBrainstormManager(mockPM);
+      const iterate = getIterate(manager);
+
+      async function* failing(): AsyncGenerator<number> {
+        yield 1;
+        throw new Error('stream blew up');
+      }
+
+      const received: number[] = [];
+      await expect(async () => {
+        for await (const value of iterate(failing(), 1000)) {
+          received.push(value);
+        }
+      }).rejects.toThrow('stream blew up');
+
+      expect(received).toEqual([1]);
+      // The timer armed for the failed next() must have been cleared
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('should still abort after sustained silence (timeout policy unchanged)', async () => {
+      vi.useFakeTimers();
+      const { manager } = createTestBrainstormManager(mockPM);
+      const iterate = getIterate(manager);
+
+      async function* hanging(): AsyncGenerator<number> {
+        yield 1;
+        await new Promise(() => { /* hang forever */ });
+      }
+
+      const gen = iterate(hanging(), 1000);
+      const first = await gen.next();
+      expect(first.value).toBe(1);
+
+      // Attach rejection handling before advancing the clock
+      const outcome = gen.next().then(
+        () => 'resolved',
+        (err: Error) => err.message
+      );
+      await vi.advanceTimersByTimeAsync(1001);
+
+      expect(await outcome).toContain('silent');
+      // Fired timer is gone and nothing else is left pending
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('closes the source generator when its consumer stops early', async () => {
+      const { manager } = createTestBrainstormManager(mockPM);
+      const iterate = getIterate(manager);
+      const closed = vi.fn();
+      async function* source(): AsyncGenerator<number> {
+        try {
+          yield 1;
+          yield 2;
+        } finally {
+          closed();
+        }
+      }
+      for await (const _value of iterate(source(), 1000)) { break; }
+      expect(closed).toHaveBeenCalledOnce();
+    });
+
+    it('honors cancellation triggered synchronously by the source before it hangs', async () => {
+      vi.useFakeTimers();
+      const { manager } = createTestBrainstormManager(mockPM);
+      const controller = new AbortController();
+      const cancellation = new Error('Stopped while advancing the source');
+      async function* source(): AsyncGenerator<number> {
+        controller.abort(cancellation);
+        await new Promise<void>(() => {});
+        yield 1;
+      }
+      const iterator = getIterate(manager)(source(), null, controller.signal);
+      await expect(iterator.next()).rejects.toBe(cancellation);
+      expect(vi.getTimerCount()).toBe(0);
+    });
   });
 
   // =========================================================================
@@ -380,37 +544,140 @@ describe('BrainstormManager', () => {
   // 11. Cancel mid-brainstorm (B9)
   // =========================================================================
   describe('Cancel propagation (B9)', () => {
-    it('should cancel all agent processes when session is cancelled', async () => {
+    const strategies: CollaborationStrategy[] = ['quick', 'debate', 'red-team', 'perspectives', 'delphi'];
+
+    it.each(strategies)('cancels silent %s agents immediately without dispatching another phase', async (strategy) => {
+      vi.useFakeTimers();
       const { manager, mockPM: pm } = createTestBrainstormManager(mockPM);
 
-      configureBrainstorm({ agents: ['claude-code', 'google-gemini'], strategy: 'quick', synthesisAgent: 'claude-code' });
+      configureBrainstorm({ agents: ['claude-code', 'google-gemini'], strategy, synthesisAgent: 'claude-code' });
       pm.setProviderAvailable('claude-code', 'Claude');
       pm.setProviderAvailable('google-gemini', 'Gemini');
 
-      // Slow streams
-      pm.setProviderChunks('claude-code', makeTextChunks(['Working...']), { delayMs: 50 });
-      pm.setProviderChunks('google-gemini', makeTextChunks(['Working...']), { delayMs: 50 });
-
-      // Cancel after a short delay
+      // These providers ignore cancellation and never settle. Stop must release
+      // the consumer independently of a provider's cooperation or a timeout.
+      pm.setProviderChunks('claude-code', [{ type: 'text', content: 'Working...' }], { hang: true });
+      pm.setProviderChunks('google-gemini', [{ type: 'text', content: 'Working...' }], { hang: true });
       const panelId = 'panel-cancel';
-      setTimeout(() => manager.cancelSession(panelId), 100);
+      const pending = collectChunks(manager.startBrainstormSession('Test cancel', [], createMockSettings(), panelId));
+      await vi.advanceTimersByTimeAsync(0);
+      const dispatched = pm.sendCalls.length;
+      expect(dispatched).toBeGreaterThan(0);
+      expect(vi.getTimerCount()).toBeGreaterThan(0);
+      manager.cancelSession(panelId);
+      const chunks = await pending;
+      await vi.advanceTimersByTimeAsync(0);
 
-      const settings = createMockSettings();
-      // Start brainstorm — it will be cancelled mid-stream
-      const gen = manager.startBrainstormSession('Test cancel', [], settings, panelId);
-      const chunks: BrainstormStreamChunk[] = [];
-      for await (const chunk of gen) {
-        chunks.push(chunk);
-        // Check if session was cancelled
-        if (manager.getCurrentSession(panelId)?.phase === 'complete') {
-          break;
-        }
-      }
-
-      // Verify cancelRequest was called for both agents
       expect(pm.cancelledPanelIds).toContain(panelId);
       expect(pm.cancelledPanelIds).toContain(`${panelId}-brainstorm-claude-code`);
       expect(pm.cancelledPanelIds).toContain(`${panelId}-brainstorm-google-gemini`);
+      expect(pm.sendCalls).toHaveLength(dispatched);
+      expect(chunks.filter(c => c.type === 'done')).toHaveLength(1);
+      expect(chunks.some(c => c.type === 'agent_error' || c.type === 'synthesis_fallback')).toBe(false);
+      expect(manager.isSessionActive(panelId)).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('does not start a fallback when cancellation interrupts synthesis', async () => {
+      vi.useFakeTimers();
+      const { manager, mockPM: pm } = createTestBrainstormManager(mockPM);
+      configureBrainstorm({ agents: ['claude-code', 'google-gemini'], strategy: 'quick', synthesisAgent: 'claude-code' });
+      pm.setProviderAvailable('claude-code');
+      pm.setProviderAvailable('google-gemini');
+      let calls = 0;
+      pm.streamFactories.set('claude-code', () => ++calls === 1
+        ? createMockStream(makeTextChunks(['Analysis']))
+        : createMockStream([], { hang: true }));
+      pm.setProviderChunks('google-gemini', makeTextChunks(['Gemini analysis']));
+
+      const pending = collectChunks(manager.startBrainstormSession('q', [], createMockSettings(), 'panel-synthesis-cancel'));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(manager.getCurrentSession('panel-synthesis-cancel')?.phase).toBe('synthesis');
+      manager.cancelSession('panel-synthesis-cancel');
+      const chunks = await pending;
+      expect(pm.sendCalls).toHaveLength(3);
+      expect(chunks.some(c => c.type === 'synthesis_fallback')).toBe(false);
+      expect(chunks.at(-1)?.type).toBe('done');
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('cancels and retires children when the consumer stops reading', async () => {
+      vi.useFakeTimers();
+      const { manager, mockPM: pm } = createTestBrainstormManager(mockPM);
+      configureBrainstorm({ agents: ['claude-code', 'google-gemini'], strategy: 'quick' });
+      pm.setProviderAvailable('claude-code');
+      pm.setProviderAvailable('google-gemini');
+      pm.setProviderChunks('claude-code', [{ type: 'text', content: 'Partial' }], { hang: true });
+      pm.setProviderChunks('google-gemini', [{ type: 'text', content: 'Partial' }], { hang: true });
+
+      for await (const chunk of manager.startBrainstormSession('q', [], createMockSettings(), 'panel-break')) {
+        if (chunk.type === 'agent_text') { break; }
+      }
+      await vi.advanceTimersByTimeAsync(0);
+      expect(manager.isSessionActive('panel-break')).toBe(false);
+      expect(pm.disposedChildren).toHaveLength(2);
+      expect(pm.sendCalls).toHaveLength(2);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('preserves child continuity when the consumer stops at the done chunk', async () => {
+      const { manager, mockPM: pm } = createTestBrainstormManager(mockPM);
+      configureBrainstorm({ agents: ['claude-code', 'google-gemini'], strategy: 'quick', synthesisAgent: 'claude-code' });
+      pm.setProviderAvailable('claude-code');
+      pm.setProviderAvailable('google-gemini');
+      pm.setProviderChunks('claude-code', makeTextChunks(['Answer']));
+      pm.setProviderChunks('google-gemini', makeTextChunks(['Answer']));
+      for await (const chunk of manager.startBrainstormSession('q', [], createMockSettings(), 'panel-done')) {
+        if (chunk.type === 'done') { break; }
+      }
+      expect(pm.cancelledPanelIds).toHaveLength(0);
+      expect(pm.disposedChildren).toHaveLength(0);
+      expect(manager.isSessionActive('panel-done')).toBe(false);
+    });
+
+    it('does not resurrect a cleared session after provider discovery completes', async () => {
+      vi.useFakeTimers();
+      const { manager, mockPM: pm } = createTestBrainstormManager(mockPM);
+      configureBrainstorm({ agents: ['claude-code', 'google-gemini'], strategy: 'quick' });
+      pm.setProviderAvailable('claude-code');
+      pm.setProviderAvailable('google-gemini');
+      let release!: () => void;
+      const discovery = new Promise<void>(resolve => { release = resolve; });
+      const getStatus = pm.getProviderStatus.bind(pm);
+      vi.spyOn(pm, 'getProviderStatus').mockImplementation(async id => {
+        await discovery;
+        return getStatus(id);
+      });
+
+      const pending = collectChunks(manager.startBrainstormSession('q', [], createMockSettings(), 'panel-discovery'));
+      await vi.advanceTimersByTimeAsync(0);
+      manager.clearSession('panel-discovery');
+      expect((await pending).at(-1)?.type).toBe('done');
+      release();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(pm.sendCalls).toHaveLength(0);
+      expect(manager.getCurrentSession('panel-discovery')).toBeNull();
+    });
+
+    it('retires an older run without cancelling its replacement in the same panel', async () => {
+      vi.useFakeTimers();
+      const { manager, mockPM: pm } = createTestBrainstormManager(mockPM);
+      configureBrainstorm({ agents: ['claude-code', 'google-gemini'], strategy: 'quick', synthesisAgent: 'claude-code' });
+      pm.setProviderAvailable('claude-code');
+      pm.setProviderAvailable('google-gemini');
+      pm.setProviderChunks('claude-code', [], { hang: true });
+      pm.setProviderChunks('google-gemini', [], { hang: true });
+      const first = collectChunks(manager.startBrainstormSession('old', [], createMockSettings(), 'panel-replace'));
+      await vi.advanceTimersByTimeAsync(0);
+
+      pm.setProviderChunks('claude-code', makeTextChunks(['New answer']));
+      pm.setProviderChunks('google-gemini', makeTextChunks(['New answer']));
+      const next = await collectChunks(manager.startBrainstormSession('new', [], createMockSettings(), 'panel-replace'));
+      expect((await first).at(-1)?.type).toBe('done');
+      expect(next.filter(c => c.type === 'synthesis_text')).toHaveLength(1);
+      expect(manager.getCurrentSession('panel-replace')?.query).toBe('new');
+      expect(pm.cancelledPanelIds.filter(id => id === 'panel-replace')).toHaveLength(1);
+      expect(vi.getTimerCount()).toBe(0);
     });
   });
 

@@ -1,0 +1,24 @@
+{
+  "checkedAt": "2026-10-01T10:34:43.285Z",
+  "platform": "darwin",
+  "results": [
+    {
+      "provider": "claude-code",
+      "scope": "Actual CLI inference with a temporary text attachment and generated blue PNG; no user files.",
+      "errors": [],
+      "fileRead": true,
+      "imageRead": true,
+      "passed": true,
+      "durationMs": 5189
+    },
+    {
+      "provider": "openai-codex",
+      "scope": "Actual CLI inference with a temporary text attachment and generated blue PNG; no user files.",
+      "errors": [],
+      "fileRead": true,
+      "imageRead": true,
+      "passed": true,
+      "durationMs": 12226
+    }
+  ]
+}

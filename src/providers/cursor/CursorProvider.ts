@@ -1,6 +1,7 @@
 /**
  * Mysti - AI Coding Agent
  * Copyright (c) 2025 DeepMyst Inc. All rights reserved.
+ * Portions copyright (c) 2025 MostlyK
  *
  * Author: MostlyK <bruvistrue93@gmail.com>
  *
@@ -11,11 +12,15 @@
  */
 
 import * as vscode from "vscode";
+import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { BaseCliProvider, type PanelSessionState, type ProcessTracker } from "../base/BaseCliProvider";
 import { validateModelName } from "../../utils/validation";
+import { normalizeToolName, toolKind } from "../../utils/toolNames";
 import { getEnrichedEnv } from "../../utils/platform";
+import { killProcessTree, isProcessLive } from "../../utils/processKill";
+import { PROCESS_KILL_GRACE_PERIOD_MS } from "../../constants";
 import type {
 	CliDiscoveryResult,
 	AuthConfig,
@@ -29,6 +34,7 @@ import type {
 	ContextItem,
 	Conversation,
 	AgentConfiguration,
+	ModelInfo,
 } from "../../types";
 
 export interface CursorSessionState extends PanelSessionState {
@@ -76,9 +82,15 @@ export class CursorProvider extends BaseCliProvider {
 				contextWindow: 200000,
 			},
 			{
+				id: "gpt-5.4",
+				name: "GPT-5.4",
+				description: "OpenAI's latest flagship model (paid plan required)",
+				contextWindow: 200000,
+			},
+			{
 				id: "gpt-5",
 				name: "GPT-5",
-				description: "OpenAI's latest flagship model (paid plan required)",
+				description: "OpenAI GPT-5 model (paid plan required)",
 				contextWindow: 200000,
 			},
 			{
@@ -103,6 +115,17 @@ export class CursorProvider extends BaseCliProvider {
 		supportsToolUse: true,
 		supportsSessions: false,
 		supportsAutoInstall: false,
+		supportsPromptEnhancement: true,
+		// Plan 02 Phase 1 capability matrix
+		thinkingStyle: 'none',
+		thinkingLevelEffective: false,
+		planMode: 'detected',
+		sessionKind: 'none',  // stateless: history discarded, fabricated session IDs (F7/B8)
+		sendsNoHistory: true,  // prompts are built without history (sendMessage), so nothing to compact
+		emitsToolResults: true,
+		emitsUsage: true,
+		usageConvention: 'none',   // cursor-agent reports flat input/output only.
+		modelSelection: 'full',
 	};
 
 	protected _createSession(panelId: string): CursorSessionState {
@@ -139,6 +162,31 @@ export class CursorProvider extends BaseCliProvider {
 		return this._getCliPathCommon();
 	}
 
+	/**
+	 * Live model discovery (Plan 01 Phase 3) via `cursor-agent models`, which lists
+	 * the models available to the signed-in account. Output is ANSI-laced text, one
+	 * model per line; we strip ANSI, then keep only slug-like tokens (no spaces) so
+	 * header / "Loading…" / "No models" lines are dropped. A logged-out account
+	 * yields no slugs → null → curated fallback. Returns null on any failure; never
+	 * throws.
+	 */
+	async discoverModels(timeoutMs: number): Promise<ModelInfo[] | null> {
+		const raw = await this._runCliForDiscovery(["models"], timeoutMs);
+		if (!raw) { return null; }
+		// eslint-disable-next-line no-control-regex
+		const ansi = /\x1b\[[0-9;]*m/g;
+		const slug = /^[a-zA-Z0-9][a-zA-Z0-9._\-:/[\]]*$/;
+		const seen = new Set<string>();
+		const models: ModelInfo[] = [];
+		for (const line of raw.split("\n")) {
+			const id = line.replace(ansi, "").replace(/^[\s•*-]+/, "").trim();
+			if (!id || seen.has(id) || !slug.test(id)) { continue; }
+			seen.add(id);
+			models.push({ id, name: id });
+		}
+		return models.length > 0 ? models : null;
+	}
+
 	protected _getCliCommandName(): string {
 		return 'agent';
 	}
@@ -165,6 +213,33 @@ export class CursorProvider extends BaseCliProvider {
 		return paths;
 	}
 
+	/**
+	 * Durable offline login marker: `agent login` writes an `authInfo` block
+	 * ({ email, userId, authId }) into ~/.cursor/cli-config.json (the bearer token
+	 * itself is in the OS keychain). Reading this avoids a false-negative when the
+	 * network `agent status` spawn is slow (5s timeout) or changes its wording.
+	 * A missing/unparseable file is NOT a negative signal — fall through to the
+	 * status probe.
+	 */
+	private _readConfigAuthInfo(): { loggedIn: boolean; user?: string } {
+		try {
+			const cfgPath = path.join(os.homedir(), ".cursor", "cli-config.json");
+			if (!fs.existsSync(cfgPath)) {
+				return { loggedIn: false };
+			}
+			const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf-8")) as {
+				authInfo?: { email?: string; userId?: number | string; authId?: string };
+			};
+			const info = cfg.authInfo;
+			if (info && (info.email || info.userId || info.authId)) {
+				return { loggedIn: true, user: info.email || "Cursor Account" };
+			}
+			return { loggedIn: false };
+		} catch {
+			return { loggedIn: false };
+		}
+	}
+
 	async getAuthConfig(): Promise<AuthConfig> {
 		const apiKey = this._resolveApiKey();
 		if (apiKey) {
@@ -175,7 +250,13 @@ export class CursorProvider extends BaseCliProvider {
 			};
 		}
 
-		// Check CLI login status for browser-based auth
+		// Offline: signed-in via `agent login` (authInfo in cli-config.json).
+		const cfgAuth = this._readConfigAuthInfo();
+		if (cfgAuth.loggedIn) {
+			return { type: "cli-login", isAuthenticated: true, configPath: path.join(os.homedir(), ".cursor", "cli-config.json") };
+		}
+
+		// Fallback: network CLI login status (covers keychain-only edge).
 		const cliStatus = await this._checkCliLoginStatus();
 		return {
 			type: cliStatus.loggedIn ? "cli-login" : "api-key",
@@ -189,6 +270,12 @@ export class CursorProvider extends BaseCliProvider {
 		const apiKey = this._resolveApiKey();
 		if (apiKey) {
 			return { authenticated: true, user: "API Key" };
+		}
+
+		// Fast offline path: signed-in marker in cli-config.json (no spawn).
+		const cfgAuth = this._readConfigAuthInfo();
+		if (cfgAuth.loggedIn) {
+			return { authenticated: true, user: cfgAuth.user || "Cursor Account" };
 		}
 
 		// Slow path: check if user logged in via `agent login`
@@ -212,16 +299,32 @@ export class CursorProvider extends BaseCliProvider {
 	}
 
 	getInstallCommand(): string {
-		return "curl https://cursor.com/install -fsS | bash";
+		// OS-correct: macOS/Linux use the bash installer, Windows uses the native
+		// PowerShell installer (the bash one-liner can't run in cmd/PowerShell).
+		return this._installCommandForCurrentOS("curl https://cursor.com/install -fsS | bash");
 	}
 
 	getInstallMethods(): import('../../types').InstallMethod[] {
 		return [
 			{
-				id: 'curl',
-				label: 'Direct install (recommended)',
+				id: 'curl-darwin',
+				label: 'Direct install (macOS)',
 				command: 'curl https://cursor.com/install -fsS | bash',
-				platform: 'all',
+				platform: 'darwin',
+				priority: 1
+			},
+			{
+				id: 'curl-linux',
+				label: 'Direct install (Linux)',
+				command: 'curl https://cursor.com/install -fsS | bash',
+				platform: 'linux',
+				priority: 1
+			},
+			{
+				id: 'powershell',
+				label: 'Direct install (Windows PowerShell)',
+				command: "irm 'https://cursor.com/install?win32=true' | iex",
+				platform: 'win32',
 				priority: 1
 			}
 		];
@@ -276,20 +379,22 @@ export class CursorProvider extends BaseCliProvider {
 	}
 
 	/**
-	 * Map Cursor tool type names to Claude-compatible names.
-	 * The webview's formatToolSummary() expects these standard names.
+	 * Map Cursor tool type names to canonical Claude-compatible names.
+	 * The webview's formatToolSummary() and the stream-level permission gate
+	 * (utils/permissionClassifier.ts) expect these canonical names — the gate
+	 * is the sole enforcement point since the CLI runs with --force.
 	 */
 	private static readonly TOOL_TYPE_MAP: Record<string, string> = {
-		shellToolCall: "bash",
-		readToolCall: "read",
-		writeToolCall: "write",
-		editToolCall: "edit",
-		grepToolCall: "grep",
-		globToolCall: "glob",
-		lsToolCall: "ls",
-		todoToolCall: "todowrite",
-		updateTodosToolCall: "todowrite",
-		deleteToolCall: "delete",
+		shellToolCall: "Bash",
+		readToolCall: "Read",
+		writeToolCall: "Write",
+		editToolCall: "Edit",
+		grepToolCall: "Grep",
+		globToolCall: "Glob",
+		lsToolCall: "LS",
+		todoToolCall: "TodoWrite",
+		updateTodosToolCall: "TodoWrite",
+		deleteToolCall: "Delete",
 	};
 
 	/**
@@ -381,14 +486,14 @@ export class CursorProvider extends BaseCliProvider {
 				// eslint-disable-next-line @typescript-eslint/no-explicit-any
 				const toolData = toolTypeKey ? (data.tool_call as any)[toolTypeKey] : null;
 
-				// Map to Claude-compatible tool name for the webview
+				// Map to canonical tool name for the webview and permission gate
 				let toolName: string;
 				if (toolTypeKey === "function") {
-					toolName = toolData?.name || "tool";
+					toolName = normalizeToolName(toolData?.name || "tool");
 				} else if (toolTypeKey) {
 					toolName =
 						CursorProvider.TOOL_TYPE_MAP[toolTypeKey] ||
-						toolTypeKey.replace(/ToolCall$/, "").toLowerCase();
+						normalizeToolName(toolTypeKey.replace(/ToolCall$/, "").toLowerCase());
 				} else {
 					toolName = "tool";
 				}
@@ -451,6 +556,7 @@ export class CursorProvider extends BaseCliProvider {
 							name: toolName,
 							input,
 							status: "running",
+							kind: toolKind(toolName),
 						},
 					};
 				}
@@ -459,14 +565,19 @@ export class CursorProvider extends BaseCliProvider {
 					const active = cursorSession.activeToolCalls.get(toolId);
 					cursorSession.activeToolCalls.delete(toolId);
 
-					// Extract output from result.success or result.rejected
+					// Extract output from result.success or result.rejected.
+					// Plan 02 Phase 3: rejected results surface as status
+					// 'failed' so the webview tool card shows the rejection
+					// instead of a green "completed" check.
 					let output = "";
+					let rejected = false;
 					if (toolData?.result?.success !== undefined) {
 						output =
 							typeof toolData.result.success === "string"
 								? toolData.result.success
 								: JSON.stringify(toolData.result.success, null, 2);
 					} else if (toolData?.result?.rejected) {
+						rejected = true;
 						output =
 							typeof toolData.result.rejected === "string"
 								? toolData.result.rejected
@@ -480,7 +591,7 @@ export class CursorProvider extends BaseCliProvider {
 							name: active?.name || toolName,
 							input: active ? JSON.parse(active.inputJson) : input,
 							output,
-							status: "completed",
+							status: rejected ? "failed" : "completed",
 						},
 					};
 				}
@@ -514,10 +625,12 @@ export class CursorProvider extends BaseCliProvider {
 				};
 			}
 
-			// Done/complete events
+			// Done/complete events — reset turn state but do NOT emit a parser-level
+			// done: sendMessage() yields the single authoritative done (with usage)
+			// after the stream ends (Plan 02 Phase 3: exactly one done per response).
 			if (data.type === "done" || data.type === "complete") {
 				cursorSession.streamedTextLength = 0;
-				return { type: "done" };
+				return null;
 			}
 
 			// User echo events (Cursor echoes the prompt back) — skip
@@ -606,8 +719,9 @@ export class CursorProvider extends BaseCliProvider {
 			const envExtra: Record<string, string | undefined> = {};
 			const resolvedKey = this._resolveApiKey();
 			if (resolvedKey) {
+				// Plan 18 (2.4 audit): env only — the key on argv was visible to any
+				// local user via `ps`. CURSOR_API_KEY is the documented channel.
 				envExtra.CURSOR_API_KEY = resolvedKey;
-				args.push("--api-key", resolvedKey);
 			}
 
 			session.process = spawn(cliPath, args, {
@@ -616,13 +730,21 @@ export class CursorProvider extends BaseCliProvider {
 				stdio: ["ignore", "pipe", "pipe"],
 			});
 
+			// Plan 18 (2.4 audit): early error listener — an async spawn failure
+			// otherwise emits an unhandled 'error' event before waitForProcess
+			// attaches its own listener.
+			session.process.on("error", (err) => {
+				console.error("[Mysti] Cursor: Spawn error:", err);
+				stderrRef.output += `\nspawn error: ${err.message}`;
+			});
+
 			// Register process for per-panel cancellation
 			if (
 				panelId &&
 				providerManager &&
 				typeof (providerManager as ProcessTracker).registerProcess === "function"
 			) {
-				(providerManager as ProcessTracker).registerProcess(panelId, session.process);
+				(providerManager as ProcessTracker).registerProcess(panelId, session.process, this.id);
 			}
 
 			// Capture stderr for error reporting
@@ -649,11 +771,14 @@ export class CursorProvider extends BaseCliProvider {
 			yield this.handleError(error);
 			yield { type: "done" };
 		} finally {
-			if (session.process && !session.process.killed) {
-				if (session.process.stderr) {
-					session.process.stderr.removeListener("data", stderrHandler);
+			// Plan 18 (2.4 audit): liveness-gated tree kill with SIGKILL escalation —
+			// the old `.killed` guard skipped a signalled-but-alive CLI, and a bare
+			// SIGTERM orphaned cursor-agent's own children mid-tool-run.
+			if (isProcessLive(session.process)) {
+				if (session.process!.stderr) {
+					session.process!.stderr.removeListener("data", stderrHandler);
 				}
-				session.process.kill("SIGTERM");
+				void killProcessTree(session.process, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
 			}
 			session.process = null;
 			if (
@@ -764,7 +889,9 @@ export class CursorProvider extends BaseCliProvider {
 		}
 	}
 
-	private _getEffectiveModel(settings: Settings): string | undefined {
+	protected _getEffectiveModel(settings: Settings): string | undefined {
+    // P2.3/P0.2b: an explicitly routed model wins over the per-provider custom-model config.
+    if (settings.routedModel) { return settings.routedModel; }
 		const config = vscode.workspace.getConfiguration("mysti");
 		const customModel = config.get<string>("cursorModel", "");
 		if (customModel) {

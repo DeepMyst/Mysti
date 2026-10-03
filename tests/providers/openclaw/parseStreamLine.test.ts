@@ -71,7 +71,7 @@ describe('OpenClawProvider.parseStreamLine', () => {
       const result = provider.parseStreamLine(line, session);
       expect(result).toEqual({
         type: 'tool_use',
-        toolCall: { id: 'tool_1', name: 'read', input: { path: '/src/main.ts' }, status: 'running' },
+        toolCall: { id: 'tool_1', name: 'read', input: { path: '/src/main.ts' }, status: 'running', kind: 'read' },
       });
     });
 
@@ -144,16 +144,18 @@ describe('OpenClawProvider.parseStreamLine', () => {
   });
 
   describe('done events', () => {
-    it('should parse done event', () => {
-      expect(provider.parseStreamLine(JSON.stringify({ type: 'done' }), session)).toEqual({ type: 'done' });
+    // Plan 02 Phase 3: parser-level done is swallowed — _sendViaCli /
+    // _sendViaGateway emit the single authoritative done after the stream ends.
+    it('should NOT emit a parser-level done for done event', () => {
+      expect(provider.parseStreamLine(JSON.stringify({ type: 'done' }), session)).toBeNull();
     });
 
-    it('should parse complete event', () => {
-      expect(provider.parseStreamLine(JSON.stringify({ type: 'complete' }), session)).toEqual({ type: 'done' });
+    it('should NOT emit a parser-level done for complete event', () => {
+      expect(provider.parseStreamLine(JSON.stringify({ type: 'complete' }), session)).toBeNull();
     });
 
-    it('should parse end event', () => {
-      expect(provider.parseStreamLine(JSON.stringify({ type: 'end' }), session)).toEqual({ type: 'done' });
+    it('should NOT emit a parser-level done for end event', () => {
+      expect(provider.parseStreamLine(JSON.stringify({ type: 'end' }), session)).toBeNull();
     });
   });
 
@@ -166,5 +168,28 @@ describe('OpenClawProvider.parseStreamLine', () => {
       }), session);
       expect(session.lastUsageStats).toEqual({ input_tokens: 500, output_tokens: 200 });
     });
+  });
+});
+
+describe('OpenClaw reported context window', () => {
+  it("takes meta.agentMeta.contextTokens from the --json result — OpenClaw runs its OWN default model", async () => {
+    const { TestableOpenClawProvider } = await import('../../helpers/providerFactory');
+    const { createOpenClawSession } = await import('../../helpers/sessionFactory');
+    const provider = new TestableOpenClawProvider() as any;
+    const session = createOpenClawSession();
+    provider._panelSessions.set(session.panelId, session);
+    const blob = JSON.stringify({
+      payloads: [{ text: 'Hi' }],
+      meta: { agentMeta: { sessionId: 'oc1', usage: { input: 1200, output: 8 }, contextTokens: 200000 } },
+    }, null, 2);
+    session.process = {
+      stdout: (async function* () { yield Buffer.from(blob + '\n'); })(),
+      exitCode: 0,
+      on: () => undefined,
+    };
+    const chunks = [];
+    for await (const c of provider.processStream({ output: '' }, session)) { chunks.push(c); }
+    expect(chunks.some((c: { type: string }) => c.type === 'text')).toBe(true);
+    expect(provider.takeReportedContextWindow(session.panelId)).toBe(200000);
   });
 });

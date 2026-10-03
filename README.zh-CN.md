@@ -332,7 +332,7 @@ Mysti 使用您现有的订阅 — 无需额外费用！
 | CLI 工具 | 订阅要求 | 安装方式 |
 |----------|----------|----------|
 | **Claude Code**（推荐） | Anthropic API 或 Claude Pro/Max | `npm install -g @anthropic-ai/claude-code` |
-| **GitHub Copilot CLI** | GitHub Copilot Pro/Pro+/Business | `npm install -g @github/copilot-cli` |
+| **GitHub Copilot CLI** | GitHub Copilot Pro/Pro+/Business | `npm install -g @github/copilot` |
 | **Gemini CLI** | Google AI API 或 Gemini Advanced | `npm install -g @google/gemini-cli` |
 | **Codex CLI** | OpenAI API | 参考 OpenAI 安装指南 |
 | **Cline** | 取决于模型提供商 | `npm install -g cline` |
@@ -366,12 +366,12 @@ npm install -g @anthropic-ai/claude-code
 claude auth login
 
 # 或 GitHub Copilot CLI（通过 GitHub 使用 Claude、GPT-5、Gemini）
-npm install -g @github/copilot-cli
+npm install -g @github/copilot
 copilot  # 然后使用 /login 命令
 
 # 或 Gemini CLI
 npm install -g @google/gemini-cli
-gemini auth login
+gemini
 
 # 或 Cursor
 curl https://cursor.com/install -fsS | bash
@@ -379,7 +379,7 @@ agent login
 
 # 或 OpenClaw
 npm install -g openclaw@latest && openclaw onboard --install-daemon
-openclaw login
+openclaw onboard
 
 # 或 OpenCode
 npm i -g opencode-ai@latest
@@ -460,7 +460,7 @@ qwen  # 然后输入 /auth
 | 设置 | 默认值 | 描述 |
 |------|--------|------|
 | `mysti.defaultProvider` | `claude-code` | 主要 AI 提供商 |
-| `mysti.claudePath` | `claude` | Claude CLI 路径 |
+| `mysti.claudeCodePath` | `claude` | Claude CLI 路径 |
 | `mysti.codexPath` | `codex` | Codex CLI 路径 |
 | `mysti.geminiPath` | `gemini` | Gemini CLI 路径 |
 | `mysti.copilotPath` | `copilot` | Copilot CLI 路径 |

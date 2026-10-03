@@ -25,9 +25,11 @@ import type {
   Settings,
   StreamChunk,
   ProviderConfig,
-  AuthStatus
+  AuthStatus,
+  ModelInfo
 } from '../../types';
 import { validateModelName } from '../../utils/validation';
+import { normalizeToolName, toolKind } from '../../utils/toolNames';
 
 /**
  * Per-panel session state for OpenCode, extending base with tool call tracking.
@@ -36,6 +38,37 @@ export interface OpenCodeSessionState extends PanelSessionState {
   activeToolCalls: Map<string, { id: string; name: string; input: Record<string, unknown> }>;
   completedToolCalls: Set<string>;
   lastUsageStats: { input_tokens: number; output_tokens: number } | null;
+}
+
+/**
+ * `opencode models [--verbose]` output → models. An id line is a bare
+ * `provider/model`; with --verbose, the JSON record after it carries
+ * `limit.context`. Unparseable records keep the id without a window.
+ */
+export function parseOpencodeModels(raw: string): ModelInfo[] {
+  const models: ModelInfo[] = [];
+  let current: ModelInfo | undefined;
+  let record = '';
+  const flush = () => {
+    if (!current) { return; }
+    try {
+      const context = JSON.parse(record)?.limit?.context;
+      if (typeof context === 'number' && context > 0) { current.contextWindow = context; }
+    } catch { /* plain listing, or not JSON: id only */ }
+    if (!models.some(m => m.id === current!.id)) { models.push(current); }
+  };
+  for (const line of raw.split('\n')) {
+    const id = line.trim();
+    if (id && !id.includes(' ') && /^[^{}[\]"]+\/\S+$/.test(id)) {
+      flush();
+      current = { id, name: id };
+      record = '';
+    } else {
+      record += line + '\n';
+    }
+  }
+  flush();
+  return models;
 }
 
 /**
@@ -66,8 +99,23 @@ export class OpenCodeProvider extends BaseCliProvider {
     supportsThinking: true,
     supportsToolUse: true,
     supportsSessions: true,
-    supportsImages: false,
-    supportsAutoInstall: true
+    // Plan 27 Phase 5: attachments are written to a temp file and referenced
+    // by PATH (BaseCliProvider.prepareAttachments). This backend has file-read
+    // tools, so it can open what it is given.
+    supportsImages: true,
+    supportsFileAttachments: true,
+    supportsAutoInstall: true,
+    supportsPromptEnhancement: false,
+    // Plan 02 Phase 1 capability matrix
+    thinkingStyle: 'complete-blocks',
+    thinkingLevelEffective: false,
+    planMode: 'detected',
+    sessionKind: 'cli-resume',
+    nativeInstructionFile: 'AGENTS.md',  // loaded by the CLI itself; Mysti does not resend it
+    emitsToolResults: true,
+    emitsUsage: true,
+    usageConvention: 'none',   // step-finish tokens are flat input/output.
+    modelSelection: 'custom-only'  // provider/model free-form — no meaningful static dropdown
   };
 
   protected _createSession(panelId: string): OpenCodeSessionState {
@@ -94,6 +142,23 @@ export class OpenCodeProvider extends BaseCliProvider {
     return this._getCliPathCommon();
   }
 
+  /**
+   * Live model discovery (Plan 01 Phase 3) via `opencode models --verbose`:
+   * each `provider/model` id (exactly the form `-m` accepts) followed by its
+   * models.dev record, whose `limit.context` is the window OpenCode compacts
+   * against. The plain listing dropped it, so every OpenCode model read as
+   * 200k. Falls back to the plain listing for a CLI without --verbose.
+   * Returns null on any failure so the registry keeps its curated/cached list.
+   * Never throws.
+   */
+  async discoverModels(timeoutMs: number): Promise<ModelInfo[] | null> {
+    const raw = await this._runCliForDiscovery(['models', '--verbose'], timeoutMs)
+      ?? await this._runCliForDiscovery(['models'], timeoutMs);
+    if (!raw) { return null; }
+    const models = parseOpencodeModels(raw);
+    return models.length > 0 ? models : null;
+  }
+
   protected _getCliCommandName(): string {
     return 'opencode';
   }
@@ -103,57 +168,66 @@ export class OpenCodeProvider extends BaseCliProvider {
     return config.get<string>('opencodePath', 'opencode');
   }
 
+  /**
+   * Provider API keys OpenCode auto-loads from the environment. The old check
+   * saw only 4 — notably NOT OPENROUTER_API_KEY (the most common OpenCode setup)
+   * — so an OpenRouter-only user was wrongly reported unauthenticated.
+   */
+  private static readonly ENV_KEYS = [
+    'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY',
+    'OPENROUTER_API_KEY', 'GROQ_API_KEY', 'DEEPSEEK_API_KEY', 'MISTRAL_API_KEY', 'XAI_API_KEY',
+    'TOGETHER_API_KEY', 'FIREWORKS_API_KEY', 'PERPLEXITY_API_KEY', 'CEREBRAS_API_KEY', 'NVIDIA_API_KEY',
+  ];
+
+  /** ~/.local/share/opencode/auth.json (honors $XDG_DATA_HOME). */
+  private _ocAuthPath(): string {
+    const data = process.env.XDG_DATA_HOME?.trim();
+    const dir = data ? path.join(data, 'opencode') : path.join(os.homedir(), '.local', 'share', 'opencode');
+    return path.join(dir, 'auth.json');
+  }
+
+  /** Config candidates ~/.config/opencode/opencode.json[c] (honors $XDG_CONFIG_HOME). */
+  private _ocConfigPaths(): string[] {
+    const cfg = process.env.XDG_CONFIG_HOME?.trim();
+    const dir = cfg ? path.join(cfg, 'opencode') : path.join(os.homedir(), '.config', 'opencode');
+    return [path.join(dir, 'opencode.json'), path.join(dir, 'opencode.jsonc')];
+  }
+
+  private _ocEnvKey(): string | undefined {
+    return OpenCodeProvider.ENV_KEYS.find(k => (process.env[k] || '').trim().length > 0);
+  }
+
   async getAuthConfig(): Promise<AuthConfig> {
-    // OpenCode supports multiple provider API keys
-    const hasAnyApiKey = !!(
-      process.env.ANTHROPIC_API_KEY ||
-      process.env.OPENAI_API_KEY ||
-      process.env.GEMINI_API_KEY ||
-      process.env.GROQ_API_KEY
-    );
-
-    // Check for OpenCode auth config
-    const authPath = path.join(os.homedir(), '.local', 'share', 'opencode', 'auth.json');
+    const envKey = this._ocEnvKey();
+    const authPath = this._ocAuthPath();
     const hasAuth = fs.existsSync(authPath);
-
-    // Check for global config
-    const configPath = path.join(os.homedir(), '.config', 'opencode', 'opencode.json');
-    const hasConfig = fs.existsSync(configPath);
+    const configPath = this._ocConfigPaths().find(p => fs.existsSync(p));
 
     return {
-      type: hasAnyApiKey ? 'api-key' : 'oauth',
-      isAuthenticated: hasAnyApiKey || hasAuth || hasConfig,
-      configPath: hasAuth ? authPath : configPath
+      type: envKey ? 'api-key' : 'oauth',
+      isAuthenticated: !!envKey || hasAuth || !!configPath,
+      configPath: hasAuth ? authPath : (configPath || this._ocConfigPaths()[0])
     };
   }
 
   async checkAuthentication(): Promise<AuthStatus> {
-    // Check for any provider API key
-    if (process.env.ANTHROPIC_API_KEY) {
-      return { authenticated: true, user: 'Anthropic API Key' };
-    }
-    if (process.env.OPENAI_API_KEY) {
-      return { authenticated: true, user: 'OpenAI API Key' };
-    }
-    if (process.env.GEMINI_API_KEY) {
-      return { authenticated: true, user: 'Gemini API Key' };
-    }
-    if (process.env.GROQ_API_KEY) {
-      return { authenticated: true, user: 'Groq API Key' };
+    // Any provider API key OpenCode reads from the environment.
+    const envKey = this._ocEnvKey();
+    if (envKey) {
+      return { authenticated: true, user: envKey };
     }
 
-    // Check for OpenCode auth file
-    const authPath = path.join(os.homedir(), '.local', 'share', 'opencode', 'auth.json');
-    if (fs.existsSync(authPath)) {
+    // `opencode auth login` credentials — the strong marker (don't parse/require
+    // fields inside it: an unreadable-but-present file must not false-negative).
+    if (fs.existsSync(this._ocAuthPath())) {
       return { authenticated: true, user: 'OpenCode Account' };
     }
 
-    // Check for global config with provider settings
-    const configPath = path.join(os.homedir(), '.config', 'opencode', 'opencode.json');
-    if (fs.existsSync(configPath)) {
+    // Global config declaring a provider/model.
+    for (const configPath of this._ocConfigPaths()) {
+      if (!fs.existsSync(configPath)) { continue; }
       try {
-        const content = fs.readFileSync(configPath, 'utf-8');
-        const config = JSON.parse(content);
+        const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
         if (config.provider || config.model) {
           return { authenticated: true, user: 'OpenCode Config' };
         }
@@ -164,7 +238,7 @@ export class OpenCodeProvider extends BaseCliProvider {
 
     return {
       authenticated: false,
-      error: 'Not authenticated. Run "opencode auth login" or set a provider API key (e.g., ANTHROPIC_API_KEY, OPENAI_API_KEY).'
+      error: 'Not authenticated. Run "opencode auth login" or set a provider API key (e.g., OPENROUTER_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY).'
     };
   }
 
@@ -230,7 +304,9 @@ export class OpenCodeProvider extends BaseCliProvider {
   /**
    * Get the effective model, preferring provider-specific custom model over dropdown selection
    */
-  private _getEffectiveModel(settings: Settings): string | undefined {
+  protected _getEffectiveModel(settings: Settings): string | undefined {
+    // P2.3/P0.2b: an explicitly routed model wins over the per-provider custom-model config.
+    if (settings.routedModel) { return settings.routedModel; }
     const config = vscode.workspace.getConfiguration('mysti');
     const customModel = config.get<string>('opencodeModel', '');
     if (customModel) {
@@ -300,7 +376,10 @@ export class OpenCodeProvider extends BaseCliProvider {
               return null;
 
             case 'tool': {
-              const toolName = part.name || '';
+              // Normalize OpenCode's lowercase native names (bash, edit,
+              // write, patch, ...) to the canonical names the permission
+              // gate classifies — the gate is the sole enforcement point.
+              const toolName = normalizeToolName(part.name || '');
               const toolId = part.id || `tool-${Date.now()}`;
               const state = part.state || 'running';
 
@@ -316,7 +395,8 @@ export class OpenCodeProvider extends BaseCliProvider {
                     id: toolId,
                     name: toolName,
                     input: part.input || {},
-                    status: 'running'
+                    status: 'running',
+                    kind: toolKind(toolName)
                   }
                 };
               }
@@ -374,7 +454,7 @@ export class OpenCodeProvider extends BaseCliProvider {
 
         // Direct tool_use/tool_result events (alternative format)
         case 'tool_use': {
-          const toolName = data.tool_name || data.name || '';
+          const toolName = normalizeToolName(data.tool_name || data.name || '');
           const toolId = data.tool_id || data.id || `tool-${Date.now()}`;
           const params = data.parameters || data.input || {};
 
@@ -389,7 +469,8 @@ export class OpenCodeProvider extends BaseCliProvider {
               id: toolId,
               name: toolName,
               input: params,
-              status: 'running'
+              status: 'running',
+              kind: toolKind(toolName)
             }
           };
         }

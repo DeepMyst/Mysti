@@ -332,7 +332,7 @@ Mysti mevcut aboneliklerinizle çalışır — ek maliyet yok!
 | CLI Aracı | Abonelik | Kurulum |
 |-----------|----------|--------|
 | **Claude Code** (önerilen) | Anthropic API veya Claude Pro/Max | `npm install -g @anthropic-ai/claude-code` |
-| **GitHub Copilot CLI** | GitHub Copilot Pro/Pro+/Business | `npm install -g @github/copilot-cli` |
+| **GitHub Copilot CLI** | GitHub Copilot Pro/Pro+/Business | `npm install -g @github/copilot` |
 | **Gemini CLI** | Google AI API veya Gemini Advanced | `npm install -g @google/gemini-cli` |
 | **Codex CLI** | OpenAI API | OpenAI kurulum kılavuzunu takip edin |
 | **Cline** | Model sağlayıcısına bağlı | `npm install -g cline` |
@@ -366,12 +366,12 @@ npm install -g @anthropic-ai/claude-code
 claude auth login
 
 # Veya GitHub Copilot CLI (GitHub üzerinden Claude, GPT-5, Gemini'ye erişin)
-npm install -g @github/copilot-cli
+npm install -g @github/copilot
 copilot  # sonra /login komutunu kullanın
 
 # Veya Gemini CLI
 npm install -g @google/gemini-cli
-gemini auth login
+gemini
 
 # Veya Cursor
 curl https://cursor.com/install -fsS | bash
@@ -379,7 +379,7 @@ agent login
 
 # Veya OpenClaw
 npm install -g openclaw@latest && openclaw onboard --install-daemon
-openclaw login
+openclaw onboard
 
 # Veya OpenCode
 npm i -g opencode-ai@latest
@@ -460,7 +460,7 @@ Yapay zekanın yapabileceklerini kontrol altında tutun:
 | Ayar | Varsayılan | Açıklama |
 |------|-----------|----------|
 | `mysti.defaultProvider` | `claude-code` | Birincil yapay zeka sağlayıcısı |
-| `mysti.claudePath` | `claude` | Claude CLI yolu |
+| `mysti.claudeCodePath` | `claude` | Claude CLI yolu |
 | `mysti.codexPath` | `codex` | Codex CLI yolu |
 | `mysti.geminiPath` | `gemini` | Gemini CLI yolu |
 | `mysti.copilotPath` | `copilot` | Copilot CLI yolu |

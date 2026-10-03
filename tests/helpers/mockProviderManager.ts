@@ -3,7 +3,7 @@
  * without spawning real CLI processes.
  */
 import type { StreamChunk, ContextItem, Settings, Conversation, ProviderConfig, AgentType } from '../../src/types';
-import type { PersonaConfig } from '../../src/providers/base/IProvider';
+import type { NativeApprovalHandler, PersonaConfig } from '../../src/providers/base/IProvider';
 
 export interface MockStreamOptions {
   /** Delay (ms) between each chunk yield */
@@ -72,11 +72,34 @@ export class MockProviderManager {
   /** Track cancelRequest calls for assertions */
   public cancelledPanelIds: string[] = [];
 
+  /** Record every sendMessageToProvider dispatch for assertions */
+  public sendCalls: { providerId: string; content: string; settings: Settings; panelId?: string }[] = [];
+
+  /** Track disposePersistentProcessForProvider calls for assertions */
+  public disposedChildren: { providerId: string; panelId: string }[] = [];
+
   /** Default model names per provider */
   public defaultModels: Map<string, string> = new Map();
 
   /** Context window sizes */
   public contextWindows: Map<string, number> = new Map();
+
+  public nativeApprovalHandler?: NativeApprovalHandler;
+  public nativeApprovalPanels = new Map<string, NativeApprovalHandler>();
+  public capturedApprovalPanels: string[] = [];
+
+  captureNativeApprovalHandler(panelId: string, signal?: AbortSignal): NativeApprovalHandler | undefined {
+    this.capturedApprovalPanels.push(panelId);
+    const handler = this.nativeApprovalHandler;
+    return handler ? request => signal?.aborted ? Promise.resolve('cancelled') : handler(request) : undefined;
+  }
+
+  setNativeApprovalHandlerForPanel(panelId: string, handler: NativeApprovalHandler): { dispose(): void } {
+    this.nativeApprovalPanels.set(panelId, handler);
+    return { dispose: () => {
+      if (this.nativeApprovalPanels.get(panelId) === handler) { this.nativeApprovalPanels.delete(panelId); }
+    } };
+  }
 
   // ProviderManager interface methods
 
@@ -89,6 +112,7 @@ export class MockProviderManager {
     persona?: PersonaConfig,
     panelId?: string
   ): AsyncGenerator<StreamChunk> {
+    this.sendCalls.push({ providerId, content, settings, panelId });
     const factory = this.streamFactories.get(providerId) || this.defaultStreamFactory;
     if (!factory) {
       throw new Error(`No stream factory configured for provider: ${providerId}`);
@@ -159,8 +183,13 @@ export class MockProviderManager {
     this.providerStatuses.clear();
     this.availableProviders = [];
     this.cancelledPanelIds = [];
+    this.sendCalls = [];
+    this.disposedChildren = [];
     this.defaultModels.clear();
     this.contextWindows.clear();
+    this.nativeApprovalHandler = undefined;
+    this.nativeApprovalPanels.clear();
+    this.capturedApprovalPanels = [];
   }
 
   // Stubs for methods that may be called but aren't relevant to tests
@@ -169,5 +198,8 @@ export class MockProviderManager {
   resumeRequest(): boolean { return false; }
   dispose(): void {}
   disposePersistentProcess(): void {}
+  disposePersistentProcessForProvider(providerId: string, panelId: string): void {
+    this.disposedChildren.push({ providerId, panelId });
+  }
   setAgentContextManager(): void {}
 }

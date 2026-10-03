@@ -25,6 +25,14 @@ const ICONS = ['💡', '🔧', '📝', '🚀', '✨', '🎯'];
  * SuggestionManager - Generates AI-powered quick action suggestions using Claude Haiku 4.5
  * Uses pre-spawned CLI processes to eliminate spawn latency
  * No API key needed - uses existing Claude Code authentication
+ *
+ * Provider-ID contract (Plan 02 Phase 2, W8): any provider-scoped suggestion
+ * payload must carry FULL provider ids ('claude-code', 'openai-codex', ...),
+ * never short aliases ('claude', 'codex') — the webview matches suggestion
+ * providers against `state.settings.provider` with strict equality and has
+ * no alias map. QuickActionSuggestion is currently provider-agnostic (no
+ * provider field), which satisfies this vacuously; keep it that way or use
+ * ProviderType ids when tagging is added.
  */
 export class SuggestionManager {
   private _extensionContext: vscode.ExtensionContext;

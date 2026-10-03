@@ -13,6 +13,7 @@
 
 import * as vscode from 'vscode';
 import type { ICliProvider } from './base/IProvider';
+import { PerfTracker } from '../utils/PerfTracker';
 import { ClaudeCodeProvider } from './claude/ClaudeCodeProvider';
 import { CodexProvider } from './codex/CodexProvider';
 import { GeminiProvider } from './gemini/GeminiProvider';
@@ -24,6 +25,10 @@ import { OpenCodeProvider } from './opencode/OpenCodeProvider';
 import { OllamaProvider } from './ollama/OllamaProvider';
 import { LocalAIProvider } from './localai/LocalAIProvider';
 import { QwenCodeProvider } from './qwen/QwenCodeProvider';
+import { HermesProvider } from './hermes/HermesProvider';
+import { ContinueProvider } from './continue/ContinueProvider';
+import { OpenRouterProvider } from './openrouter/OpenRouterProvider';
+import { KimiCodeProvider } from './kimi/KimiCodeProvider';
 
 /**
  * Registry for managing CLI providers
@@ -32,7 +37,27 @@ import { QwenCodeProvider } from './qwen/QwenCodeProvider';
 export class ProviderRegistry {
   private _providers: Map<string, ICliProvider> = new Map();
   private _extensionContext: vscode.ExtensionContext;
-  private _initialized: boolean = false;
+  /** Single-flight guard: concurrent/repeat initializeAll() calls share this promise. */
+  private _initPromise: Promise<void> | undefined;
+  private _whenReadyResolve!: () => void;
+
+  /**
+   * Resolved when initializeAll() settles — even if some (or all) provider
+   * initializations failed. Call paths that require discovery results
+   * (e.g., wizard status) await this instead of blocking activation
+   * (Plan 03 Phase 2: provider init runs in the background).
+   */
+  public readonly whenReady: Promise<void> = new Promise<void>((resolve) => {
+    this._whenReadyResolve = resolve;
+  });
+
+  private readonly _onProviderReadyEmitter = new vscode.EventEmitter<string>();
+  /**
+   * Fires each provider's id as its initialize() settles (success or
+   * failure), in settle order — for incremental consumers that want to
+   * update UI per provider instead of waiting for whenReady.
+   */
+  public readonly onProviderReady: vscode.Event<string> = this._onProviderReadyEmitter.event;
 
   constructor(context: vscode.ExtensionContext) {
     this._extensionContext = context;
@@ -98,28 +123,85 @@ export class ProviderRegistry {
     this._providers.set(qwen.id, qwen);
     console.log(`[Mysti] Registered provider: ${qwen.displayName}`);
 
+    // Register Hermes (NousResearch hermes-agent, ACP transport)
+    const hermes = new HermesProvider(this._extensionContext);
+    this._providers.set(hermes.id, hermes);
+    console.log(`[Mysti] Registered provider: ${hermes.displayName}`);
+
+    // Register Continue (continuedev `cn` CLI, headless print mode)
+    const continueProvider = new ContinueProvider(this._extensionContext);
+    this._providers.set(continueProvider.id, continueProvider);
+    console.log(`[Mysti] Registered provider: ${continueProvider.displayName}`);
+
+    // Register OpenRouter (API-based, SSE — any of 300+ models, free by default)
+    const openrouter = new OpenRouterProvider(this._extensionContext);
+    this._providers.set(openrouter.id, openrouter);
+    console.log(`[Mysti] Registered provider: ${openrouter.displayName}`);
+
+    // Register Kimi Code (MoonshotAI/kimi-code `kimi` CLI, ACP transport)
+    const kimi = new KimiCodeProvider(this._extensionContext);
+    this._providers.set(kimi.id, kimi);
+    console.log(`[Mysti] Registered provider: ${kimi.displayName}`);
+
   }
 
   /**
-   * Initialize all registered providers
+   * Initialize all registered providers.
+   *
+   * Plan 03 Phase 2: all provider initialize() calls run in parallel via
+   * Promise.allSettled, so one slow/unreachable CLI (e.g., an Ollama
+   * endpoint hitting its fetch timeout) no longer blocks the rest.
+   * Single-flight: concurrent and repeat calls share one promise.
    */
-  public async initializeAll(): Promise<void> {
-    if (this._initialized) {
-      return;
+  public initializeAll(): Promise<void> {
+    if (!this._initPromise) {
+      this._initPromise = this._initializeAllInternal();
     }
+    return this._initPromise;
+  }
 
-    console.log('[Mysti] Initializing all providers...');
+  private async _initializeAllInternal(): Promise<void> {
+    try {
+      console.log('[Mysti] Initializing all providers...');
 
-    for (const provider of this._providers.values()) {
-      try {
-        await provider.initialize();
-        console.log(`[Mysti] Initialized provider: ${provider.displayName}`);
-      } catch (error) {
-        console.error(`[Mysti] Failed to initialize provider ${provider.displayName}:`, error);
+      // Per-provider init timing — gated so the disabled path does no extra work
+      const perfEnabled = PerfTracker.isEnabled();
+      const initDurations: Array<{ id: string; ms: number }> | undefined =
+        perfEnabled ? [] : undefined;
+
+      await Promise.allSettled(
+        Array.from(this._providers.values()).map(async (provider) => {
+          // Each provider is timed inside its own closure so the per-provider
+          // duration samples stay accurate under parallel execution.
+          const startedAt = perfEnabled ? Date.now() : 0;
+          try {
+            await provider.initialize();
+            console.log(`[Mysti] Initialized provider: ${provider.displayName}`);
+          } catch (error) {
+            console.error(`[Mysti] Failed to initialize provider ${provider.displayName}:`, error);
+          }
+          if (initDurations) {
+            const ms = Date.now() - startedAt;
+            PerfTracker.sample(`provider.init.${provider.id}`, ms);
+            initDurations.push({ id: provider.id, ms });
+          }
+          this._onProviderReadyEmitter.fire(provider.id);
+        })
+      );
+
+      if (initDurations && initDurations.length > 0) {
+        const slowest = [...initDurations]
+          .sort((a, b) => b.ms - a.ms)
+          .slice(0, 3)
+          .map((d) => `${d.id}=${d.ms.toFixed(1)}ms`)
+          .join(', ');
+        console.log(`[Mysti][perf] provider.init slowest: ${slowest}`);
       }
+    } finally {
+      // Resolve even when provider initializations failed: whenReady means
+      // "background discovery has settled", not "all providers are usable".
+      this._whenReadyResolve();
     }
-
-    this._initialized = true;
   }
 
   /**
@@ -259,6 +341,8 @@ export class ProviderRegistry {
       }
     }
     this._providers.clear();
-    this._initialized = false;
+    // Allow re-initialization after dispose (matches previous `_initialized`
+    // reset). Note: whenReady stays resolved once the first init settled.
+    this._initPromise = undefined;
   }
 }

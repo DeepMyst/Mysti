@@ -44,19 +44,18 @@ describe('Codex permission flag mapping', () => {
     expect(args).not.toContain('--sandbox');
   });
 
-  it('should use --full-auto for default + full-access', () => {
-    const args = provider.buildCliArgs(s({ accessLevel: 'full-access' }), createCodexSession());
-    expect(args).toContain('--full-auto');
+  // Codex 0.153.4 removed --full-auto and rejects the whole invocation
+  // (`error: unexpected argument '--full-auto'`), so every non-plan,
+  // non-bypass combination must use the explicit sandbox instead.
+  it.each([
+    ['default + full-access', { accessLevel: 'full-access' }],
+    ['default + ask-permission', {}],
+    ['ask-before-edit + ask-permission', { mode: 'ask-before-edit' }],
+    ['edit-automatically + ask-permission', { mode: 'edit-automatically' }],
+  ] as const)('should use --sandbox workspace-write, never --full-auto, for %s', (_label, overrides) => {
+    const args = provider.buildCliArgs(s(overrides as Partial<Settings>), createCodexSession());
+    expect(args[args.indexOf('--sandbox') + 1]).toBe('workspace-write');
+    expect(args).not.toContain('--full-auto');
     expect(args).not.toContain('--dangerously-bypass-approvals-and-sandbox');
-  });
-
-  it('should use --full-auto for default + ask-permission (bypass for stream gate)', () => {
-    const args = provider.buildCliArgs(s(), createCodexSession());
-    expect(args).toContain('--full-auto');
-  });
-
-  it('should use --full-auto for ask-before-edit + ask-permission (fallback bypass)', () => {
-    const args = provider.buildCliArgs(s({ mode: 'ask-before-edit' }), createCodexSession());
-    expect(args).toContain('--full-auto');
   });
 });

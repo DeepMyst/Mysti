@@ -15,8 +15,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { spawn } from 'child_process';
-import { BaseCliProvider, type PanelSessionState, type ProcessTracker } from '../base/BaseCliProvider';
+import { BaseCliProvider, type PanelSessionState } from '../base/BaseCliProvider';
 import type {
   CliDiscoveryResult,
   AuthConfig,
@@ -33,22 +32,40 @@ import type {
   SlashCommandDefinition
 } from '../../types';
 import { validateModelName, validateProfileName } from '../../utils/validation';
-import { getEnrichedEnv } from '../../utils/platform';
+import { toolKind } from '../../utils/toolNames';
+import { clampEffort } from '../../utils/effort';
+import type { EffortLevel } from '../../types';
+import { killProcessTree, isProcessLive } from '../../utils/processKill';
+import { PROCESS_KILL_GRACE_PERIOD_MS } from '../../constants';
+import { codexAppServerInput, handleCodexAppServer, isCodexAppServerBoundary, type CodexAppServerState } from './CodexAppServerProtocol';
+
+/** Codex `model_reasoning_effort` supports low→xhigh (no `max`; clamp down). */
+const CODEX_EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh'];
 
 /**
  * Per-panel session state for Codex, extending base with tool call tracking.
  */
 export interface CodexSessionState extends PanelSessionState {
+  appServer?: CodexAppServerState;
   activeToolCalls: Map<string, { id: string; name: string; inputJson: string; status: 'running' | 'completed' | 'failed' }>;
   completedToolCalls: Set<string>;
   lastUsageStats: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number } | null;
+  /** Rolling tail of the current run's stderr, surfaced in a non-zero-exit error. */
+  stderrTail: string;
+}
+
+/** Top-level `model_context_window` in a Codex config.toml (tables ignored), if set. */
+export function codexConfiguredContextWindow(toml: string): number | undefined {
+  const topLevel = toml.split(/^\s*\[/m)[0];
+  const match = /^\s*model_context_window\s*=\s*(\d[\d_]*)\s*(?:#.*)?$/m.exec(topLevel);
+  return match ? Number(match[1].replace(/_/g, '')) : undefined;
 }
 
 /**
  * OpenAI Codex CLI provider implementation
  * Requires ChatGPT Plus/Pro subscription or API key for authentication
  *
- * Uses `codex exec --json` for non-interactive streaming output
+ * Uses the Codex app-server v2 stdio protocol for streaming and native approvals
  *
  * @see https://github.com/openai/codex
  * @see https://developers.openai.com/codex/cli/
@@ -57,89 +74,85 @@ export class CodexProvider extends BaseCliProvider {
   readonly id = 'openai-codex';
   readonly displayName = 'OpenAI Codex';
 
-  // Track active tool calls for state management through lifecycle
-  private _activeToolCalls: Map<string, {
-    id: string;
-    name: string;
-    inputJson: string;
-    status: 'running' | 'completed' | 'failed';
-  }> = new Map();
-
-  // Track completed tool calls to prevent duplicate tool_result emissions
-  private _completedToolCalls: Set<string> = new Set();
-
-  // Usage stats from turn.completed
-  private _lastUsageStats: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number } | null = null;
+  // NOTE: all mutable stream state (active/completed tool calls, usage stats)
+  // lives on CodexSessionState — per-panel, never on the provider singleton.
 
   readonly config: ProviderConfig = {
     name: 'openai-codex',
     displayName: 'OpenAI Codex',
+    // Windows are what the Codex CLI RUNS these models at — `context_window`
+    // in its own catalog (~/.codex/models_cache.json, verified 2026-09-25;
+    // every rollout reports model_context_window 258,400 = 95% of it) — not
+    // the API maximum (1.05M). Declaring the API figure made the pie read a
+    // quarter of the real fill and the threshold never fire before Codex's
+    // own compaction. `model_context_window` in config.toml can raise it; see
+    // takeReportedContextWindow.
     models: [
       {
-        id: 'gpt-5.3-codex',
-        name: 'GPT-5.3 Codex',
-        description: 'Newest coding model, best for code generation',
-        contextWindow: 400000
+        // Released 2026-09-03. Deliberately NOT the defaultModel: selecting it
+        // without Trusted Access, or on a CLI older than 0.153.0, fails.
+        id: 'gpt-6-astra',
+        name: 'GPT-6 Astra',
+        description: 'Flagship reasoning + coding model. Requires Trusted Access and Codex CLI 0.153.0+',
+        contextWindow: 272000,
+        releasedAt: '2026-09-03'
       },
       {
-        id: 'gpt-5.2-codex',
-        name: 'GPT-5.2 Codex',
-        description: 'Stable coding model, excellent for code tasks',
-        contextWindow: 400000
+        id: 'gpt-5.6-sol',
+        name: 'GPT-5.6 Sol',
+        description: 'Flagship for complex coding, computer use, research and cybersecurity',
+        contextWindow: 272000
       },
       {
-        id: 'gpt-5.2',
-        name: 'GPT-5.2',
-        description: 'General purpose model for professional tasks',
-        contextWindow: 1000000
+        id: 'gpt-5.6-terra',
+        name: 'GPT-5.6 Terra',
+        description: 'Balanced everyday work — the successor to GPT-5.4',
+        contextWindow: 272000
       },
       {
-        id: 'gpt-5.2-thinking',
-        name: 'GPT-5.2 Thinking',
-        description: 'Better at coding and planning',
-        contextWindow: 1000000
+        id: 'gpt-5.6-luna',
+        name: 'GPT-5.6 Luna',
+        description: 'Fastest and most affordable — the successor to GPT-5.4 mini',
+        contextWindow: 272000
       },
       {
-        id: 'gpt-5.2-instant',
-        name: 'GPT-5.2 Instant',
-        description: 'Faster for writing and information seeking',
-        contextWindow: 1000000
-      },
-      {
-        id: 'gpt-5.1-codex-max',
-        name: 'GPT-5.1 Codex Max',
-        description: 'Previous gen flagship, supports context compaction',
-        contextWindow: 1000000
-      },
-      {
-        id: 'gpt-5.1-codex',
-        name: 'GPT-5.1 Codex',
-        description: 'Previous generation coding model',
-        contextWindow: 1000000
-      },
-      {
-        id: 'o3',
-        name: 'o3',
-        description: 'Advanced reasoning model',
-        contextWindow: 200000
-      },
-      {
-        id: 'o4-mini',
-        name: 'o4-mini',
-        description: 'Fast and efficient for simpler tasks',
-        contextWindow: 200000
+        id: 'gpt-5.5',
+        name: 'GPT-5.5',
+        description: 'Previous-generation flagship',
+        contextWindow: 272000
       }
+      // gpt-5.3-codex-spark: retired the week of 2026-09-14 (gone from Codex's
+      // catalog). A user who still has it selected keeps it as a custom id.
     ],
-    defaultModel: 'gpt-5.3-codex'
+    defaultModel: 'gpt-5.6-sol'
   };
 
   readonly capabilities: ProviderCapabilities = {
     supportsStreaming: true,
     supportsThinking: true, // Codex has 'reasoning' events
     supportsToolUse: true,
-    supportsSessions: true,  // Can resume sessions with `codex exec resume`
-    supportsImages: false,
-    supportsAutoInstall: true
+    supportsNativeApproval: true,
+    supportsPersistentProcess: true,
+    supportsSessions: true,  // Native thread/resume
+    // Plan 27 Phase 5: attachments are written to a temp file and referenced
+    // by PATH (BaseCliProvider.prepareAttachments). This backend has file-read
+    // tools, so it can open what it is given.
+    supportsImages: true,
+    supportsFileAttachments: true,
+    supportsAutoInstall: true,
+    supportsPromptEnhancement: false,
+    // Plan 02 Phase 1 capability matrix
+    thinkingStyle: 'streamed',  // app-server reasoning deltas
+    thinkingLevelEffective: false,     // getThinkingTokens returns undefined
+    effortLevels: CODEX_EFFORT_LEVELS, // model_reasoning_effort (low→xhigh)
+    effortDefault: 'medium',
+    planMode: 'detected',
+    sessionKind: 'cli-resume',
+    nativeInstructionFile: 'AGENTS.md',  // loaded by the CLI itself; Mysti does not resend it
+    emitsToolResults: true,
+    emitsUsage: true,
+    usageConvention: 'openai',   // Codex reports cached_input_tokens as a SUBSET of input_tokens (OpenAI convention).
+    modelSelection: 'full'
   };
 
   // ============================================================================
@@ -176,6 +189,7 @@ export class CodexProvider extends BaseCliProvider {
       activeToolCalls: new Map(),
       completedToolCalls: new Set(),
       lastUsageStats: null,
+      stderrTail: '',
     };
   }
 
@@ -205,22 +219,46 @@ export class CodexProvider extends BaseCliProvider {
   }
 
   async getAuthConfig(): Promise<AuthConfig> {
-    const configPath = path.join(os.homedir(), '.codex', 'config.toml');
-    const hasConfig = fs.existsSync(configPath);
-
+    // Codex OAuth (ChatGPT login) is stored in ~/.codex/auth.json. ~/.codex/config.toml
+    // is only the settings file: it can exist without ever logging in and it SURVIVES
+    // `codex logout` (which removes auth.json but not config.toml). So config.toml
+    // existence is NOT proof of auth — the only positive markers are auth.json and
+    // OPENAI_API_KEY. config.toml is still exposed as configPath purely for the
+    // email/user label lookup in checkAuthentication() when auth.json is absent.
+    const authJson = path.join(os.homedir(), '.codex', 'auth.json');
+    const configToml = path.join(os.homedir(), '.codex', 'config.toml');
+    const hasAuth = fs.existsSync(authJson);
     return {
       type: 'oauth', // ChatGPT account login
-      isAuthenticated: hasConfig,
-      configPath
+      isAuthenticated: hasAuth || !!process.env.OPENAI_API_KEY,
+      configPath: hasAuth ? authJson : configToml
     };
   }
 
   /**
    * Get stored usage stats from turn.completed and clear them
    */
+  /**
+   * Codex prints no window on stdout, but a top-level `model_context_window`
+   * in config.toml is what it then runs with — the one case the catalog's
+   * 272k is wrong.
+   * ponytail: profiles, `-c` overrides and the CLI's clamp to the model's
+   * max_context_window are not modelled; add when someone relies on them.
+   */
+  protected override takeReportedContextWindow(panelId?: string): number | undefined {
+    const state = (this._getSession(panelId) as CodexSessionState).appServer;
+    if (state?.contextWindow) { return state.contextWindow; }
+    try {
+      return codexConfiguredContextWindow(fs.readFileSync(path.join(os.homedir(), '.codex', 'config.toml'), 'utf8'));
+    } catch {
+      return undefined;
+    }
+  }
+
   getStoredUsage(panelId?: string): { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number } | null {
     const session = this._getSession(panelId) as CodexSessionState;
-    const usage = session.lastUsageStats;
+    const usage = session.appServer?.usage || session.lastUsageStats;
+    if (session.appServer) { session.appServer.usage = undefined; }
     session.lastUsageStats = null;
     return usage;
   }
@@ -237,7 +275,7 @@ export class CodexProvider extends BaseCliProvider {
       }
       return {
         authenticated: false,
-        error: 'Not authenticated. Please run "codex auth login" to sign in with your ChatGPT account, or set OPENAI_API_KEY environment variable.'
+        error: 'Not authenticated. Please run "codex login" to sign in with your ChatGPT account, or set OPENAI_API_KEY environment variable.'
       };
     }
 
@@ -261,7 +299,7 @@ export class CodexProvider extends BaseCliProvider {
   }
 
   getAuthCommand(): string {
-    return 'codex auth login';
+    return 'codex login';
   }
 
   getInstallCommand(): string {
@@ -329,104 +367,26 @@ export class CodexProvider extends BaseCliProvider {
     return fullPrompt;
   }
 
-  /**
-   * Override sendMessage to use codex exec with proper argument passing
-   * Codex exec expects: codex exec [flags] "prompt"
-   * @param panelId Optional panel ID for per-panel process tracking
-   * @param providerManager Optional ProviderManager for registering process
-   */
-  async *sendMessage(
-    content: string,
-    context: ContextItem[],
-    settings: Settings,
-    conversation: Conversation | null,
-    persona?: PersonaConfig,
-    panelId?: string,
-    providerManager?: unknown
-  ): AsyncGenerator<StreamChunk> {
-    const cliPath = this.getCliPath();
-    const session = this._getSession(panelId) as CodexSessionState;
-
-    // Build prompt with context and persona
-    const fullPrompt = this.buildPrompt(content, context, conversation, settings, persona);
-
-    // Build CLI arguments
-    const args = this._buildCodexArgs(settings);
-
-    // Inject channel system context as native Codex system instructions
-    if (session.channelSystemContext) {
-      args.push('-c', `developer_instructions=${session.channelSystemContext}`);
-      console.log('[Mysti] Codex: Injecting channel context as developer_instructions');
-    }
-
-    // Add prompt as the last argument (use '-' to read from stdin for long prompts)
-    // For shorter prompts we could pass directly, but stdin is safer for any length
-    args.push('-');
-
-    try {
-      // Get workspace folder for CWD
-      const workspaceFolders = vscode.workspace.workspaceFolders;
-      const cwd = workspaceFolders ? workspaceFolders[0].uri.fsPath : process.cwd();
-
-      console.log(`[Mysti] ${this.displayName}: Starting CLI`);
-      console.log(`[Mysti] ${this.displayName}: Command: ${cliPath} ${args.join(' ')}`);
-      console.log(`[Mysti] ${this.displayName}: Working directory: ${cwd}`);
-
-      // Check if we should use shell for spawning
-      const useShell = vscode.workspace.getConfiguration('mysti').get<boolean>('useShellForCli', false);
-
-      // Spawn the process
-      session.process = spawn(cliPath, args, {
-        cwd,
-        env: getEnrichedEnv(),
-        stdio: ['pipe', 'pipe', 'pipe'],
-        shell: useShell
-      });
-
-      // Register process with ProviderManager for per-panel cancellation
-      if (panelId && providerManager && typeof (providerManager as ProcessTracker).registerProcess === 'function') {
-        (providerManager as ProcessTracker).registerProcess(panelId, session.process);
-      }
-
-      // Collect stderr for error reporting
-      if (session.process.stderr) {
-        session.process.stderr.on('data', (data) => {
-          const text = data.toString();
-          // In --json mode, activity goes to stderr, results to stdout
-          // So stderr might contain useful progress info
-          console.log(`[Mysti] ${this.displayName} stderr:`, text);
-        });
-      }
-
-      // Send prompt via stdin (using '-' argument)
-      if (session.process.stdin) {
-        session.process.stdin.write(fullPrompt);
-        session.process.stdin.end();
-      }
-
-      // Process stream output
-      yield* this._processCodexStream(session);
-
-      // Yield final done with any stored usage from stream parsing
-      const storedUsage = this.getStoredUsage(panelId);
-      yield storedUsage ? { type: 'done', usage: storedUsage } : { type: 'done' };
-    } catch (error) {
-      yield this.handleError(error);
-    } finally {
-      session.process = null;
-      // Clear process tracking when done
-      if (panelId && providerManager && typeof (providerManager as ProcessTracker).clearProcess === 'function') {
-        (providerManager as ProcessTracker).clearProcess(panelId);
-      }
-    }
-  }
+  // Plan 18 (Wave 3 / providers H1): the bespoke sendMessage override is GONE.
+  // It re-implemented the spawn loop and silently missed the base-path
+  // hardening: Windows auto-shell (.cmd shims -> spawn EINVAL), the shell-mode
+  // arg injection gate + bracket quoting, the early spawn 'error' listener,
+  // kill-in-finally for abandoned generators, attachment lifecycle, and the
+  // three-tier agentConfig (personas/skills never reached Codex). The base
+  // _sendSingleShot now drives codex exec: buildCliArgs supplies the args
+  // (with the stdin marker), buildPromptAsync folds in channel context the
+  // same way as every other base-path provider (the old native
+  // `-c developer_instructions=` injection was ALSO the unquoted shell-mode
+  // injection vector), and parseStreamLine handles the JSONL events.
+  // Behavioral delta (accepted): the base surfaces a non-zero exit as an
+  // error chunk even after answer text was produced, where the old
+  // _processCodexStream stayed silent.
 
   /**
    * Build Codex-specific CLI arguments
    *
    * Key flags from codex exec --help:
    * - --sandbox, -s: read-only | workspace-write | danger-full-access
-   * - --full-auto: workspace-write sandbox with auto-approve on request
    * - --dangerously-bypass-approvals-and-sandbox: skip all confirmations (DANGEROUS)
    * - --json: output JSONL events to stdout
    * - --model, -m: override configured model
@@ -452,6 +412,14 @@ export class CodexProvider extends BaseCliProvider {
     const effectiveModel = this._getEffectiveModel(settings);
     if (effectiveModel) {
       args.push('--model', effectiveModel);
+    }
+
+    // Reasoning effort → model_reasoning_effort config override. Codex tops out
+    // at xhigh (max clamps down). The quotes are part of the TOML value the
+    // `-c` parser reads (no shell involved — the literal chars reach codex).
+    const effort = clampEffort(settings.effortLevel, CODEX_EFFORT_LEVELS);
+    if (effort) {
+      args.push('-c', `model_reasoning_effort="${effort}"`);
     }
 
     // Skip git repo check - useful if workspace isn't a git repo
@@ -499,76 +467,13 @@ export class CodexProvider extends BaseCliProvider {
       return;
     }
 
-    // default mode + full-access = full-auto (no explicit edit restriction)
-    if (mode === 'default' && accessLevel === 'full-access') {
-      args.push('--full-auto');
-      console.log('[Mysti] Codex: Using full-auto mode (default + full-access)');
-      return;
-    }
-
-    // All other combinations: bypass CLI permissions to prevent stdin hang.
-    // The stream-level tool-use gate in ChatViewProvider handles permission prompts.
-    args.push('--full-auto');
-    console.log(`[Mysti] Codex: Bypassing CLI permissions (stream gate handles UI prompts) [mode=${mode}, access=${accessLevel}]`);
-  }
-
-  /**
-   * Process Codex JSONL stream output
-   *
-   * Event types from codex exec --json:
-   * - thread.started, turn.started, turn.completed, turn.failed
-   * - item.started, item.updated, item.completed
-   * - error (unrecoverable errors)
-   *
-   * Item types:
-   * - agent_message: Text response from the agent
-   * - reasoning: Internal reasoning/thinking
-   * - command_execution: Shell command execution
-   * - file_change: File modifications
-   * - mcp_tool_call: MCP tool invocations
-   * - web_search: Web search operations
-   * - todo_list: Task tracking
-   */
-  private async *_processCodexStream(session: CodexSessionState): AsyncGenerator<StreamChunk> {
-    let buffer = '';
-    let hasYieldedContent = false;
-
-    if (session.process?.stdout) {
-      for await (const chunk of session.process.stdout) {
-        const chunkStr = chunk.toString();
-        buffer += chunkStr;
-
-        // Process complete lines (JSONL format)
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (line.trim()) {
-            const parsed = this._parseCodexEvent(line, session);
-            if (parsed) {
-              hasYieldedContent = true;
-              yield parsed;
-            }
-          }
-        }
-      }
-    }
-
-    // Process remaining buffer
-    if (buffer.trim()) {
-      const parsed = this._parseCodexEvent(buffer, session);
-      if (parsed) {
-        hasYieldedContent = true;
-        yield parsed;
-      }
-    }
-
-    // Wait for process to complete
-    const exitCode = await this.waitForProcess(session);
-
-    if (exitCode !== 0 && exitCode !== null && !hasYieldedContent) {
-      yield { type: 'error', content: `Codex exited with code ${exitCode}` };
-    }
+    // Everything else: workspace-write sandbox. `codex exec` already never asks
+    // for approval when headless (exec/src/lib.rs, rust-v0.153.4), so there is
+    // no stdin prompt to hang on; the stream-level tool-use gate in
+    // ChatViewProvider handles permission prompts. NOT `--full-auto`: Codex
+    // 0.153.4 removed it and rejects the whole invocation at argument parsing.
+    args.push('--sandbox', 'workspace-write');
+    console.log(`[Mysti] Codex: workspace-write sandbox (stream gate handles UI prompts) [mode=${mode}, access=${accessLevel}]`);
   }
 
   /**
@@ -602,8 +507,28 @@ export class CodexProvider extends BaseCliProvider {
           return null; // Don't return done here - let sendMessage handle it
         }
 
-        case 'turn.failed':
-          return { type: 'error', content: event.error || 'Turn failed' };
+        case 'turn.failed': {
+          // event.error may be a raw object ({ message, ... }) — stringify
+          // safely so the webview never renders "[object Object]" (Plan 18 4.6a).
+          const rawError: unknown = event.error;
+          let content: string;
+          if (typeof rawError === 'string' && rawError) {
+            content = rawError;
+          } else if (rawError && typeof rawError === 'object'
+              && typeof (rawError as { message?: unknown }).message === 'string'
+              && (rawError as { message: string }).message) {
+            content = (rawError as { message: string }).message;
+          } else if (rawError !== undefined && rawError !== null && rawError !== '') {
+            try {
+              content = JSON.stringify(rawError);
+            } catch {
+              content = 'Turn failed';
+            }
+          } else {
+            content = 'Turn failed';
+          }
+          return { type: 'error', content };
+        }
 
         // Item events - these contain the actual content
         case 'item.started':
@@ -620,26 +545,19 @@ export class CodexProvider extends BaseCliProvider {
           return { type: 'error', content: event.message || event.error || 'Unknown error' };
 
         default:
-          // Try to extract content from unknown event types
+          // Try to extract content from unknown event types.
+          // Plan 02 Phase 3: never reclassify plain agent text as thinking —
+          // only reasoning items (handled in _parseCodexItem) yield thinking
+          // chunks. Bold ("**…**") agent text is legitimate markdown body.
           if (event.content || event.text || event.message) {
             const content = event.content || event.text || event.message;
-            // Check if content looks like thinking (starts and ends with **)
-            if (typeof content === 'string' && content.startsWith('**') && content.endsWith('**')) {
-              const thinking = content.replace(/^\*\*/, '').replace(/\*\*$/, '').trim() + '\n';
-              return { type: 'thinking', content: thinking };
-            }
             return { type: 'text', content };
           }
           return null;
       }
     } catch {
-      // If it's not JSON, treat as plain text output
+      // If it's not JSON, treat as plain text output (never thinking — see above)
       if (line.trim()) {
-        // Check if line looks like thinking (starts and ends with **)
-        if (line.startsWith('**') && line.endsWith('**')) {
-          const thinking = line.replace(/^\*\*/, '').replace(/\*\*$/, '').trim() + '\n';
-          return { type: 'thinking', content: thinking };
-        }
         return { type: 'text', content: line };
       }
     }
@@ -703,11 +621,16 @@ export class CodexProvider extends BaseCliProvider {
           command: item.command || ''
         };
 
-        // Codex uses exit_code and status for completion detection
+        // Codex uses exit_code and status for completion detection.
+        // A completion WITHOUT an exit_code (null/undefined) is success-unknown,
+        // NOT a failure — only status:'failed' or an explicit non-zero exit code
+        // marks failure (Plan 18 4.6b: `undefined !== null && undefined !== 0`
+        // used to flag exit-code-less item.completed events as failed).
+        const hasExitCode = item.exit_code !== null && item.exit_code !== undefined;
         const isCompleted = eventType === 'item.completed' ||
                            item.status === 'completed' ||
-                           item.exit_code !== null && item.exit_code !== undefined;
-        const isFailed = item.status === 'failed' || (item.exit_code !== null && item.exit_code !== 0);
+                           hasExitCode;
+        const isFailed = item.status === 'failed' || (hasExitCode && item.exit_code !== 0);
 
         if (isCompleted) {
           // Mark as completed to prevent duplicate tool_result emissions
@@ -740,7 +663,8 @@ export class CodexProvider extends BaseCliProvider {
               id: toolId,
               name: toolName,
               input,
-              status: 'running'
+              status: 'running',
+              kind: toolKind(toolName)
             }
           };
         }
@@ -819,7 +743,8 @@ export class CodexProvider extends BaseCliProvider {
               id: toolId,
               name: toolName,
               input,
-              status: 'running'
+              status: 'running',
+              kind: toolKind(toolName)
             }
           };
         }
@@ -890,7 +815,8 @@ export class CodexProvider extends BaseCliProvider {
               id: fileId,
               name: toolName,
               input,
-              status: 'running'
+              status: 'running',
+              kind: toolKind(toolName)
             }
           };
         }
@@ -941,7 +867,8 @@ export class CodexProvider extends BaseCliProvider {
               id: searchId,
               name: 'web_search',
               input: searchInput,
-              status: 'running'
+              status: 'running',
+              kind: toolKind('web_search')
             }
           };
         }
@@ -959,7 +886,10 @@ export class CodexProvider extends BaseCliProvider {
       }
 
       default: {
-        // Check if this is reasoning/thinking content in a different structure
+        // Check if this is reasoning/thinking content in a different structure.
+        // Plan 02 Phase 3: ONLY explicit reasoning items/fields become thinking
+        // chunks. The old "**…**"-wrapped-text heuristic misclassified bold
+        // markdown in plain agent text as thinking — removed.
         if (item.reasoning) {
           let thinking = item.reasoning;
           thinking = thinking.replace(/^\*\*/, '').replace(/\*\*$/, '').trim() + '\n';
@@ -969,21 +899,10 @@ export class CodexProvider extends BaseCliProvider {
         // Try to extract text content from unknown item types
         // Check delta first for streaming
         if (item.delta?.content) {
-          let content = item.delta.content;
-          // Check if content looks like thinking (starts and ends with **)
-          if (content.startsWith('**') && content.endsWith('**')) {
-            content = content.replace(/^\*\*/, '').replace(/\*\*$/, '').trim() + '\n';
-            return { type: 'thinking', content };
-          }
-          return { type: 'text', content };
+          return { type: 'text', content: item.delta.content };
         }
         const content = item.content || item.text || item.message;
         if (content && typeof content === 'string') {
-          // Check if content looks like thinking (starts and ends with **)
-          if (content.startsWith('**') && content.endsWith('**')) {
-            const thinking = content.replace(/^\*\*/, '').replace(/\*\*$/, '').trim() + '\n';
-            return { type: 'thinking', content: thinking };
-          }
           return { type: 'text', content };
         }
         return null;
@@ -994,7 +913,9 @@ export class CodexProvider extends BaseCliProvider {
   /**
    * Get the effective model, preferring provider-specific custom model over dropdown selection
    */
-  private _getEffectiveModel(settings: Settings): string | undefined {
+  protected _getEffectiveModel(settings: Settings): string | undefined {
+    // P2.3/P0.2b: an explicitly routed model wins over the per-provider custom-model config.
+    if (settings.routedModel) { return settings.routedModel; }
     const config = vscode.workspace.getConfiguration('mysti');
     const customModel = config.get<string>('codexModel', '');
     if (customModel) {
@@ -1005,14 +926,20 @@ export class CodexProvider extends BaseCliProvider {
       }
       console.warn(`[Mysti] Codex: Invalid custom model "${customModel}": ${validation.error}`);
     }
-    // Fall back to dropdown selection, but only if it's a valid Codex model
+    // Fall back to dropdown selection, but only if it's a Codex model — the
+    // global defaultModel may belong to another provider (cross-provider guard).
+    // The shared catalog stores additional IDs per provider. Honor those IDs
+    // while rejecting a selection leaked from another provider.
     if (settings.model) {
       const validCodexModels = this.config.models.map(m => m.id);
-      if (validCodexModels.includes(settings.model)) {
-        return settings.model !== this.config.defaultModel ? settings.model : undefined;
+      const customModels = config.get<Record<string, string[]>>('customModels', {});
+      const declaredCustom = Array.isArray(customModels?.[this.id]) && customModels[this.id].includes(settings.model);
+      if (validateModelName(settings.model).valid && (validCodexModels.includes(settings.model) || declaredCustom)) {
+        return settings.model;
       }
+      console.warn(`[Mysti] Codex: Ignoring non-Codex model "${settings.model}" (use the codexModel setting for a custom Codex model); using the Mysti Codex default.`);
     }
-    return undefined;
+    return this.config.defaultModel;
   }
 
   /**
@@ -1032,13 +959,66 @@ export class CodexProvider extends BaseCliProvider {
     return undefined;
   }
 
-  // These methods are required by abstract base but we override sendMessage
+  // Legacy event/argv support is retained for imported fixtures; production
+  // requests require app-server and cannot downgrade to single-shot exec.
   protected buildCliArgs(settings: Settings, _session: PanelSessionState): string[] {
-    return this._buildCodexArgs(settings);
+    // Plan 18 (Wave 3): the base single-shot path sends the prompt via stdin;
+    // `-` tells `codex exec` to read it from there (this used to live in the
+    // deleted sendMessage override).
+    return [...this._buildCodexArgs(settings), '-'];
   }
 
   protected parseStreamLine(line: string, session: PanelSessionState): StreamChunk | null {
+    const codex = session as CodexSessionState;
+    if (codex.appServer) {
+      try {
+        const data = JSON.parse(line);
+        const chunk = handleCodexAppServer(data, codex.appServer, session.persistentProcess, this._nativeApprovalRequests(session));
+        session.sessionId = codex.appServer.threadId;
+        if (data.error && !data.method) { this._interruptPersistentProcess(session); }
+        return chunk;
+      } catch { return null; }
+    }
     return this._parseCodexEvent(line, session as CodexSessionState);
+  }
+
+  protected requiresPersistentTransport(): boolean { return true; }
+
+  protected buildPersistentCliArgs(settings: Settings, session: PanelSessionState): string[] {
+    const profile = this._getProfile();
+    (session as CodexSessionState).appServer = {
+      profile,
+      settings: { ...settings }, cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || process.cwd(),
+      model: this._getEffectiveModel(settings), effort: clampEffort(settings.effortLevel, CODEX_EFFORT_LEVELS),
+      threadId: session.sessionId, initialized: false, nextId: 0, requests: new Map(), items: new Map(), streamed: new Set(),
+    };
+    return [...(profile ? ['--profile', profile] : []), 'app-server'];
+  }
+
+  protected _persistentSettingsMatch(session: PanelSessionState, settings: Settings): boolean {
+    const state = (session as CodexSessionState).appServer;
+    return super._persistentSettingsMatch(session, settings)
+      && state?.settings.mode === settings.mode && state?.settings.accessLevel === settings.accessLevel
+      && state?.profile === this._getProfile();
+  }
+
+  protected _formatPersistentInput(prompt: string, session: PanelSessionState): string {
+    const state = (session as CodexSessionState).appServer;
+    if (!state) { throw new Error('Codex app-server was not initialized'); }
+    return codexAppServerInput(state, prompt);
+  }
+
+  protected _isResponseBoundary(line: string, session?: PanelSessionState): boolean {
+    try { return isCodexAppServerBoundary(JSON.parse(line), (session as CodexSessionState | undefined)?.appServer); } catch { return false; }
+  }
+
+  protected _interruptPersistentProcess(session: PanelSessionState): void {
+    // Evict on Stop so a late completion cannot terminate the replacement turn.
+    // The CLI-issued thread ID is retained for native resume after respawn.
+    const proc = session.persistentProcess;
+    if (isProcessLive(proc)) { void killProcessTree(proc, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName }); }
+    session.persistentProcess = null;
+    session.persistentReady = false;
   }
 
 }

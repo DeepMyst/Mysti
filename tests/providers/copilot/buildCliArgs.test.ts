@@ -19,9 +19,18 @@ describe('CopilotProvider.buildCliArgs', () => {
     provider = new TestableCopilotProvider();
   });
 
-  it('should include --allow-all-tools for default ask-permission (bypassing CLI permissions)', () => {
+  /**
+   * Ask-tier on Copilot 0.0.x: plain-text output, no tool events, so nothing
+   * for Mysti's gate to intercept and the only safe answer is to deny outright.
+   * 1.0 changed this — see tests/providers/copilot/permissions.test.ts.
+   */
+  it('should deny shell/write for default ask-permission on a pre-1.0 CLI', () => {
+    (provider as unknown as { _cachedCliVersion: string | null })._cachedCliVersion = '0.0.372';
     const args = provider.buildCliArgs(defaultSettings(), createCopilotSession());
-    expect(args).toContain('--allow-all-tools');
+    expect(args).not.toContain('--allow-all-tools');
+    expect(args).toContain('--deny-tool');
+    expect(args).toContain('shell');
+    expect(args).toContain('write');
   });
 
   it('should deny shell and write tools for read-only access', () => {

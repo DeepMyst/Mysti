@@ -13,6 +13,12 @@
 
 import * as vscode from 'vscode';
 import { BaseCliProvider, type PanelSessionState } from '../base/BaseCliProvider';
+import { toolKind } from '../../utils/toolNames';
+import { clampEffort } from '../../utils/effort';
+import type { EffortLevel } from '../../types';
+
+/** LocalAI `reasoning_effort` supports low/medium/high (no xhigh/max; clamp down). */
+const LOCALAI_EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high'];
 import type {
   CliDiscoveryResult,
   AuthConfig,
@@ -28,6 +34,7 @@ import type {
   Conversation,
   AgentConfiguration,
   Attachment,
+  ModelInfo,
 } from '../../types';
 
 /**
@@ -36,6 +43,23 @@ import type {
 export interface LocalAISessionState extends PanelSessionState {
   abortController: AbortController | null;
   lastUsageStats: { input_tokens: number; output_tokens: number } | null;
+}
+
+const DEFAULT_LOCALAI_ENDPOINT = 'http://localhost:8080';
+
+/** Timeout for discovery/auth probes — local endpoint, so 1s is plenty. */
+const DISCOVERY_PROBE_TIMEOUT_MS = 1000;
+
+/**
+ * Module-level TTL for skipping background-init probes after a failed probe of
+ * the DEFAULT endpoint. Survives provider re-construction within the process.
+ */
+const DISCOVERY_FAILURE_TTL_MS = 5 * 60 * 1000;
+let _lastDefaultEndpointFailureAt = 0;
+
+/** Reset the module-level discovery failure timestamp (for tests). */
+export function resetLocalAIDiscoveryCache(): void {
+  _lastDefaultEndpointFailureAt = 0;
 }
 
 /**
@@ -59,7 +83,10 @@ export class LocalAIProvider extends BaseCliProvider {
         id: 'gpt-4',
         name: 'GPT-4 (LocalAI)',
         description: 'LocalAI model configured as gpt-4',
-        contextWindow: 128000
+        // A name the user maps to any local model — not OpenAI's GPT-4. LocalAI
+        // caps an unset `context_size` at 8192 (DefaultAutoContextSize), and
+        // its own gpt-4 AIO config uses 8192. 128k overstated it 16x.
+        contextWindow: 8192
       },
       {
         id: 'ggml-gpt4all-j',
@@ -83,7 +110,19 @@ export class LocalAIProvider extends BaseCliProvider {
     supportsToolUse: true,
     supportsSessions: false,
     supportsImages: false,
-    supportsAutoInstall: false
+    supportsAutoInstall: false,
+    supportsPromptEnhancement: false,
+    // Plan 02 Phase 1 capability matrix
+    thinkingStyle: 'none',
+    thinkingLevelEffective: false,
+    effortLevels: LOCALAI_EFFORT_LEVELS,  // reasoning_effort (low/medium/high)
+    effortDefault: 'medium',
+    planMode: 'detected',
+    sessionKind: 'none',           // stateless HTTP requests
+    emitsToolResults: false,       // tool_use emitted, tool_result never — webview auto-resolves cards
+    emitsUsage: true,
+    usageConvention: 'auto',   // OpenAI-compatible server fronting arbitrary local models.
+    modelSelection: 'custom-only'  // models live on the user's LocalAI server
   };
 
   protected _createSession(panelId: string): LocalAISessionState {
@@ -103,28 +142,67 @@ export class LocalAIProvider extends BaseCliProvider {
 
   // --- Discovery (HTTP endpoint check) ---
 
+  /** True while background init is running (set by initialize()) — gates the TTL probe skip. */
+  private _initializing = false;
+
   private _getEndpoint(): string {
-    return vscode.workspace.getConfiguration('mysti').get<string>('localaiEndpoint', 'http://localhost:8080');
+    return vscode.workspace.getConfiguration('mysti').get<string>('localaiEndpoint', DEFAULT_LOCALAI_ENDPOINT);
   }
 
   private _getApiKey(): string {
     return vscode.workspace.getConfiguration('mysti').get<string>('localaiApiKey', '');
   }
 
-  async discoverCli(): Promise<CliDiscoveryResult> {
+  async initialize(): Promise<void> {
+    this._initializing = true;
+    try {
+      await super.initialize();
+    } finally {
+      this._initializing = false;
+    }
+  }
+
+  /**
+   * Probe the LocalAI HTTP endpoint.
+   *
+   * During background init only: when the configured endpoint is the default
+   * and a previous probe failed within the TTL, skip the network I/O and
+   * report not-running. The real probe is deferred to first actual use and
+   * the setup wizard (both call discoverCli() outside initialize(), so they
+   * never hit the skip). Pass `force` to bypass the skip explicitly.
+   */
+  async discoverCli(force = false): Promise<CliDiscoveryResult> {
     const endpoint = this._getEndpoint();
+    const isDefaultEndpoint = endpoint === DEFAULT_LOCALAI_ENDPOINT;
+
+    if (!force && this._initializing && isDefaultEndpoint &&
+        Date.now() - _lastDefaultEndpointFailureAt < DISCOVERY_FAILURE_TTL_MS) {
+      console.log('[Mysti] LocalAI: Skipping init probe (recent failure within TTL)');
+      return {
+        found: false,
+        path: endpoint,
+        installCommand: this.getInstallCommand(),
+      };
+    }
+
     try {
       const headers: Record<string, string> = {};
       const apiKey = this._getApiKey();
       if (apiKey) {
         headers['Authorization'] = `Bearer ${apiKey}`;
       }
-      const response = await fetch(`${endpoint}/v1/models`, { signal: AbortSignal.timeout(3000), headers });
+      const response = await fetch(`${endpoint}/v1/models`, { signal: AbortSignal.timeout(DISCOVERY_PROBE_TIMEOUT_MS), headers });
       if (response.ok) {
+        if (isDefaultEndpoint) {
+          _lastDefaultEndpointFailureAt = 0;
+        }
         return { found: true, path: endpoint };
       }
     } catch {
       // Server not reachable
+    }
+    if (isDefaultEndpoint) {
+      _lastDefaultEndpointFailureAt = Date.now();
     }
     return {
       found: false,
@@ -135,6 +213,32 @@ export class LocalAIProvider extends BaseCliProvider {
 
   getCliPath(): string {
     return this._getEndpoint();
+  }
+
+  /**
+   * Live model discovery (Plan 01 Phase 3): GET /v1/models (OpenAI-compatible)
+   * lists the models the LocalAI server exposes. Returns null on any failure so
+   * the registry keeps its curated/cached list. Never throws.
+   */
+  async discoverModels(timeoutMs: number): Promise<ModelInfo[] | null> {
+    const endpoint = this._getEndpoint();
+    try {
+      const headers: Record<string, string> = {};
+      const apiKey = this._getApiKey();
+      if (apiKey) {
+        headers['Authorization'] = `Bearer ${apiKey}`;
+      }
+      const response = await fetch(`${endpoint}/v1/models`, { signal: AbortSignal.timeout(timeoutMs), headers });
+      if (!response.ok) { return null; }
+      const data = await response.json() as { data?: Array<{ id?: string }> };
+      const models = (data.data || [])
+        .map(m => (m.id || '').trim())
+        .filter(id => id.length > 0)
+        .map<ModelInfo>(id => ({ id, name: id }));
+      return models.length > 0 ? models : null;
+    } catch {
+      return null;
+    }
   }
 
   // --- Authentication ---
@@ -154,7 +258,7 @@ export class LocalAIProvider extends BaseCliProvider {
       if (apiKey) {
         headers['Authorization'] = `Bearer ${apiKey}`;
       }
-      const response = await fetch(`${endpoint}/v1/models`, { signal: AbortSignal.timeout(3000), headers });
+      const response = await fetch(`${endpoint}/v1/models`, { signal: AbortSignal.timeout(DISCOVERY_PROBE_TIMEOUT_MS), headers });
       if (response.ok) {
         return { authenticated: true, user: 'LocalAI (local)' };
       }
@@ -172,7 +276,46 @@ export class LocalAIProvider extends BaseCliProvider {
   }
 
   getInstallCommand(): string {
-    return 'curl https://localai.io/install.sh | sh';
+    // NOTE: the old `curl https://localai.io/install.sh | sh` was a 404 on every
+    // OS (no such script exists). Docker is LocalAI's primary supported install
+    // and works on all platforms; per-OS alternatives live in getInstallMethods().
+    return this._installCommandForCurrentOS('docker run -p 8080:8080 --name local-ai -ti localai/localai:latest');
+  }
+
+  getInstallMethods(): import('../../types').InstallMethod[] {
+    return [
+      // Docker — the officially recommended, cross-platform path
+      {
+        id: 'docker',
+        label: 'Docker (recommended, all platforms)',
+        command: 'docker run -p 8080:8080 --name local-ai -ti localai/localai:latest',
+        platform: 'all',
+        priority: 1,
+      },
+      // Release filenames include a version and architecture; let users select the matching asset.
+      {
+        id: 'binary-darwin',
+        label: 'Prebuilt binary (macOS)',
+        command: 'https://github.com/mudler/LocalAI/releases/latest',
+        platform: 'darwin',
+        priority: 2,
+      },
+      {
+        id: 'binary-linux',
+        label: 'Prebuilt binary (Linux)',
+        command: 'https://github.com/mudler/LocalAI/releases/latest',
+        platform: 'linux',
+        priority: 2,
+      },
+      // Windows — Docker Desktop only (no native binary); WSL is the other option
+      {
+        id: 'releases',
+        label: 'LocalAI releases (Windows: use Docker Desktop or WSL)',
+        command: 'https://github.com/mudler/LocalAI/releases/latest',
+        platform: 'win32',
+        priority: 2,
+      },
+    ];
   }
 
   // --- Stub methods (not used for HTTP provider) ---
@@ -207,7 +350,10 @@ export class LocalAIProvider extends BaseCliProvider {
 
     // Read configurable settings
     const endpoint = this._getEndpoint();
-    const model = config.get<string>('localaiModel', '') || this.config.defaultModel;
+    // Model precedence: effective/routed model FIRST (so the Mysti coordinator's
+    // tier-routing / routedModel is honored, not silently dropped), then the
+    // user-configured provider model, then the provider default.
+    const model = this._getEffectiveModel(settings) || config.get<string>('localaiModel', '') || this.config.defaultModel;
     const temperature = config.get<number>('localaiTemperature', 0.7);
     const maxTokens = config.get<number>('localaiMaxTokens', 0);
     const apiKey = this._getApiKey();
@@ -232,6 +378,11 @@ export class LocalAIProvider extends BaseCliProvider {
       };
       if (maxTokens > 0) {
         body.max_tokens = maxTokens;
+      }
+      // Reasoning effort → `reasoning_effort` (LocalAI tops out at high; xhigh/max clamp down).
+      const localaiEffort = clampEffort(settings.effortLevel, LOCALAI_EFFORT_LEVELS);
+      if (localaiEffort) {
+        body.reasoning_effort = localaiEffort;
       }
 
       const headers: Record<string, string> = {
@@ -303,7 +454,12 @@ export class LocalAIProvider extends BaseCliProvider {
               yield { type: 'text', content: delta.content };
             }
 
-            // Handle tool calls
+            // Handle tool calls.
+            // Tool-card resolution strategy (Plan 02 Phase 3): LocalAI never
+            // executes tools, so no tool_result is EVER emitted — and we must
+            // NOT fabricate one. The manifest declares emitsToolResults: false
+            // and the webview auto-resolves running tool cards for such
+            // providers when the response completes.
             if (delta?.tool_calls && Array.isArray(delta.tool_calls)) {
               for (const toolCall of delta.tool_calls) {
                 const fn = toolCall.function;
@@ -315,6 +471,7 @@ export class LocalAIProvider extends BaseCliProvider {
                       name: fn.name,
                       input: fn.arguments ? JSON.parse(fn.arguments) : {},
                       status: 'running',
+                      kind: toolKind(fn.name),
                     }
                   };
                 }
@@ -335,7 +492,10 @@ export class LocalAIProvider extends BaseCliProvider {
       }
 
       // Use captured usage or estimate from token count
-      const usage = session.lastUsageStats || { input_tokens: 0, output_tokens: totalOutputTokens };
+      // The fallback COUNTS streamed deltas — it is an estimate, not a report.
+      // Flag it so ledgers/telemetry never absorb it as a measured figure.
+      const usage = session.lastUsageStats
+        || { input_tokens: 0, output_tokens: totalOutputTokens, estimated: true };
       session.lastUsageStats = null;
       yield { type: 'done', usage };
 
@@ -348,6 +508,9 @@ export class LocalAIProvider extends BaseCliProvider {
       yield { type: 'done' };
     } finally {
       clearTimeout(timeoutId);
+      // Plan 18 (2.4 audit): abort on the way out — generator abandonment
+      // otherwise leaks the SSE connection. No-op if already finished.
+      session.abortController?.abort();
       session.abortController = null;
     }
   }

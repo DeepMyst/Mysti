@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src {{cspSource}} 'unsafe-inline'; script-src 'nonce-{{nonce}}'; img-src {{cspSource}} https: data:;" />
+  <link rel="stylesheet" href="{{styleUri}}" />
+  <title>DeepMyst Connections</title>
+</head>
+<body>
+  <header class="header">
+    <div class="title-row">
+      <h1>DeepMyst Connections</h1>
+      <span id="status-pill" class="pill pill-muted">Checking…</span>
+    </div>
+    <p class="subtitle">
+      Connect MCP tools through DeepMyst. Sign in once — DeepMyst keeps your
+      connection credentials, and your local AI CLIs reach the tools through
+      DeepMyst with no keys stored on this machine.
+    </p>
+  </header>
+
+  <!-- Signed-out view -->
+  <section id="signed-out" class="card hidden">
+    <h2>Sign in to DeepMyst</h2>
+    <p class="muted">
+      Click below — DeepMyst opens in your browser, you sign up / sign in, and
+      it links back to Mysti automatically (no key to copy). DeepMyst keeps your
+      connection credentials; Mysti only stores the returned key.
+    </p>
+    <div class="actions">
+      <button id="btn-signin" class="btn btn-primary">Sign in to DeepMyst</button>
+      <button id="btn-createkey" class="btn btn-link">Enter an API key manually</button>
+    </div>
+  </section>
+
+  <!-- Signed-in view -->
+  <section id="signed-in" class="card hidden">
+    <div class="row-between">
+      <div>
+        <h2>Connected to DeepMyst</h2>
+        <p class="muted">Your MCP connections (Smithery, Composio, …) live in DeepMyst and appear here.</p>
+      </div>
+      <div class="actions">
+        <button id="btn-manage" class="btn btn-primary">Browse catalog &amp; connect</button>
+        <button id="btn-refresh" class="btn">Refresh</button>
+        <button id="btn-signout" class="btn btn-link">Sign out</button>
+      </div>
+    </div>
+
+    <div id="loading" class="muted hidden">Loading your connections…</div>
+
+    <div class="clis-toggle">
+      <label class="switch-row">
+        <input type="checkbox" id="use-clis" />
+        <span>Use my connections in local CLIs</span>
+      </label>
+      <p class="muted small">
+        Writes one DeepMyst MCP endpoint into your local AI CLIs (Claude Code, Gemini, Qwen, OpenCode, Codex, Cline)
+        so their agents can call your connected tools directly. Your <code>dm_</code> key is stored in those CLI
+        config files (incl. the workspace <code>.mcp.json</code>, which may be committed to git) — leave off if you don't want that.
+      </p>
+      <p id="clis-status" class="muted small"></p>
+    </div>
+
+    <h3 class="section-title">My connections</h3>
+    <p class="muted small">MCP servers (Smithery, Composio, …) you've authorized through DeepMyst via OAuth. Connect new ones with “Browse catalog &amp; connect”.</p>
+    <div id="connections-error" class="banner hidden"></div>
+    <div id="connections-empty" class="empty hidden">
+      No MCP connections yet. Use “Browse catalog &amp; connect” to authorize Smithery / Composio tools on DeepMyst.
+      <br /><span class="muted small">Already connected some on DeepMyst but they're not showing? Your sign-in key may be out of date — Sign out and sign in again to refresh it.</span>
+    </div>
+    <div id="connections-unavailable" class="empty hidden">
+      Couldn’t list MCP connections from this DeepMyst instance. You can still manage them on the web.
+    </div>
+    <ul id="connections-list" class="list"></ul>
+  </section>
+
+  <script nonce="{{nonce}}" src="{{scriptUri}}"></script>
+</body>
+</html>

@@ -18,6 +18,8 @@ import * as os from 'os';
 import { spawn, exec } from 'child_process';
 import { promisify } from 'util';
 import type { ProviderManager } from './ProviderManager';
+import type { ICliProvider } from '../providers/base/IProvider';
+import type { CliDiscoveryService, CliStatus } from '../services/CliDiscoveryService';
 import type {
   ProviderSetupStatus,
   SetupResult,
@@ -38,9 +40,32 @@ import {
   MIN_NODE_VERSION,
   LOCAL_CLI_PREFIX
 } from '../constants';
+import { killProcessTree } from '../utils/processKill';
+import { quoteSetupExecutable } from '../utils/installerShell';
 import { getPlatformInfo, canWriteNpmGlobalDir, getNpmPrefix, resetPlatformInfoCache } from '../utils/platform';
 
 const execAsync = promisify(exec);
+
+/**
+ * Wizard status for all providers (returned by getWizardStatus and
+ * emitted by onWizardStatusUpdated).
+ */
+export interface WizardStatusResult {
+  providers: WizardProviderStatus[];
+  npmAvailable: boolean;
+  nodeVersion?: string;
+  anyReady: boolean;
+}
+
+/**
+ * Immediately-available wizard status (Plan 03 Phase 3a). `complete` is true
+ * only when every provider had a fresh (non-expired) discovery cache entry —
+ * when false, a background refresh has been kicked off and
+ * onWizardStatusUpdated will fire once it settles.
+ */
+export interface CachedWizardStatusResult extends WizardStatusResult {
+  complete: boolean;
+}
 
 /**
  * SetupManager orchestrates the CLI setup flow for AI providers.
@@ -59,10 +84,38 @@ export class SetupManager {
   private _npmAvailable: boolean | null = null;
   private _npmPath: string | null = null;
   private _npmCacheExpiry: number = 0;
+  /** Plan 03 Phase 3a: cached CLI discovery — single prober for wizard status. */
+  private _discoveryService: CliDiscoveryService | undefined;
+  /** Last node --version result (reused by getWizardStatusCached's zero-exec path). */
+  private _lastNodeVersion: string | undefined;
+  private readonly _installWatchers = new Map<string, () => void>();
+  private readonly _installRuns = new Map<string, Promise<InstallResult>>();
 
-  constructor(context: vscode.ExtensionContext, providerManager: ProviderManager) {
+  /** Single-flight guard for the background wizard status refresh. */
+  private _backgroundWizardRefresh: Promise<void> | null = null;
+
+  private readonly _onWizardStatusUpdatedEmitter = new vscode.EventEmitter<WizardStatusResult>();
+  /**
+   * Fires when a background wizard status refresh (kicked off by
+   * getWizardStatusCached on cache miss/expiry) completes. Consumers (e.g.
+   * ChatViewProvider) push the updated provider availability to webviews.
+   */
+  public readonly onWizardStatusUpdated: vscode.Event<WizardStatusResult> =
+    this._onWizardStatusUpdatedEmitter.event;
+
+  constructor(
+    context: vscode.ExtensionContext,
+    providerManager: ProviderManager,
+    discoveryService?: CliDiscoveryService
+  ) {
     this._extensionContext = context;
+    context.subscriptions?.push({ dispose: () => { for (const stop of this._installWatchers.values()) { stop(); } } });
     this._providerManager = providerManager;
+    this._discoveryService = discoveryService;
+    // An install or sign-in that flips a CLI's state reaches every panel now,
+    // on the same event the background refresh uses — the agent menu used to
+    // keep "Not Installed" until some unrelated read refreshed it.
+    discoveryService?.onDidChange(() => this._onWizardStatusUpdatedEmitter.fire(this.getWizardStatusCached()));
   }
 
   // ============================================================================
@@ -212,6 +265,7 @@ export class SetupManager {
     if (/engine.*node|requires.*node|minimum.*version|Unsupported.*engine|EBADENGINE/i.test(stderr)) {
       return 'version';
     }
+    if (/ENOENT|command not found|is not recognized/i.test(stderr)) { return 'not-found'; }
     if (exitCode === null) {
       return 'timeout';
     }
@@ -223,9 +277,9 @@ export class SetupManager {
    */
   private _getSuggestedFix(category: InstallErrorCategory, installCommand: string): string {
     const fixes: Record<InstallErrorCategory, string> = {
-      'permission': `No write permission to npm global directory. Mysti installed to ~/.mysti/cli instead.\n\nTo install globally, either:\n\u2022 Run with sudo: sudo ${installCommand}\n\u2022 Fix npm permissions: npm config set prefix ~/.npm-global\n\u2022 See https://docs.npmjs.com/resolving-eacces-permissions-errors`,
+      'permission': 'The global and user-local installation attempts failed. Choose a writable npm prefix or install manually. See https://docs.npmjs.com/resolving-eacces-permissions-errors',
       'network': 'Check your internet connection and proxy settings. If behind a firewall, try: npm config list to verify proxy settings.',
-      'version': `Node.js ${MIN_NODE_VERSION}+ is required. Visit nodejs.org to install the latest LTS version, or run: nvm install --lts`,
+      'version': 'This CLI requires a newer or supported Node.js version. Check the required version in the error details and install a compatible LTS release from nodejs.org.',
       'not-found': 'npm is not installed. Install Node.js from nodejs.org or use nvm (https://github.com/nvm-sh/nvm).',
       'command-failed': `Installation failed. Try running the install command manually in a terminal: ${installCommand}`,
       'timeout': 'Installation timed out. Check your network speed and try again.',
@@ -392,26 +446,30 @@ export class SetupManager {
       };
     }
 
-    // Step 1: Check Node.js version
-    onProgress?.('checking', 'Checking system requirements...', 5);
-    const nodeCheck = await this._checkNodeVersion();
-    if (!nodeCheck.meets) {
-      const suggestedFix = this._getSuggestedFix('version', provider.getInstallCommand());
-      return {
-        success: false,
-        installed: false,
-        authenticated: false,
-        error: nodeCheck.error || `Node.js ${MIN_NODE_VERSION}+ required`,
-        errorCategory: 'version',
-        suggestedFix
-      };
-    }
-
-    // Step 2: Check if already installed
+    // Check installation before requiring any npm prerequisites.
     onProgress?.('checking', 'Checking CLI installation...', 10);
     const discovery = await provider.discoverCli();
 
     if (!discovery.found) {
+      // Native CLIs and HTTP providers do not require Node merely to connect.
+      if (provider.capabilities.supportsAutoInstall) {
+        // Check the npm runtime before a new installation.
+        onProgress?.('checking', 'Checking system requirements...', 15);
+        const nodeCheck = await this._checkNodeVersion();
+        if (!nodeCheck.meets) {
+          const suggestedFix = this._getSuggestedFix('version', provider.getInstallCommand());
+          return {
+            success: false,
+            installed: false,
+            authenticated: false,
+            error: nodeCheck.error || `Node.js ${MIN_NODE_VERSION}+ required`,
+            errorCategory: 'version',
+            suggestedFix
+          };
+        }
+
+      }
+
       // Step 3: Try to auto-install
       onProgress?.('installing', `Installing ${provider.displayName} CLI...`, 20);
       const installResult = await this.autoInstallCli(providerId, onProgress);
@@ -455,6 +513,18 @@ export class SetupManager {
    * Auto-install CLI via npm with permission fallback and retry logic
    */
   async autoInstallCli(
+    providerId: string,
+    onProgress?: (step: string, message: string, progress?: number) => void
+  ): Promise<InstallResult> {
+    const running = this._installRuns.get(providerId);
+    if (running) { return running; }
+    const run = this._autoInstallCli(providerId, onProgress);
+    this._installRuns.set(providerId, run);
+    try { return await run; }
+    finally { if (this._installRuns.get(providerId) === run) { this._installRuns.delete(providerId); } }
+  }
+
+  private async _autoInstallCli(
     providerId: string,
     onProgress?: (step: string, message: string, progress?: number) => void
   ): Promise<InstallResult> {
@@ -527,13 +597,14 @@ export class SetupManager {
         if (localResult.success) {
           onProgress?.('installing', 'Verifying local installation...', 65);
 
-          const localDiscovery = await provider.discoverCli();
+          const localDiscovery = await provider.discoverCli(true);
           if (localDiscovery.found) {
+            await this._recordInstall(providerId);
             return { success: true };
           }
         }
 
-        // Local install failed too — show error with sudo instructions
+        // Local installation failed too; report recovery without claiming success.
         const suggestedFix = this._getSuggestedFix('permission', installCommand);
         return {
           success: false,
@@ -559,8 +630,9 @@ export class SetupManager {
           if (localResult.success) {
             onProgress?.('installing', 'Verifying local installation...', 65);
 
-            const localDiscovery = await provider.discoverCli();
+            const localDiscovery = await provider.discoverCli(true);
             if (localDiscovery.found) {
+              await this._recordInstall(providerId);
               return { success: true, attemptNumber: result.attemptNumber };
             }
           }
@@ -578,7 +650,7 @@ export class SetupManager {
       onProgress?.('installing', 'Verifying installation...', 70);
 
       // Verify installation
-      const discovery = await provider.discoverCli();
+      const discovery = await provider.discoverCli(true);
       if (!discovery.found) {
         return {
           success: false,
@@ -589,6 +661,7 @@ export class SetupManager {
         };
       }
 
+      await this._recordInstall(providerId);
       return { success: true };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -624,10 +697,12 @@ export class SetupManager {
       };
     }
 
-    // Transform "npm install -g <pkg>" -> "npm install --prefix ~/.mysti/cli <pkg>"
-    const localCommand = originalCommand
-      .replace(/\s+-g\s+/, ` --prefix "${localPrefix}" `)
-      .replace(/\s+--global\s+/, ` --prefix "${localPrefix}" `);
+    // Keep the global layout, but place it in the user's writable prefix.
+    // Some CLIs (including Cline) do not expose a launcher in a local install.
+    const quotedPrefix = process.platform === 'win32'
+      ? `"${localPrefix}"`
+      : "'" + localPrefix.replace(/'/g, "'\"'\"'") + "'";
+    const localCommand = originalCommand.replace(/^(npm\s+(?:install|i))\s+/, `$1 --prefix ${quotedPrefix} `);
 
     console.log(`[Mysti] SetupManager: Trying local install: ${localCommand}`);
 
@@ -664,16 +739,31 @@ export class SetupManager {
       };
     }
 
-    const authCommand = provider.getAuthCommand();
+    if (providerId === 'openrouter' || providerId === 'localai') {
+      await vscode.commands.executeCommand('workbench.action.openSettings', providerId === 'openrouter' ? 'mysti.openrouter.apiKey' : 'mysti.localaiEndpoint');
+      return { authenticated: false, error: 'Configure the provider connection in Settings, then refresh detection.' };
+    }
+
+    let authCommand = provider.getAuthCommand();
+    const discovery = await provider.discoverCli();
+    if (discovery.path && path.isAbsolute(discovery.path)) {
+      authCommand = authCommand.replace(/^\S+/, quoteSetupExecutable(discovery.path));
+    }
+    const executableDirs = [discovery.path, this._npmPath].filter((file): file is string => !!file && path.isAbsolute(file)).map(file => path.dirname(file));
     console.log(`[Mysti] SetupManager: Running auth command: ${authCommand}`);
 
     const terminal = vscode.window.createTerminal({
       name: `${provider.displayName} Authentication`,
+      env: executableDirs.length ? { PATH: [...executableDirs, process.env.PATH || process.env.Path || ''].join(path.delimiter) } : undefined,
       shellPath: process.platform === 'win32' ? 'cmd.exe' : '/bin/bash'
     });
 
     terminal.show();
     terminal.sendText(authCommand);
+
+    // Auth state will change out-of-band (user completes the flow in the
+    // terminal) — drop the cached status so subsequent reads re-probe.
+    this._discoveryService?.invalidate(providerId);
 
     return {
       authenticated: false,
@@ -697,22 +787,16 @@ export class SetupManager {
       };
     }
 
-    // Handle GCA method for Gemini
-    if (method === 'gca' && providerId === 'google-gemini') {
-      process.env['GOOGLE_GENAI_USE_GCA'] = 'true';
-      console.log('[Mysti] SetupManager: Set GOOGLE_GENAI_USE_GCA=true');
-
-      const terminal = vscode.window.createTerminal({
-        name: 'Gemini GCA Setup',
-        shellPath: process.platform === 'win32' ? 'cmd.exe' : '/bin/bash'
-      });
-      terminal.show();
-      terminal.sendText('echo "Adding GOOGLE_GENAI_USE_GCA=true to your shell profile..."');
-      terminal.sendText('echo \'export GOOGLE_GENAI_USE_GCA=true\' >> ~/.zshrc');
-      terminal.sendText('echo "Done! Run \'source ~/.zshrc\' or restart your terminal."');
-
-      const authStatus = await provider.checkAuthentication();
-      return authStatus;
+    if (!this.getAuthOptions(providerId).some(option => option.action === method)) {
+      return { authenticated: false, error: 'This authentication method is not supported by this provider.' };
+    }
+    if (method === 'api-key') {
+      apiKey = apiKey?.trim() || (await vscode.window.showInputBox({
+        title: `${provider.displayName} API key`, password: true, ignoreFocusOut: true,
+        prompt: 'Enter your API key. This connection lasts until VS Code restarts.',
+        validateInput: value => value.trim() ? undefined : 'Enter an API key.'
+      }))?.trim();
+      if (!apiKey) { return { authenticated: false, error: 'API-key entry cancelled. Choose a sign-in method to try again.' }; }
     }
 
     // Handle API key method
@@ -730,6 +814,9 @@ export class SetupManager {
         process.env['OPENAI_API_KEY'] = apiKey;
         console.log('[Mysti] SetupManager: Set OPENAI_API_KEY for this session');
       }
+
+      // Auth mutation — drop the cached status so subsequent reads re-probe
+      this._discoveryService?.invalidate(providerId);
 
       const authStatus = await provider.checkAuthentication();
       return authStatus;
@@ -761,6 +848,18 @@ export class SetupManager {
       docsUrl: string;
       authInstructions: string[];
     }> = {
+      'openrouter': {
+        docsUrl: 'https://openrouter.ai/keys',
+        authInstructions: ['Create an OpenRouter API key, then enter it in Mysti settings: mysti.openrouter.apiKey.', 'No local CLI installation is required. Refresh detection after saving.']
+      },
+      'ollama': {
+        docsUrl: 'https://ollama.com/download',
+        authInstructions: ['Start Ollama and pull a model before chatting: ollama pull <model>', 'For a remote server, configure mysti.ollamaEndpoint in Settings. No account sign-in is required.']
+      },
+      'localai': {
+        docsUrl: 'https://github.com/mudler/LocalAI/releases/latest',
+        authInstructions: ['Start LocalAI using your chosen installation method and load a model.', 'Configure mysti.localaiEndpoint and, if required, mysti.localaiApiKey in Settings, then refresh detection.']
+      },
       'claude-code': {
         docsUrl: 'https://docs.anthropic.com/claude/docs/claude-code',
         authInstructions: [
@@ -771,19 +870,19 @@ export class SetupManager {
         ]
       },
       'openai-codex': {
-        docsUrl: 'https://platform.openai.com/docs/guides/codex',
+        docsUrl: 'https://developers.openai.com/codex/cli',
         authInstructions: [
-          'Option 1: Run "codex auth login" to sign in with ChatGPT account',
+          'Option 1: Run "codex login" to sign in with ChatGPT account',
           'Option 2: Set OPENAI_API_KEY environment variable',
           'Requires ChatGPT Plus/Pro subscription or API credits'
         ]
       },
       'google-gemini': {
-        docsUrl: 'https://ai.google.dev/gemini-api/docs/aistudio-quickstart',
+        docsUrl: 'https://geminicli.com/docs/get-started/authentication/',
         authInstructions: [
           'Option 1: Run "gemini" and sign in with your Google account',
           'Option 2: Set GEMINI_API_KEY environment variable',
-          'Option 3: Set GOOGLE_GENAI_USE_GCA=true for Google Cloud subscribers'
+          'Option 3: Configure Google Cloud credentials, GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION, then select Vertex AI in Gemini'
         ]
       },
       'cursor': {
@@ -798,7 +897,7 @@ export class SetupManager {
 
     const config = providerConfigs[providerId] || {
       docsUrl: undefined,
-      authInstructions: ['Run the authentication command shown above']
+      authInstructions: [providerId === 'openrouter' ? provider.getAuthCommand() : `After installation, run: ${provider.getAuthCommand()}`]
     };
 
     return {
@@ -830,11 +929,11 @@ export class SetupManager {
           action: 'api-key'
         },
         {
-          id: 'gca',
-          label: 'Google Cloud Auth (GCA)',
-          description: 'Use Application Default Credentials for Cloud subscribers',
+          id: 'vertex-ai',
+          label: 'Vertex AI / Google Cloud',
+          description: 'Configure Cloud credentials, project and location first, then select Vertex AI in the CLI',
           icon: '☁️',
-          action: 'gca'
+          action: 'cli-login'
         }
       ];
     }
@@ -885,41 +984,51 @@ export class SetupManager {
   // ============================================================================
 
   /**
-   * Get detailed wizard status for all providers (enhanced for setup wizard)
+   * Get detailed wizard status for all providers (enhanced for setup wizard).
+   *
+   * Plan 03 Phase 3a: reads through CliDiscoveryService — only stale/missing
+   * cache entries are probed (in parallel). Falls back to direct serial
+   * probing when no discovery service was injected (legacy/tests).
    */
-  async getWizardStatus(): Promise<{
-    providers: WizardProviderStatus[];
-    npmAvailable: boolean;
-    nodeVersion?: string;
-    anyReady: boolean;
-  }> {
+  async getWizardStatus(): Promise<WizardStatusResult> {
+    // Plan 03 Phase 2: provider init is backgrounded at activation. Wait for
+    // it to settle so wizard status doesn't race the startup discovery probes.
+    // Resolves immediately once background init has completed.
+    await this._providerManager.whenReady;
+
     const npmAvailable = await this.checkNpmAvailable();
     const nodeVersion = await this._getNodeVersion();
     const providers: WizardProviderStatus[] = [];
 
-    for (const provider of this._providerManager.getAllProviders()) {
-      const discovery = await provider.discoverCli();
-      let authenticated = false;
+    const statusById = new Map<string, CliStatus>();
+    if (this._discoveryService) {
+      for (const status of await this._discoveryService.getAllStatuses()) {
+        statusById.set(status.providerId, status);
+      }
+    }
 
-      if (discovery.found) {
-        const authStatus = await provider.checkAuthentication();
-        authenticated = authStatus.authenticated;
+    for (const provider of this._providerManager.getAllProviders()) {
+      const cached = statusById.get(provider.id);
+      let installed: boolean;
+      let authenticated: boolean;
+      let cliVersion: string | undefined;
+
+      if (cached) {
+        installed = cached.found;
+        authenticated = cached.authenticated;
+        cliVersion = cached.version;
+      } else {
+        // Legacy path (no discovery service): probe directly.
+        const discovery = await provider.discoverCli();
+        installed = discovery.found;
+        cliVersion = discovery.version;
+        authenticated = false;
+        if (discovery.found) {
+          authenticated = (await provider.checkAuthentication()).authenticated;
+        }
       }
 
-      const setupInfo = this.getProviderSetupInfo(provider.id);
-
-      providers.push({
-        providerId: provider.id,
-        displayName: provider.displayName,
-        installed: discovery.found,
-        authenticated,
-        cliVersion: discovery.version,
-        installCommand: setupInfo?.installCommand || provider.getInstallCommand(),
-        authCommand: setupInfo?.authCommand || provider.getAuthCommand(),
-        authInstructions: setupInfo?.authInstructions || [],
-        docsUrl: setupInfo?.docsUrl,
-        supportsAutoInstall: provider.capabilities.supportsAutoInstall
-      });
+      providers.push(this._toWizardProviderStatus(provider, installed, authenticated, cliVersion));
     }
 
     const anyReady = providers.some(p => p.installed);
@@ -932,10 +1041,131 @@ export class SetupManager {
     };
   }
 
+  /**
+   * Immediately-available wizard status from the discovery cache — no
+   * probing, no exec, no awaiting whenReady (Plan 03 Phase 3a). Stale cache
+   * entries are served as-is (better than nothing); when any entry is
+   * missing or expired, a single-flight background refresh is kicked off and
+   * onWizardStatusUpdated fires once it completes.
+   */
+  getWizardStatusCached(): CachedWizardStatusResult {
+    const providers: WizardProviderStatus[] = [];
+    let complete = this._discoveryService !== undefined;
+
+    for (const provider of this._providerManager.getAllProviders()) {
+      const status = this._discoveryService?.peekStatus(provider.id);
+      if (!status || !this._discoveryService?.isFresh(status)) {
+        complete = false;
+      }
+      providers.push(this._toWizardProviderStatus(
+        provider,
+        status?.found ?? false,
+        status?.authenticated ?? false,
+        status?.version
+      ));
+    }
+
+    if (!complete) {
+      this._kickBackgroundWizardRefresh();
+    }
+
+    return {
+      providers,
+      // Last-known values: never exec from this path. Defaults are optimistic
+      // (npm assumed present) — the background refresh corrects them.
+      npmAvailable: this._npmAvailable ?? true,
+      nodeVersion: this._lastNodeVersion,
+      anyReady: providers.some(p => p.installed),
+      complete
+    };
+  }
+
+  /**
+   * Ensure one provider's discovery status is fresh — probes only that
+   * provider on cache miss/expiry. Used for the active provider when a panel
+   * opens (everything else rides the cache + background refresh).
+   */
+  async ensureProviderStatusFresh(providerId: string): Promise<CliStatus | undefined> {
+    if (!this._discoveryService) {
+      return undefined;
+    }
+    try {
+      return await this._discoveryService.getStatus(providerId);
+    } catch (error) {
+      console.warn(`[Mysti] SetupManager: status probe failed for ${providerId}:`, error);
+      return undefined;
+    }
+  }
+
+  /** A post-upgrade check must bypass both discovery and provider probe caches. */
+  async refreshProviderStatus(providerId: string): Promise<CliStatus | undefined> {
+    const statuses = await this._discoveryService?.refresh(providerId);
+    return statuses?.find(status => status.providerId === providerId);
+  }
+
+  /**
+   * Force a full re-probe of every provider (manual refresh button). Resets
+   * the npm cache, bypasses the discovery cache (and provider-side
+   * probe-failure TTLs via force), then returns the rebuilt wizard status.
+   */
+  async refreshWizardStatus(): Promise<WizardStatusResult> {
+    this.resetNpmCache();
+    await this._discoveryService?.refresh();
+    return this.getWizardStatus();
+  }
+
+  /**
+   * Invalidate cached discovery status (one provider or all). Called from
+   * install/auth mutation paths so the next read re-probes.
+   */
+  invalidateProviderStatus(providerId?: string): void {
+    this._discoveryService?.invalidate(providerId);
+  }
+
+  private _toWizardProviderStatus(
+    provider: ICliProvider,
+    installed: boolean,
+    authenticated: boolean,
+    cliVersion?: string
+  ): WizardProviderStatus {
+    const setupInfo = this.getProviderSetupInfo(provider.id);
+    return {
+      providerId: provider.id,
+      displayName: provider.displayName,
+      installed,
+      authenticated,
+      cliVersion,
+      installCommand: setupInfo?.installCommand || provider.getInstallCommand(),
+      authCommand: setupInfo?.authCommand || provider.getAuthCommand(),
+      authInstructions: setupInfo?.authInstructions || [],
+      docsUrl: setupInfo?.docsUrl,
+      supportsAutoInstall: provider.capabilities.supportsAutoInstall
+    };
+  }
+
+  private _kickBackgroundWizardRefresh(): void {
+    if (this._backgroundWizardRefresh) {
+      return;
+    }
+    this._backgroundWizardRefresh = (async () => {
+      try {
+        // getWizardStatus awaits whenReady, then probes only stale/missing
+        // entries through the discovery service.
+        const status = await this.getWizardStatus();
+        this._onWizardStatusUpdatedEmitter.fire(status);
+      } catch (error) {
+        console.error('[Mysti] SetupManager: background wizard status refresh failed:', error);
+      } finally {
+        this._backgroundWizardRefresh = null;
+      }
+    })();
+  }
+
   private async _getNodeVersion(): Promise<string | undefined> {
     try {
       const { stdout } = await execAsync('node --version');
-      return stdout.trim();
+      this._lastNodeVersion = stdout.trim();
+      return this._lastNodeVersion;
     } catch {
       return undefined;
     }
@@ -1047,42 +1277,54 @@ export class SetupManager {
   ): Promise<{ success: boolean; output?: string; error?: string; exitCode?: number }> {
     return new Promise((resolve) => {
       let proc;
+      // GUI-launched editors may discover npm outside PATH. Include its sibling
+      // node binary too: npm's shebang uses /usr/bin/env node on Unix.
+      const env = { ...process.env, npm_config_engine_strict: 'true' } as NodeJS.ProcessEnv;
+      if (this._npmPath && path.isAbsolute(this._npmPath)) {
+        const pathKey = Object.keys(env).find(key => key.toLowerCase() === 'path') || 'PATH';
+        env[pathKey] = path.dirname(this._npmPath) + path.delimiter + (env[pathKey] || '');
+      }
 
       if (useLoginShell && process.platform !== 'win32') {
         const shell = process.env.SHELL || '/bin/bash';
         proc = spawn(shell, ['-l', '-c', command], {
-          stdio: ['ignore', 'pipe', 'pipe']
+          stdio: ['ignore', 'pipe', 'pipe'],
+          detached: true,
+          env
         });
         console.log(`[Mysti] SetupManager: Running command with login shell: ${command}`);
       } else {
         proc = spawn(command, [], {
           shell: true,
-          stdio: ['ignore', 'pipe', 'pipe']
+          stdio: ['ignore', 'pipe', 'pipe'],
+          detached: process.platform !== 'win32',
+          env
         });
       }
 
       let stdout = '';
       let stderr = '';
+      let timedOut = false;
 
       proc.stdout?.on('data', (data: Buffer) => {
-        stdout += data.toString();
+        stdout = (stdout + data.toString()).slice(-1024 * 1024);
       });
 
       proc.stderr?.on('data', (data: Buffer) => {
-        stderr += data.toString();
+        stderr = (stderr + data.toString()).slice(-1024 * 1024);
       });
 
       const timeoutId = setTimeout(() => {
-        proc.kill();
-        resolve({
-          success: false,
-          error: 'Command timed out',
-          exitCode: undefined
+        timedOut = true;
+        // Finish stopping npm and its lifecycle-script children before a retry.
+        void killProcessTree(proc, 1000, { label: 'Installer', useProcessGroup: process.platform !== 'win32', initialSignal: 'SIGKILL' }).finally(() => {
+          resolve({ success: false, error: 'Command timed out', exitCode: undefined });
         });
       }, timeout);
 
       proc.on('close', (code: number | null) => {
         clearTimeout(timeoutId);
+        if (timedOut) { return; }
         if (code === 0) {
           resolve({ success: true, output: stdout, exitCode: 0 });
         } else {
@@ -1106,12 +1348,62 @@ export class SetupManager {
   }
 
   /**
-   * Reset npm availability cache (for refresh detection)
+   * Install mutated CLI state: drop the cached status (so an older in-flight
+   * probe cannot write "not found" over it), then re-probe at once — that
+   * probe flipping the status is what tells the panels. Merely invalidating
+   * waited for someone else's read.
+   */
+  private async _recordInstall(providerId: string): Promise<void> {
+    this._discoveryService?.invalidate(providerId);
+    await this._discoveryService?.refresh(providerId);
+  }
+
+  /**
+   * An install the user runs in a terminal (or a download page) ends where
+   * Mysti cannot see it, so re-probe that one CLI until it appears; the probe
+   * flipping it is what updates the panels. Stops once found, when the
+   * terminal closes (after one last look), or after ten minutes. A not-found
+   * probe is a PATH lookup — it skips the auth check.
+   * ponytail: fixed 5s poll; VS Code's onDidEndTerminalShellExecution could
+   * replace it once the engine floor reaches 1.93.
+   */
+  watchForInstall(providerId: string, terminal?: vscode.Terminal, intervalMs = 5000, timeoutMs = 10 * 60_000): void {
+    this._installWatchers.get(providerId)?.();
+    const discovery = this._discoveryService;
+    if (!discovery) { return; }
+    const deadline = Date.now() + timeoutMs;
+    let busy = false, stopped = false;
+    const check = async (): Promise<void> => {
+      if (busy || stopped) { return; }
+      busy = true;
+      try {
+        const [status] = await discovery.refresh(providerId).catch(() => []);
+        if (status?.found || Date.now() > deadline) { stop(); }
+      } finally { busy = false; }
+    };
+    const timer = setInterval(() => { void check(); }, intervalMs);
+    const closed = vscode.window.onDidCloseTerminal((t) => {
+      if (terminal && t === terminal) { stop(); void discovery.refresh(providerId).catch(() => []); }
+    });
+    const stop = (): void => {
+      stopped = true;
+      clearInterval(timer);
+      closed.dispose();
+      if (this._installWatchers.get(providerId) === stop) { this._installWatchers.delete(providerId); }
+    };
+    this._installWatchers.set(providerId, stop);
+  }
+
+  /**
+   * Reset npm availability cache (for refresh detection).
+   * Also invalidates the CLI discovery cache so the next status read
+   * re-probes every provider (manual refresh semantics).
    */
   resetNpmCache(): void {
     this._npmAvailable = null;
     this._npmPath = null;
     this._npmCacheExpiry = 0;
     resetPlatformInfoCache();
+    this._discoveryService?.invalidate();
   }
 }

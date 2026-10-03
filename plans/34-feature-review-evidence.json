@@ -1,0 +1,3783 @@
+{
+  "reviewDate": "2026-09-30",
+  "baseCommit": "081875532b4e14792c9fcb677bdbb0848d1ca784",
+  "environment": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "node": "v22.20.0",
+    "codex": "0.153.4",
+    "claude": "2.1.278",
+    "vscode": "1.140.0"
+  },
+  "automated": {
+    "command": "npm test -- --maxWorkers=4 --reporter=json --outputFile=/tmp/mysti-review-final-tests.json",
+    "success": true,
+    "total": 13479,
+    "passed": 13479,
+    "failed": 0,
+    "pending": 0,
+    "files": 418,
+    "suites": [
+      {
+        "file": "tests/canvas/canvasBridge.test.ts",
+        "status": "passed",
+        "tests": 65,
+        "passed": 65,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/canvas/canvasHistory.test.ts",
+        "status": "passed",
+        "tests": 35,
+        "passed": 35,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/canvas/canvasHistoryIntegrity.test.ts",
+        "status": "passed",
+        "tests": 5,
+        "passed": 5,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/canvas/canvasHistoryStatus.test.ts",
+        "status": "passed",
+        "tests": 15,
+        "passed": 15,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/canvas/canvasLiveness.test.ts",
+        "status": "passed",
+        "tests": 32,
+        "passed": 32,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/canvas/canvasLivenessView.test.ts",
+        "status": "passed",
+        "tests": 61,
+        "passed": 61,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/canvas/canvasPresent.test.ts",
+        "status": "passed",
+        "tests": 20,
+        "passed": 20,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/canvas/canvasSpeculative.test.ts",
+        "status": "passed",
+        "tests": 18,
+        "passed": 18,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/canvas/canvasStagedTransport.test.ts",
+        "status": "passed",
+        "tests": 18,
+        "passed": 18,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/canvas/canvasToolSurface.test.ts",
+        "status": "passed",
+        "tests": 68,
+        "passed": 68,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/canvas/canvasVariants.test.ts",
+        "status": "passed",
+        "tests": 22,
+        "passed": 22,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/canvas/canvasWorkspace.test.ts",
+        "status": "passed",
+        "tests": 45,
+        "passed": 45,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/canvas/harness.test.ts",
+        "status": "passed",
+        "tests": 66,
+        "passed": 66,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/canvas/pageMigration.test.ts",
+        "status": "passed",
+        "tests": 20,
+        "passed": 20,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/canvas/protocol.test.ts",
+        "status": "passed",
+        "tests": 26,
+        "passed": 26,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/canvas/redoV2.test.ts",
+        "status": "passed",
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/canvas/resolveCanvasApproval.test.ts",
+        "status": "passed",
+        "tests": 40,
+        "passed": 40,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/canvas/uiSchema.test.ts",
+        "status": "passed",
+        "tests": 48,
+        "passed": 48,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/chat/coordinatorRunOutput.test.ts",
+        "status": "passed",
+        "tests": 10,
+        "passed": 10,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/chat/delayedChannelTurns.test.ts",
+        "status": "passed",
+        "tests": 5,
+        "passed": 5,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/chat/nativeApprovalCards.test.ts",
+        "status": "passed",
+        "tests": 21,
+        "passed": 21,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/chat/onboarding.test.ts",
+        "status": "passed",
+        "tests": 11,
+        "passed": 11,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/chat/pendingPlanStore.test.ts",
+        "status": "passed",
+        "tests": 6,
+        "passed": 6,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/chat/settingsHub.test.ts",
+        "status": "passed",
+        "tests": 32,
+        "passed": 32,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/chat/subAgentQuestions.test.ts",
+        "status": "passed",
+        "tests": 22,
+        "passed": 22,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/coordinator/advisor.test.ts",
+        "status": "passed",
+        "tests": 2,
+        "passed": 2,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/coordinator/coordinatorTurnRunner.test.ts",
+        "status": "passed",
+        "tests": 24,
+        "passed": 24,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/coordinator/elideToolResults.test.ts",
+        "status": "passed",
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/coordinator/mystiSubagentRunner.test.ts",
+        "status": "passed",
+        "tests": 13,
+        "passed": 13,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/coordinator/paidSpendGuard.test.ts",
+        "status": "passed",
+        "tests": 10,
+        "passed": 10,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/coordinator/promptBudget.test.ts",
+        "status": "passed",
+        "tests": 3,
+        "passed": 3,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/coordinator/subagentSummary.test.ts",
+        "status": "passed",
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/agentMapHostSignals.test.ts",
+        "status": "passed",
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/agentSelectionStability.test.ts",
+        "status": "passed",
+        "tests": 7,
+        "passed": 7,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/askUserQuestion.test.ts",
+        "status": "passed",
+        "tests": 7,
+        "passed": 7,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/autonomousContinuationGate.test.ts",
+        "status": "passed",
+        "tests": 5,
+        "passed": 5,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/boostLedgerWiring.test.ts",
+        "status": "passed",
+        "tests": 18,
+        "passed": 18,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/canvasColdOpenJourney.test.ts",
+        "status": "passed",
+        "tests": 6,
+        "passed": 6,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/canvasHandoffAssets.test.ts",
+        "status": "passed",
+        "tests": 5,
+        "passed": 5,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/canvasLaneHardening.test.ts",
+        "status": "passed",
+        "tests": 43,
+        "passed": 43,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/canvasPipeline.test.ts",
+        "status": "passed",
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/channelReplyFencing.test.ts",
+        "status": "passed",
+        "tests": 6,
+        "passed": 6,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/chatJobOwnership.test.ts",
+        "status": "passed",
+        "tests": 2,
+        "passed": 2,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/chatPermissionLifecycle.test.ts",
+        "status": "passed",
+        "tests": 19,
+        "passed": 19,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/chatPlanIsolation.test.ts",
+        "status": "passed",
+        "tests": 25,
+        "passed": 25,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/chatViewDebranding.test.ts",
+        "status": "passed",
+        "tests": 29,
+        "passed": 29,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/chatViewMessagePersistence.test.ts",
+        "status": "passed",
+        "tests": 57,
+        "passed": 57,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/chatViewSettingKeys.test.ts",
+        "status": "passed",
+        "tests": 27,
+        "passed": 27,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/chatViewTrustAndGate.test.ts",
+        "status": "passed",
+        "tests": 43,
+        "passed": 43,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/chatViewWizardRouting.test.ts",
+        "status": "passed",
+        "tests": 19,
+        "passed": 19,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/coordinatorCanvasLane.test.ts",
+        "status": "passed",
+        "tests": 16,
+        "passed": 16,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/coordinatorPersona.test.ts",
+        "status": "passed",
+        "tests": 6,
+        "passed": 6,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/dashboardMessageBoundary.test.ts",
+        "status": "passed",
+        "tests": 10,
+        "passed": 10,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/deepLinkImportConfirmation.test.ts",
+        "status": "passed",
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/modelAttributionSync.test.ts",
+        "status": "passed",
+        "tests": 21,
+        "passed": 21,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/modelAutoRefresh.test.ts",
+        "status": "passed",
+        "tests": 5,
+        "passed": 5,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/mystiDefaultAgent.test.ts",
+        "status": "passed",
+        "tests": 29,
+        "passed": 29,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/mystiDelegationMeta.test.ts",
+        "status": "passed",
+        "tests": 1,
+        "passed": 1,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/mystiPromptBudgetSource.test.ts",
+        "status": "passed",
+        "tests": 1,
+        "passed": 1,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/permissionGating.test.ts",
+        "status": "passed",
+        "tests": 86,
+        "passed": 86,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/permissionManager.test.ts",
+        "status": "passed",
+        "tests": 37,
+        "passed": 37,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/permissionOrigin.test.ts",
+        "status": "passed",
+        "tests": 3,
+        "passed": 3,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/refusalSpeaks.test.ts",
+        "status": "passed",
+        "tests": 8,
+        "passed": 8,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/sessionFlow.test.ts",
+        "status": "passed",
+        "tests": 11,
+        "passed": 11,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/settingsHubTab.test.ts",
+        "status": "passed",
+        "tests": 57,
+        "passed": 57,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/skillAuthoringInvariants.test.ts",
+        "status": "passed",
+        "tests": 9,
+        "passed": 9,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/slashCommandsAllLive.test.ts",
+        "status": "passed",
+        "tests": 23,
+        "passed": 23,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/suggestionPreference.test.ts",
+        "status": "passed",
+        "tests": 1,
+        "passed": 1,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/integration/toolNameConformance.test.ts",
+        "status": "passed",
+        "tests": 70,
+        "passed": 70,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/activeModeManager.test.ts",
+        "status": "passed",
+        "tests": 7,
+        "passed": 7,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/agentContentScan.test.ts",
+        "status": "passed",
+        "tests": 20,
+        "passed": 20,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/agentLifecycleManager.test.ts",
+        "status": "passed",
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/agentLoader.test.ts",
+        "status": "passed",
+        "tests": 12,
+        "passed": 12,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/agentLoaderTrustAtUse.test.ts",
+        "status": "passed",
+        "tests": 14,
+        "passed": 14,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/agentMarkdown.test.ts",
+        "status": "passed",
+        "tests": 26,
+        "passed": 26,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/agentTrustTier.test.ts",
+        "status": "passed",
+        "tests": 9,
+        "passed": 9,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/artifactStore.test.ts",
+        "status": "passed",
+        "tests": 72,
+        "passed": 72,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/backgroundJobManager.test.ts",
+        "status": "passed",
+        "tests": 18,
+        "passed": 18,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/boostManager.test.ts",
+        "status": "passed",
+        "tests": 29,
+        "passed": 29,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/brainstormCorrectness.test.ts",
+        "status": "passed",
+        "tests": 13,
+        "passed": 13,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/brainstormIsolation.test.ts",
+        "status": "passed",
+        "tests": 6,
+        "passed": 6,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/brainstormManager.test.ts",
+        "status": "passed",
+        "tests": 28,
+        "passed": 28,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/canvasApplyTimePins.test.ts",
+        "status": "passed",
+        "tests": 24,
+        "passed": 24,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/canvasCapabilityRegistry.test.ts",
+        "status": "passed",
+        "tests": 25,
+        "passed": 25,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/canvasFormats.test.ts",
+        "status": "passed",
+        "tests": 22,
+        "passed": 22,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/canvasJobRouter.test.ts",
+        "status": "passed",
+        "tests": 7,
+        "passed": 7,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/canvasLegacyWriteHardening.test.ts",
+        "status": "passed",
+        "tests": 11,
+        "passed": 11,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/canvasManager.test.ts",
+        "status": "passed",
+        "tests": 65,
+        "passed": 65,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/canvasMcpBridge.test.ts",
+        "status": "passed",
+        "tests": 7,
+        "passed": 7,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/canvasOpExecutor.test.ts",
+        "status": "passed",
+        "tests": 49,
+        "passed": 49,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/canvasOpExecutorJournal.test.ts",
+        "status": "passed",
+        "tests": 12,
+        "passed": 12,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/canvasOpParser.test.ts",
+        "status": "passed",
+        "tests": 10,
+        "passed": 10,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/canvasPageOpResiduals.test.ts",
+        "status": "passed",
+        "tests": 17,
+        "passed": 17,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/canvasPromptBuilder.test.ts",
+        "status": "passed",
+        "tests": 6,
+        "passed": 6,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/canvasSandbox.test.ts",
+        "status": "passed",
+        "tests": 49,
+        "passed": 49,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/canvasSandboxThemeInjection.test.ts",
+        "status": "passed",
+        "tests": 8,
+        "passed": 8,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/canvasScaffolds.test.ts",
+        "status": "passed",
+        "tests": 7,
+        "passed": 7,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/canvasSessionLinker.test.ts",
+        "status": "passed",
+        "tests": 7,
+        "passed": 7,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/canvasThemePresets.test.ts",
+        "status": "passed",
+        "tests": 8,
+        "passed": 8,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/canvasToolDispatch.test.ts",
+        "status": "passed",
+        "tests": 23,
+        "passed": 23,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/canvasToolDispatchPins.test.ts",
+        "status": "passed",
+        "tests": 18,
+        "passed": 18,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/canvasToolDispatchScope.test.ts",
+        "status": "passed",
+        "tests": 14,
+        "passed": 14,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/canvasValidator.test.ts",
+        "status": "passed",
+        "tests": 11,
+        "passed": 11,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/channelBridge.test.ts",
+        "status": "passed",
+        "tests": 27,
+        "passed": 27,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/checkpointArtifactTracking.test.ts",
+        "status": "passed",
+        "tests": 5,
+        "passed": 5,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/checkpointRetention.test.ts",
+        "status": "passed",
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/childNativeApprovalRouting.test.ts",
+        "status": "passed",
+        "tests": 12,
+        "passed": 12,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/collaborationManager.test.ts",
+        "status": "passed",
+        "tests": 16,
+        "passed": 16,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/collaborationRoleAccess.test.ts",
+        "status": "passed",
+        "tests": 7,
+        "passed": 7,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/compactionBoostOverlay.test.ts",
+        "status": "passed",
+        "tests": 5,
+        "passed": 5,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/compactionOwnership.test.ts",
+        "status": "passed",
+        "tests": 17,
+        "passed": 17,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/compactionTokenMath.test.ts",
+        "status": "passed",
+        "tests": 10,
+        "passed": 10,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/contextManager.test.ts",
+        "status": "passed",
+        "tests": 9,
+        "passed": 9,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/contextManagerPersistRejection.test.ts",
+        "status": "passed",
+        "tests": 2,
+        "passed": 2,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/contextManagerPersistedKeys.test.ts",
+        "status": "passed",
+        "tests": 6,
+        "passed": 6,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/conversationManagerPersistence.test.ts",
+        "status": "passed",
+        "tests": 9,
+        "passed": 9,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/conversationShareableImport.test.ts",
+        "status": "passed",
+        "tests": 11,
+        "passed": 11,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/conversationStoreResilience.test.ts",
+        "status": "passed",
+        "tests": 29,
+        "passed": 29,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/crossClientSkills.test.ts",
+        "status": "passed",
+        "tests": 5,
+        "passed": 5,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/crossVendorInstructions.test.ts",
+        "status": "passed",
+        "tests": 10,
+        "passed": 10,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/deepMystAuthManager.test.ts",
+        "status": "passed",
+        "tests": 18,
+        "passed": 18,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/deskAudit.test.ts",
+        "status": "passed",
+        "tests": 63,
+        "passed": 63,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/deskPairing.test.ts",
+        "status": "passed",
+        "tests": 90,
+        "passed": 90,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/deskPairingFlow.test.ts",
+        "status": "passed",
+        "tests": 48,
+        "passed": 48,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/deskPeerBook.test.ts",
+        "status": "passed",
+        "tests": 96,
+        "passed": 96,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/deskProposalStore.test.ts",
+        "status": "passed",
+        "tests": 80,
+        "passed": 80,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/deskServingGate.test.ts",
+        "status": "passed",
+        "tests": 233,
+        "passed": 233,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/deskStandup.test.ts",
+        "status": "passed",
+        "tests": 114,
+        "passed": 114,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/devServerManager.test.ts",
+        "status": "passed",
+        "tests": 7,
+        "passed": 7,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/figmaImport.test.ts",
+        "status": "passed",
+        "tests": 30,
+        "passed": 30,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/identityFromManifest.test.ts",
+        "status": "passed",
+        "tests": 6,
+        "passed": 6,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/memoryManager.test.ts",
+        "status": "passed",
+        "tests": 2,
+        "passed": 2,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/mentionNativeApprovalSafety.test.ts",
+        "status": "passed",
+        "tests": 14,
+        "passed": 14,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/mentionRouter.test.ts",
+        "status": "passed",
+        "tests": 8,
+        "passed": 8,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/mystiOrchestratorManager.test.ts",
+        "status": "passed",
+        "tests": 20,
+        "passed": 20,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/nativeApprovalRouting.test.ts",
+        "status": "passed",
+        "tests": 12,
+        "passed": 12,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/nativeCommandMenu.test.ts",
+        "status": "passed",
+        "tests": 26,
+        "passed": 26,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/permissionGrantScoping.test.ts",
+        "status": "passed",
+        "tests": 14,
+        "passed": 14,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/permissionManagerCanvas.test.ts",
+        "status": "passed",
+        "tests": 8,
+        "passed": 8,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/permissionScoping.test.ts",
+        "status": "passed",
+        "tests": 10,
+        "passed": 10,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/providerManagerRouting.test.ts",
+        "status": "passed",
+        "tests": 9,
+        "passed": 9,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/retrievalCoordinator.test.ts",
+        "status": "passed",
+        "tests": 7,
+        "passed": 7,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/safetyClassifier.test.ts",
+        "status": "passed",
+        "tests": 20,
+        "passed": 20,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/savingsLedger.test.ts",
+        "status": "passed",
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/sessionManager.test.ts",
+        "status": "passed",
+        "tests": 35,
+        "passed": 35,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/setupManagerWizardStatus.test.ts",
+        "status": "passed",
+        "tests": 8,
+        "passed": 8,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/shadowDiff.test.ts",
+        "status": "passed",
+        "tests": 10,
+        "passed": 10,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/slashCommandCollaboration.test.ts",
+        "status": "passed",
+        "tests": 12,
+        "passed": 12,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/slashCommandModeHelp.test.ts",
+        "status": "passed",
+        "tests": 11,
+        "passed": 11,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/smartCompactor.test.ts",
+        "status": "passed",
+        "tests": 14,
+        "passed": 14,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/smartCompactorMemory.test.ts",
+        "status": "passed",
+        "tests": 23,
+        "passed": 23,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/stateMentions.test.ts",
+        "status": "passed",
+        "tests": 9,
+        "passed": 9,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/managers/visualTestManager.test.ts",
+        "status": "passed",
+        "tests": 20,
+        "passed": 20,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/resources/agentContentConformance.test.ts",
+        "status": "passed",
+        "tests": 182,
+        "passed": 182,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/resources/coreAgentManifest.test.ts",
+        "status": "passed",
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/resources/prismSecurity.test.ts",
+        "status": "passed",
+        "tests": 2,
+        "passed": 2,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/attachmentsAcrossProviders.test.ts",
+        "status": "passed",
+        "tests": 12,
+        "passed": 12,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/claudeReportedCommands.test.ts",
+        "status": "passed",
+        "tests": 11,
+        "passed": 11,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/codexGeminiAuth.test.ts",
+        "status": "passed",
+        "tests": 11,
+        "passed": 11,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/gatekeeperErrorSurfacing.test.ts",
+        "status": "passed",
+        "tests": 5,
+        "passed": 5,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/nativeApprovalBridge.test.ts",
+        "status": "passed",
+        "tests": 12,
+        "passed": 12,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/nativeApprovalPolicy.test.ts",
+        "status": "passed",
+        "tests": 24,
+        "passed": 24,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/nativeCommands.test.ts",
+        "status": "passed",
+        "tests": 25,
+        "passed": 25,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/persistentEffortRespawn.test.ts",
+        "status": "passed",
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/promptEnhancement.test.ts",
+        "status": "passed",
+        "tests": 10,
+        "passed": 10,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/providerAuthDetection.test.ts",
+        "status": "passed",
+        "tests": 13,
+        "passed": 13,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/providerManifest.test.ts",
+        "status": "passed",
+        "tests": 19,
+        "passed": 19,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/providerRegistry.perf.test.ts",
+        "status": "passed",
+        "tests": 9,
+        "passed": 9,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/routedModelPrecedence.test.ts",
+        "status": "passed",
+        "tests": 3,
+        "passed": 3,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/steering.test.ts",
+        "status": "passed",
+        "tests": 7,
+        "passed": 7,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/streamInactivityWatchdog.test.ts",
+        "status": "passed",
+        "tests": 2,
+        "passed": 2,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/CanvasGenerationServices.test.ts",
+        "status": "passed",
+        "tests": 28,
+        "passed": 28,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/CanvasSecrets.test.ts",
+        "status": "passed",
+        "tests": 15,
+        "passed": 15,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/CliDiscoveryService.test.ts",
+        "status": "passed",
+        "tests": 18,
+        "passed": 18,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/CliUpdateService.test.ts",
+        "status": "passed",
+        "tests": 31,
+        "passed": 31,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/DeepMystClient.test.ts",
+        "status": "passed",
+        "tests": 33,
+        "passed": 33,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/McpConfigManager.test.ts",
+        "status": "passed",
+        "tests": 13,
+        "passed": 13,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/ModelAnnouncementService.test.ts",
+        "status": "passed",
+        "tests": 27,
+        "passed": 27,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/ModelRegistryService.test.ts",
+        "status": "passed",
+        "tests": 28,
+        "passed": 28,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/browserInteractionService.test.ts",
+        "status": "passed",
+        "tests": 13,
+        "passed": 13,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/canvasExportService.test.ts",
+        "status": "passed",
+        "tests": 52,
+        "passed": 52,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/canvasMcpHttpServer.test.ts",
+        "status": "passed",
+        "tests": 18,
+        "passed": 18,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/canvasMediaService.test.ts",
+        "status": "passed",
+        "tests": 11,
+        "passed": 11,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/canvasPreviewService.test.ts",
+        "status": "passed",
+        "tests": 9,
+        "passed": 9,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/canvasToolServer.test.ts",
+        "status": "passed",
+        "tests": 7,
+        "passed": 7,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/capabilityLedger.test.ts",
+        "status": "passed",
+        "tests": 18,
+        "passed": 18,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/capabilityManifest.test.ts",
+        "status": "passed",
+        "tests": 22,
+        "passed": 22,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/capabilityRegistry.test.ts",
+        "status": "passed",
+        "tests": 13,
+        "passed": 13,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/collaboratorPool.test.ts",
+        "status": "passed",
+        "tests": 41,
+        "passed": 41,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/collaboratorPoolNativeApproval.test.ts",
+        "status": "passed",
+        "tests": 18,
+        "passed": 18,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/collaboratorPoolUsage.test.ts",
+        "status": "passed",
+        "tests": 5,
+        "passed": 5,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/coordinatorCancellation.test.ts",
+        "status": "passed",
+        "tests": 21,
+        "passed": 21,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/coordinatorCanvasLaneParity.test.ts",
+        "status": "passed",
+        "tests": 11,
+        "passed": 11,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/coordinatorDefaults.test.ts",
+        "status": "passed",
+        "tests": 3,
+        "passed": 3,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/coordinatorFailureClassifier.test.ts",
+        "status": "passed",
+        "tests": 7,
+        "passed": 7,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/coordinatorModelClient.test.ts",
+        "status": "passed",
+        "tests": 47,
+        "passed": 47,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/coordinatorTools.test.ts",
+        "status": "passed",
+        "tests": 30,
+        "passed": 30,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/coordinatorVisualTools.test.ts",
+        "status": "passed",
+        "tests": 14,
+        "passed": 14,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/deepMystGatewayClient.test.ts",
+        "status": "passed",
+        "tests": 3,
+        "passed": 3,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/deskClient.test.ts",
+        "status": "passed",
+        "tests": 116,
+        "passed": 116,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/deskHttpServer.test.ts",
+        "status": "passed",
+        "tests": 101,
+        "passed": 101,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/egressScanner.test.ts",
+        "status": "passed",
+        "tests": 42,
+        "passed": 42,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/historyStore.test.ts",
+        "status": "passed",
+        "tests": 7,
+        "passed": 7,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/mcpClientCleartextBearer.test.ts",
+        "status": "passed",
+        "tests": 3,
+        "passed": 3,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/mcpConfigGitGuard.test.ts",
+        "status": "passed",
+        "tests": 10,
+        "passed": 10,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/mcpSchemaPassthrough.test.ts",
+        "status": "passed",
+        "tests": 23,
+        "passed": 23,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/mcpToolPins.test.ts",
+        "status": "passed",
+        "tests": 12,
+        "passed": 12,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/modelPricing.test.ts",
+        "status": "passed",
+        "tests": 12,
+        "passed": 12,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/modelRouter.test.ts",
+        "status": "passed",
+        "tests": 17,
+        "passed": 17,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/mystiLocalExec.test.ts",
+        "status": "passed",
+        "tests": 36,
+        "passed": 36,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/mystiLocalTools.test.ts",
+        "status": "passed",
+        "tests": 39,
+        "passed": 39,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/mystiMemoryStore.test.ts",
+        "status": "passed",
+        "tests": 6,
+        "passed": 6,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/mystiPatch.test.ts",
+        "status": "passed",
+        "tests": 7,
+        "passed": 7,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/mystiSandbox.test.ts",
+        "status": "passed",
+        "tests": 35,
+        "passed": 35,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/nativeCommandDiscovery.test.ts",
+        "status": "passed",
+        "tests": 24,
+        "passed": 24,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/observedRuns.test.ts",
+        "status": "passed",
+        "tests": 12,
+        "passed": 12,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/openRouterClient.test.ts",
+        "status": "passed",
+        "tests": 20,
+        "passed": 20,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/orchestratorDag.test.ts",
+        "status": "passed",
+        "tests": 18,
+        "passed": 18,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/orchestratorLanes.test.ts",
+        "status": "passed",
+        "tests": 13,
+        "passed": 13,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/outboundUrlPolicy.test.ts",
+        "status": "passed",
+        "tests": 35,
+        "passed": 35,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/promptCache.test.ts",
+        "status": "passed",
+        "tests": 13,
+        "passed": 13,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/protectedWritePaths.test.ts",
+        "status": "passed",
+        "tests": 7,
+        "passed": 7,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/skillDiscoveryService.test.ts",
+        "status": "passed",
+        "tests": 17,
+        "passed": 17,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/skillIndex.test.ts",
+        "status": "passed",
+        "tests": 13,
+        "passed": 13,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/skillStaging.test.ts",
+        "status": "passed",
+        "tests": 12,
+        "passed": 12,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/skillTelemetry.test.ts",
+        "status": "passed",
+        "tests": 12,
+        "passed": 12,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/stitchService.test.ts",
+        "status": "passed",
+        "tests": 23,
+        "passed": 23,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/tokenAccounting.test.ts",
+        "status": "passed",
+        "tests": 17,
+        "passed": 17,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/visualTestPolicy.test.ts",
+        "status": "passed",
+        "tests": 35,
+        "passed": 35,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/abortScope.test.ts",
+        "status": "passed",
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/boundedConcurrency.test.ts",
+        "status": "passed",
+        "tests": 5,
+        "passed": 5,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/canvasPermissionClass.test.ts",
+        "status": "passed",
+        "tests": 31,
+        "passed": 31,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/cliPathResolution.test.ts",
+        "status": "passed",
+        "tests": 15,
+        "passed": 15,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/controlCharacters.test.ts",
+        "status": "passed",
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/effort.test.ts",
+        "status": "passed",
+        "tests": 5,
+        "passed": 5,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/gatekeeper.test.ts",
+        "status": "passed",
+        "tests": 23,
+        "passed": 23,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/manifestPackaging.test.ts",
+        "status": "passed",
+        "tests": 31,
+        "passed": 31,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/mentionParser.test.ts",
+        "status": "passed",
+        "tests": 8,
+        "passed": 8,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/mystiDelegateParser.test.ts",
+        "status": "passed",
+        "tests": 82,
+        "passed": 82,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/mystiSkillDirective.test.ts",
+        "status": "passed",
+        "tests": 11,
+        "passed": 11,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/mystiVisualDirectives.test.ts",
+        "status": "passed",
+        "tests": 21,
+        "passed": 21,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/packageShapeInspector.test.ts",
+        "status": "passed",
+        "tests": 11,
+        "passed": 11,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/perfTracker.test.ts",
+        "status": "passed",
+        "tests": 18,
+        "passed": 18,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/permissionGateFailClosed.test.ts",
+        "status": "passed",
+        "tests": 11,
+        "passed": 11,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/platform.test.ts",
+        "status": "passed",
+        "tests": 7,
+        "passed": 7,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/processKill.test.ts",
+        "status": "passed",
+        "tests": 22,
+        "passed": 22,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/publishCompliance.test.ts",
+        "status": "passed",
+        "tests": 21,
+        "passed": 21,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/readOnlyToolsMembership.test.ts",
+        "status": "passed",
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/settingsClamp.test.ts",
+        "status": "passed",
+        "tests": 34,
+        "passed": 34,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/settingsEnumParity.test.ts",
+        "status": "passed",
+        "tests": 5,
+        "passed": 5,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/settingsScopeHardening.test.ts",
+        "status": "passed",
+        "tests": 7,
+        "passed": 7,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/settingsScopeParity.test.ts",
+        "status": "passed",
+        "tests": 39,
+        "passed": 39,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/settleWithin.test.ts",
+        "status": "passed",
+        "tests": 5,
+        "passed": 5,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/toolBatching.test.ts",
+        "status": "passed",
+        "tests": 10,
+        "passed": 10,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/toolCallAccumulator.test.ts",
+        "status": "passed",
+        "tests": 16,
+        "passed": 16,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/toolNames.test.ts",
+        "status": "passed",
+        "tests": 50,
+        "passed": 50,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/toolNamesPrototypeKeys.test.ts",
+        "status": "passed",
+        "tests": 43,
+        "passed": 43,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/trustLadder.test.ts",
+        "status": "passed",
+        "tests": 19,
+        "passed": 19,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/validation.test.ts",
+        "status": "passed",
+        "tests": 32,
+        "passed": 32,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/vendorAssets.test.ts",
+        "status": "passed",
+        "tests": 6,
+        "passed": 6,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/vendorFamily.test.ts",
+        "status": "passed",
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/utils/walkthroughSteps.test.ts",
+        "status": "passed",
+        "tests": 5,
+        "passed": 5,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/agentMap.test.ts",
+        "status": "passed",
+        "tests": 43,
+        "passed": 43,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/agentMapLoader.test.ts",
+        "status": "passed",
+        "tests": 1,
+        "passed": 1,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/agentMenuLayoutBrowser.test.ts",
+        "status": "passed",
+        "tests": 7,
+        "passed": 7,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/browserSuitesSkipHonestly.test.ts",
+        "status": "passed",
+        "tests": 47,
+        "passed": 47,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/canvasAgentSync.test.ts",
+        "status": "passed",
+        "tests": 71,
+        "passed": 71,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/canvasAgentSyncBrowser.test.ts",
+        "status": "passed",
+        "tests": 6,
+        "passed": 6,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/canvasApp.test.ts",
+        "status": "passed",
+        "tests": 48,
+        "passed": 48,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/canvasAppBrowser.test.ts",
+        "status": "passed",
+        "tests": 10,
+        "passed": 10,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/canvasAssetResolver.test.ts",
+        "status": "passed",
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/canvasBoard.test.ts",
+        "status": "passed",
+        "tests": 22,
+        "passed": 22,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/canvasBoardMath.test.ts",
+        "status": "passed",
+        "tests": 30,
+        "passed": 30,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/canvasBoardWorld.test.ts",
+        "status": "passed",
+        "tests": 45,
+        "passed": 45,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/canvasContent.test.ts",
+        "status": "passed",
+        "tests": 17,
+        "passed": 17,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/canvasControls.test.ts",
+        "status": "passed",
+        "tests": 52,
+        "passed": 52,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/canvasFrameChannelTrust.test.ts",
+        "status": "passed",
+        "tests": 10,
+        "passed": 10,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/canvasFrameCspBrowser.test.ts",
+        "status": "passed",
+        "tests": 13,
+        "passed": 13,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/canvasHistoryUi.test.ts",
+        "status": "passed",
+        "tests": 35,
+        "passed": 35,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/canvasInspector.test.ts",
+        "status": "passed",
+        "tests": 49,
+        "passed": 49,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/canvasLayout.test.ts",
+        "status": "passed",
+        "tests": 17,
+        "passed": 17,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/canvasLayoutBrowser.test.ts",
+        "status": "passed",
+        "tests": 20,
+        "passed": 20,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/canvasLiveFrameBrowser.test.ts",
+        "status": "passed",
+        "tests": 10,
+        "passed": 10,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/canvasLivePerfBrowser.test.ts",
+        "status": "passed",
+        "tests": 1,
+        "passed": 1,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/canvasPanesBrowser.test.ts",
+        "status": "passed",
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/canvasPerfBrowser.test.ts",
+        "status": "passed",
+        "tests": 3,
+        "passed": 3,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/canvasPreview.test.ts",
+        "status": "passed",
+        "tests": 29,
+        "passed": 29,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/canvasPreviewThemeBrowser.test.ts",
+        "status": "passed",
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/canvasProtocolClient.test.ts",
+        "status": "passed",
+        "tests": 15,
+        "passed": 15,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/canvasRail.test.ts",
+        "status": "passed",
+        "tests": 46,
+        "passed": 46,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/canvasResponsive.test.ts",
+        "status": "passed",
+        "tests": 53,
+        "passed": 53,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/canvasSandboxDoc.test.ts",
+        "status": "passed",
+        "tests": 10,
+        "passed": 10,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/canvasSelection.test.ts",
+        "status": "passed",
+        "tests": 34,
+        "passed": 34,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/canvasShell.test.ts",
+        "status": "passed",
+        "tests": 72,
+        "passed": 72,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/canvasShellCsp.test.ts",
+        "status": "passed",
+        "tests": 6,
+        "passed": 6,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/canvasState.test.ts",
+        "status": "passed",
+        "tests": 31,
+        "passed": 31,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/canvasTextEdit.test.ts",
+        "status": "passed",
+        "tests": 32,
+        "passed": 32,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/chatComposerBrowser.test.ts",
+        "status": "passed",
+        "tests": 126,
+        "passed": 126,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/deskEscaping.test.ts",
+        "status": "passed",
+        "tests": 81,
+        "passed": 81,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/enhanceAffordance.test.ts",
+        "status": "passed",
+        "tests": 15,
+        "passed": 15,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/inlineHandlerCsp.test.ts",
+        "status": "passed",
+        "tests": 9,
+        "passed": 9,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/markdownRenderer.test.ts",
+        "status": "passed",
+        "tests": 11,
+        "passed": 11,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/markdownSanitization.test.ts",
+        "status": "passed",
+        "tests": 17,
+        "passed": 17,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/mentionParsing.test.ts",
+        "status": "passed",
+        "tests": 15,
+        "passed": 15,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/mermaidBrowser.test.ts",
+        "status": "passed",
+        "tests": 3,
+        "passed": 3,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/modelAttributionWebview.test.ts",
+        "status": "passed",
+        "tests": 13,
+        "passed": 13,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/modelsUpdatedWebview.test.ts",
+        "status": "passed",
+        "tests": 6,
+        "passed": 6,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/mystiActionCard.test.ts",
+        "status": "passed",
+        "tests": 16,
+        "passed": 16,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/onboardingBrowser.test.ts",
+        "status": "passed",
+        "tests": 45,
+        "passed": 45,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/perfInstrumentation.test.ts",
+        "status": "passed",
+        "tests": 18,
+        "passed": 18,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/permissionCardDiff.test.ts",
+        "status": "passed",
+        "tests": 17,
+        "passed": 17,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/permissionCardToolInput.test.ts",
+        "status": "passed",
+        "tests": 32,
+        "passed": 32,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/permissionProducersToolDetails.test.ts",
+        "status": "passed",
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/providerLiteralsGuard.test.ts",
+        "status": "passed",
+        "tests": 10,
+        "passed": 10,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/providerManifestWebview.test.ts",
+        "status": "passed",
+        "tests": 28,
+        "passed": 28,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/providerNotInstalledCard.test.ts",
+        "status": "passed",
+        "tests": 6,
+        "passed": 6,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/roleAutocomplete.test.ts",
+        "status": "passed",
+        "tests": 8,
+        "passed": 8,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/roleTrustBadge.test.ts",
+        "status": "passed",
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/sessionPicker.test.ts",
+        "status": "passed",
+        "tests": 18,
+        "passed": 18,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/setInputValueSingleHandler.test.ts",
+        "status": "passed",
+        "tests": 6,
+        "passed": 6,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/settingsHubBrowser.test.ts",
+        "status": "passed",
+        "tests": 34,
+        "passed": 34,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/subAgentCards.test.ts",
+        "status": "passed",
+        "tests": 23,
+        "passed": 23,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/trustLadderConformance.test.ts",
+        "status": "passed",
+        "tests": 18,
+        "passed": 18,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/unifiedMessageRenderer.test.ts",
+        "status": "passed",
+        "tests": 23,
+        "passed": 23,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/vtDashboardContent.test.ts",
+        "status": "passed",
+        "tests": 9,
+        "passed": 9,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/webviewContentHubView.test.ts",
+        "status": "passed",
+        "tests": 2,
+        "passed": 2,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/webviewScrollToBottom.test.ts",
+        "status": "passed",
+        "tests": 5,
+        "passed": 5,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/wizardPanelId.test.ts",
+        "status": "passed",
+        "tests": 5,
+        "passed": 5,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/webview/wizardZeroInstallPath.test.ts",
+        "status": "passed",
+        "tests": 13,
+        "passed": 13,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/canvas/doc/docEmitter.test.ts",
+        "status": "passed",
+        "tests": 36,
+        "passed": 36,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/canvas/doc/docPatch.test.ts",
+        "status": "passed",
+        "tests": 65,
+        "passed": 65,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/canvas/doc/hostileKeys.test.ts",
+        "status": "passed",
+        "tests": 14,
+        "passed": 14,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/canvas/doc/pageCompiler.test.ts",
+        "status": "passed",
+        "tests": 105,
+        "passed": 105,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/canvas/doc/reconciler.test.ts",
+        "status": "passed",
+        "tests": 50,
+        "passed": 50,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/canvas/doc/roundTrip.test.ts",
+        "status": "passed",
+        "tests": 49,
+        "passed": 49,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/canvas/doc/treeDiffer.test.ts",
+        "status": "passed",
+        "tests": 4574,
+        "passed": 4574,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/cline/buildCliArgs.test.ts",
+        "status": "passed",
+        "tests": 3,
+        "passed": 3,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/cline/modernCliCompat.test.ts",
+        "status": "passed",
+        "tests": 13,
+        "passed": 13,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/cline/parseStreamLine.test.ts",
+        "status": "passed",
+        "tests": 28,
+        "passed": 28,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/cline/permissions.test.ts",
+        "status": "passed",
+        "tests": 7,
+        "passed": 7,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/cline/streamConformance.test.ts",
+        "status": "passed",
+        "tests": 3,
+        "passed": 3,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/codex/appServerProtocol.test.ts",
+        "status": "passed",
+        "tests": 6,
+        "passed": 6,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/codex/buildCliArgs.test.ts",
+        "status": "passed",
+        "tests": 11,
+        "passed": 11,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/codex/modelSelection.test.ts",
+        "status": "passed",
+        "tests": 1,
+        "passed": 1,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/codex/nativeApproval.test.ts",
+        "status": "passed",
+        "tests": 5,
+        "passed": 5,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/codex/parseStreamLine.test.ts",
+        "status": "passed",
+        "tests": 22,
+        "passed": 22,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/codex/permissions.test.ts",
+        "status": "passed",
+        "tests": 8,
+        "passed": 8,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/codex/streamConformance.test.ts",
+        "status": "passed",
+        "tests": 3,
+        "passed": 3,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/claude/auth.test.ts",
+        "status": "passed",
+        "tests": 6,
+        "passed": 6,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/claude/buildCliArgs.test.ts",
+        "status": "passed",
+        "tests": 23,
+        "passed": 23,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/claude/nativeApproval.test.ts",
+        "status": "passed",
+        "tests": 5,
+        "passed": 5,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/claude/parallelToolResults.test.ts",
+        "status": "passed",
+        "tests": 6,
+        "passed": 6,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/claude/parseStreamLine.test.ts",
+        "status": "passed",
+        "tests": 28,
+        "passed": 28,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/claude/permissions.test.ts",
+        "status": "passed",
+        "tests": 9,
+        "passed": 9,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/claude/streamConformance.test.ts",
+        "status": "passed",
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/base/acpApproval.test.ts",
+        "status": "passed",
+        "tests": 6,
+        "passed": 6,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/base/nativeApprovalRequests.test.ts",
+        "status": "passed",
+        "tests": 12,
+        "passed": 12,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/base/persistentCrashReporting.test.ts",
+        "status": "passed",
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/base/persistentInterrupt.test.ts",
+        "status": "passed",
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/base/persistentLifecycle.test.ts",
+        "status": "passed",
+        "tests": 12,
+        "passed": 12,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/base/promptHistorySuppression.test.ts",
+        "status": "passed",
+        "tests": 3,
+        "passed": 3,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/base/singleShotLifecycle.test.ts",
+        "status": "passed",
+        "tests": 7,
+        "passed": 7,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/base/windowsShellArgs.test.ts",
+        "status": "passed",
+        "tests": 5,
+        "passed": 5,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/gemini/buildCliArgs.test.ts",
+        "status": "passed",
+        "tests": 6,
+        "passed": 6,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/gemini/discoverModels.test.ts",
+        "status": "passed",
+        "tests": 5,
+        "passed": 5,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/gemini/parseStreamLine.test.ts",
+        "status": "passed",
+        "tests": 14,
+        "passed": 14,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/gemini/permissions.test.ts",
+        "status": "passed",
+        "tests": 7,
+        "passed": 7,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/gemini/streamConformance.test.ts",
+        "status": "passed",
+        "tests": 2,
+        "passed": 2,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/cursor/buildCliArgs.test.ts",
+        "status": "passed",
+        "tests": 5,
+        "passed": 5,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/cursor/parseStreamLine.test.ts",
+        "status": "passed",
+        "tests": 18,
+        "passed": 18,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/cursor/permissions.test.ts",
+        "status": "passed",
+        "tests": 7,
+        "passed": 7,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/cursor/streamConformance.test.ts",
+        "status": "passed",
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/copilot/buildCliArgs.test.ts",
+        "status": "passed",
+        "tests": 6,
+        "passed": 6,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/copilot/discoverModels.test.ts",
+        "status": "passed",
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/copilot/parseStreamLine.test.ts",
+        "status": "passed",
+        "tests": 16,
+        "passed": 16,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/copilot/permissions.test.ts",
+        "status": "passed",
+        "tests": 14,
+        "passed": 14,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/hermes/parseStreamLine.test.ts",
+        "status": "passed",
+        "tests": 29,
+        "passed": 29,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/hermes/streamConformance.test.ts",
+        "status": "passed",
+        "tests": 3,
+        "passed": 3,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/kimi/parseStreamLine.test.ts",
+        "status": "passed",
+        "tests": 31,
+        "passed": 31,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/localai/discovery.test.ts",
+        "status": "passed",
+        "tests": 11,
+        "passed": 11,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/localai/streamConformance.test.ts",
+        "status": "passed",
+        "tests": 1,
+        "passed": 1,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/ollama/discovery.test.ts",
+        "status": "passed",
+        "tests": 10,
+        "passed": 10,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/ollama/streamConformance.test.ts",
+        "status": "passed",
+        "tests": 2,
+        "passed": 2,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/openrouter/discoverModels.test.ts",
+        "status": "passed",
+        "tests": 3,
+        "passed": 3,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/openrouter/openRouterProvider.test.ts",
+        "status": "passed",
+        "tests": 10,
+        "passed": 10,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/openclaw/buildCliArgs.test.ts",
+        "status": "passed",
+        "tests": 3,
+        "passed": 3,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/openclaw/deviceIdentity.test.ts",
+        "status": "passed",
+        "tests": 2,
+        "passed": 2,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/openclaw/gateway.test.ts",
+        "status": "passed",
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/openclaw/messageDelivery.test.ts",
+        "status": "passed",
+        "tests": 8,
+        "passed": 8,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/openclaw/parseStreamLine.test.ts",
+        "status": "passed",
+        "tests": 20,
+        "passed": 20,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/openclaw/permissions.test.ts",
+        "status": "passed",
+        "tests": 6,
+        "passed": 6,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/openclaw/streamConformance.test.ts",
+        "status": "passed",
+        "tests": 3,
+        "passed": 3,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/openclaw/tokenConfig.test.ts",
+        "status": "passed",
+        "tests": 1,
+        "passed": 1,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/qwen/buildCliArgs.test.ts",
+        "status": "passed",
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/qwen/discoverModels.test.ts",
+        "status": "passed",
+        "tests": 7,
+        "passed": 7,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/qwen/parseStreamLine.test.ts",
+        "status": "passed",
+        "tests": 17,
+        "passed": 17,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/qwen/permissions.test.ts",
+        "status": "passed",
+        "tests": 7,
+        "passed": 7,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/qwen/streamConformance.test.ts",
+        "status": "passed",
+        "tests": 3,
+        "passed": 3,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/continue/buildCliArgs.test.ts",
+        "status": "passed",
+        "tests": 9,
+        "passed": 9,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/continue/parseStreamLine.test.ts",
+        "status": "passed",
+        "tests": 9,
+        "passed": 9,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/opencode/buildCliArgs.test.ts",
+        "status": "passed",
+        "tests": 3,
+        "passed": 3,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/opencode/discoverModels.test.ts",
+        "status": "passed",
+        "tests": 2,
+        "passed": 2,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/opencode/parseStreamLine.test.ts",
+        "status": "passed",
+        "tests": 15,
+        "passed": 15,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/opencode/permissions.test.ts",
+        "status": "passed",
+        "tests": 7,
+        "passed": 7,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/opencode/streamConformance.test.ts",
+        "status": "passed",
+        "tests": 2,
+        "passed": 2,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/desk/deskArtifacts.test.ts",
+        "status": "passed",
+        "tests": 154,
+        "passed": 154,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/desk/deskBoard.test.ts",
+        "status": "passed",
+        "tests": 34,
+        "passed": 34,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/desk/deskContract.test.ts",
+        "status": "passed",
+        "tests": 61,
+        "passed": 61,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/desk/deskDispatch.test.ts",
+        "status": "passed",
+        "tests": 21,
+        "passed": 21,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/desk/deskEnvelope.test.ts",
+        "status": "passed",
+        "tests": 28,
+        "passed": 28,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/desk/deskIdentity.test.ts",
+        "status": "passed",
+        "tests": 67,
+        "passed": 67,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/desk/deskIndex.test.ts",
+        "status": "passed",
+        "tests": 24,
+        "passed": 24,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/desk/deskLedger.test.ts",
+        "status": "passed",
+        "tests": 98,
+        "passed": 98,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/desk/deskRedactor.test.ts",
+        "status": "passed",
+        "tests": 28,
+        "passed": 28,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/desk/deskScope.test.ts",
+        "status": "passed",
+        "tests": 25,
+        "passed": 25,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/desk/deskServing.test.ts",
+        "status": "passed",
+        "tests": 97,
+        "passed": 97,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/desk/deskTools.test.ts",
+        "status": "passed",
+        "tests": 114,
+        "passed": 114,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/services/desk/importGraph.test.ts",
+        "status": "passed",
+        "tests": 35,
+        "passed": 35,
+        "failed": 0,
+        "pending": 0
+      }
+    ]
+  },
+  "liveCli": {
+    "codex": {
+      "exitCode": 0,
+      "events": [
+        {
+          "type": "thread.started",
+          "text": "",
+          "message": ""
+        },
+        {
+          "type": "turn.started",
+          "text": "",
+          "message": ""
+        },
+        {
+          "type": "item.completed",
+          "text": "MYSTI_CODEX_OK",
+          "message": ""
+        },
+        {
+          "type": "turn.completed",
+          "text": "",
+          "message": ""
+        }
+      ]
+    },
+    "claude": {
+      "exitCode": 0,
+      "events": [
+        {
+          "type": "system",
+          "subtype": "hook_started"
+        },
+        {
+          "type": "system",
+          "subtype": "hook_started"
+        },
+        {
+          "type": "system",
+          "subtype": "hook_started"
+        },
+        {
+          "type": "system",
+          "subtype": "hook_started"
+        },
+        {
+          "type": "system",
+          "subtype": "hook_response"
+        },
+        {
+          "type": "system",
+          "subtype": "hook_response"
+        },
+        {
+          "type": "system",
+          "subtype": "hook_response"
+        },
+        {
+          "type": "system",
+          "subtype": "init"
+        },
+        {
+          "type": "system",
+          "subtype": "status"
+        },
+        {
+          "type": "system",
+          "subtype": "hook_progress"
+        },
+        {
+          "type": "stream_event",
+          "subtype": null
+        },
+        {
+          "type": "stream_event",
+          "subtype": null
+        },
+        {
+          "type": "stream_event",
+          "subtype": null
+        },
+        {
+          "type": "stream_event",
+          "subtype": null
+        },
+        {
+          "type": "stream_event",
+          "subtype": null
+        },
+        {
+          "type": "stream_event",
+          "subtype": null
+        },
+        {
+          "type": "assistant",
+          "subtype": null
+        },
+        {
+          "type": "stream_event",
+          "subtype": null
+        },
+        {
+          "type": "stream_event",
+          "subtype": null
+        },
+        {
+          "type": "stream_event",
+          "subtype": null
+        },
+        {
+          "type": "rate_limit_event",
+          "subtype": null
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "result": "MYSTI_CLAUDE_OK",
+          "is_error": false
+        },
+        {
+          "type": "system",
+          "subtype": "hook_response"
+        }
+      ]
+    }
+  },
+  "checks": {
+    "typecheck": {
+      "status": "passed"
+    },
+    "lint": {
+      "status": "passed",
+      "errors": 0,
+      "warnings": 446
+    },
+    "releaseBuild": {
+      "status": "passed",
+      "notes": "Canvas webpack size warnings remain."
+    },
+    "realEditor": {
+      "status": "passed",
+      "version": "1.140.0",
+      "passed": 9,
+      "failed": 0,
+      "scenarios": [
+        "Claude actual chat: two turns, Deny and Allow cards, filesystem assertions",
+        "Codex actual chat: two turns, Deny and Allow cards, filesystem assertions",
+        "Canvas activation/render/scaffold/save/reopen and computed input styling/interaction"
+      ]
+    },
+    "minimumRuntime": {
+      "status": "passed",
+      "node": "18.17.1",
+      "checks": [
+        "scaffold:login",
+        "roundtrip:login",
+        "scaffold:mobile-home",
+        "roundtrip:mobile-home",
+        "scaffold:dashboard",
+        "roundtrip:dashboard",
+        "scaffold:settings",
+        "roundtrip:settings",
+        "scaffold:landing",
+        "roundtrip:landing",
+        "typed-jsx-unicode-entities",
+        "text-edit-emit-reparse-undo",
+        "style-edit-emit-reparse-undo",
+        "streaming-partial-prefix",
+        "unsupported-runtime-expression-rejected",
+        "malformed-jsx-rejected",
+        "babel-build-clone-validate",
+        "mcp-safe-url-validation",
+        "mcp-client-server-tool-roundtrip"
+      ]
+    },
+    "minimumEditor": {
+      "status": "blocked",
+      "version": "1.86.0",
+      "platform": "darwin-arm64",
+      "reason": "Editor process exited SIGTRAP before activation/test runner. Crashpad errors present; root cause not established. No extension/UI pass inferred."
+    },
+    "package": {
+      "status": "passed",
+      "archive": "/tmp/mysti-reviewed.vsix",
+      "bytes": 7727808,
+      "packagedFiles": 691,
+      "shapeEntries": 689,
+      "developmentStateExcluded": true,
+      "shapeAssertions": "A–G passed; all 24 runtime require targets resolve."
+    },
+    "packagedEditor": {
+      "status": "passed",
+      "version": "1.140.0",
+      "passed": 9,
+      "failed": 0,
+      "extensionSource": "Actual /tmp/mysti-reviewed.vsix contents extracted to a temporary extension root; selected through MYSTI_TEST_EXTENSION_PATH.",
+      "command": "MYSTI_TEST_EXTENSION_PATH=<extracted-vsix>/extension MYSTI_LIVE_PROVIDERS=1 npx vscode-test",
+      "freshUserDataProfile": true
+    }
+  },
+  "openFindings": [
+    "F06: authenticated Mysti coordinator journey requires a test account",
+    "F02 prerequisite: local OpenClaw model configuration prevents a live answering turn",
+    "Minimum VS Code 1.86.0 failed to launch on this host",
+    "Linux/Windows and account-dependent service/other-provider acceptance remain pending",
+    "Legacy provider approval limitations remain documented in docs/NATIVE_APPROVAL.md; no blanket product sign-off"
+  ],
+  "baselineSummary": {
+    "automated": {
+      "command": "npm test -- --reporter=json --outputFile=/tmp/mysti-feature-review-unrestricted.json",
+      "success": true,
+      "total": 13454,
+      "passed": 13454,
+      "failed": 0,
+      "pending": 0
+    },
+    "checks": {
+      "typecheck": {
+        "status": "passed"
+      },
+      "lint": {
+        "status": "passed",
+        "errors": 0,
+        "warnings": 446
+      },
+      "releaseBuild": {
+        "status": "passed",
+        "notes": "Canvas bundle size warnings remain."
+      },
+      "realEditor": {
+        "status": "passed",
+        "version": "1.140.0",
+        "passed": 7,
+        "failed": 0,
+        "initialRun": {
+          "passed": 6,
+          "failed": 1,
+          "cause": "Test expected input[type=email], but UI.Field renders a labelled text input."
+        },
+        "correction": "Locate Email by accessible label; preserve fill/value assertions."
+      },
+      "package": {
+        "status": "passed",
+        "archive": "/tmp/mysti-feature-review-final.vsix",
+        "sizeMB": 7.36,
+        "packagedFiles": 691,
+        "shapeEntries": 689,
+        "developmentStateExcluded": true,
+        "initialRun": {
+          "status": "failed",
+          "sizeMB": 7.93,
+          "packagedFiles": 1260,
+          "cause": "Unintended .superpowers review diff failed large-asset gate; .remember was also not excluded."
+        }
+      }
+    }
+  },
+  "affectedChecks": {
+    "success": true,
+    "total": 70,
+    "passed": 70,
+    "failed": 0,
+    "pending": 0,
+    "files": 12,
+    "suites": [
+      {
+        "file": "tests/integration/suggestionPreference.test.ts",
+        "status": "passed",
+        "tests": 1,
+        "passed": 1,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/claude/nativeApproval.test.ts",
+        "status": "passed",
+        "tests": 5,
+        "passed": 5,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/base/persistentLifecycle.test.ts",
+        "status": "passed",
+        "tests": 12,
+        "passed": 12,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/codex/nativeApproval.test.ts",
+        "status": "passed",
+        "tests": 5,
+        "passed": 5,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/openclaw/buildCliArgs.test.ts",
+        "status": "passed",
+        "tests": 3,
+        "passed": 3,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/openclaw/deviceIdentity.test.ts",
+        "status": "passed",
+        "tests": 2,
+        "passed": 2,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/openclaw/gateway.test.ts",
+        "status": "passed",
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/openclaw/messageDelivery.test.ts",
+        "status": "passed",
+        "tests": 8,
+        "passed": 8,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/openclaw/parseStreamLine.test.ts",
+        "status": "passed",
+        "tests": 20,
+        "passed": 20,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/openclaw/permissions.test.ts",
+        "status": "passed",
+        "tests": 6,
+        "passed": 6,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/openclaw/streamConformance.test.ts",
+        "status": "passed",
+        "tests": 3,
+        "passed": 3,
+        "failed": 0,
+        "pending": 0
+      },
+      {
+        "file": "tests/providers/openclaw/tokenConfig.test.ts",
+        "status": "passed",
+        "tests": 1,
+        "passed": 1,
+        "failed": 0,
+        "pending": 0
+      }
+    ]
+  },
+  "liveAdapterJourneys": {
+    "success": true,
+    "total": 2,
+    "passed": 2,
+    "failed": 0,
+    "pending": 0,
+    "files": 1,
+    "suites": [
+      {
+        "file": "tests-live/providers.test.ts",
+        "status": "passed",
+        "tests": 2,
+        "passed": 2,
+        "failed": 0,
+        "pending": 0
+      }
+    ],
+    "protocols": {
+      "claude-code": "SDK control stdio: PreToolUse hook and can_use_tool",
+      "openai-codex": "app-server v2 stdio"
+    },
+    "scenarios": [
+      "text streaming and single terminal state",
+      "second-turn remembered fact",
+      "native resume after process disposal",
+      "file absent before approval",
+      "Deny leaves file absent",
+      "Allow creates intended file",
+      "Stop during native approval cancels request without writing",
+      "next turn recovers after Stop",
+      "clear drops session",
+      "read-only cannot be elevated by a host returning allow"
+    ],
+    "claudeAdversarialSettings": "CLI --settings fixture explicitly supplies disableAllHooks=true and permissive Write/Edit/Bash rules; host denial still prevented the write."
+  },
+  "openclawLive": {
+    "handshake": "passed with protocol 4 and Mysti-owned signed device identity",
+    "stream": "blocked",
+    "failure": "Configured model anthropic/claude-opus-4-5 is missing from the local gateway provider catalog.",
+    "userGatewayConfigurationChanged": false,
+    "fixtures": "Protocol4 handshake, signing, JSON5 credentials, event isolation, duplicate suppression, scoped cancel, disconnect and permanent rejection covered."
+  },
+  "mystiLive": {
+    "status": "blocked",
+    "reason": "No DeepMyst credential in isolated VS Code profile and no supplied OpenRouter/DeepMyst environment key. No normal-profile secrets extracted.",
+    "automatedCoverage": "Coordinator, tools, delegation, authentication recovery, spend, memory, cancellation and UI routing included in full suite."
+  },
+  "validationCaveats": [
+    "Mocked VS Code/transport tests do not establish live provider entitlement.",
+    "Literal test references in the inventory are navigation aids, not per-setting certification.",
+    "Initial implementation full run: 13467 passed, 2 failed; updated Codex compaction expectation and reran timed-out Canvas compiler under bounded workers without changing timeout. Final full run passed.",
+    "UI fixture corrections: tolerate frame detach while opening, wait for the latest artboard count, and locate the labelled input. Native prompt instruction corrected after live agents asked permission in prose."
+  ]
+}

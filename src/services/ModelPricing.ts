@@ -1,0 +1,123 @@
+/**
+ * Mysti - AI Coding Agent
+ * Copyright (c) 2025 DeepMyst Inc. All rights reserved.
+ *
+ * Author: Baha Abunojaim <baha@deepmyst.com>
+ * Website: https://www.deepmyst.com/mysti
+ *
+ * This file is part of Mysti, licensed under the Apache License, Version 2.0.
+ * See the LICENSE file in the project root for full license terms.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * ModelPricing (Plan 08 — smart compaction).
+ *
+ * A small, deliberately-editable price table for the compact-vs-cache economic
+ * decision and the savings ledger. Rates are USD per million tokens (MTok).
+ * Cache multipliers follow Anthropic prompt-caching economics: a cache READ is
+ * ~0.1x base input, a cache WRITE is 1.25x (5-min TTL) or 2x (1-hour TTL).
+ *
+ * Unknown models return `null` so callers degrade to non-economic behaviour
+ * rather than acting on a wrong number.
+ */
+
+export interface ModelRate {
+  /** USD per million input tokens. */
+  inputPerMTok: number;
+  /** USD per million output tokens. */
+  outputPerMTok: number;
+}
+
+/** Cache-read price as a fraction of base input price. */
+export const CACHE_READ_MULT = 0.1;
+/** Cache-write premium for the 5-minute ephemeral TTL. */
+export const CACHE_WRITE_MULT_5M = 1.25;
+/** Cache-write premium for the 1-hour TTL. */
+export const CACHE_WRITE_MULT_1H = 2.0;
+
+/**
+ * First-party / generic provider rates, matched by substring on the model id.
+ * Order matters — the first match wins, so put more specific patterns first.
+ */
+const FAMILY_RATES: Array<{ match: RegExp; rate: ModelRate }> = [
+  // ---- Anthropic ----
+  // Fable / Mythos matched no pattern at all before, so every Fable turn was
+  // billed as "unknown" (i.e. not billed) despite being the priciest tier.
+  { match: /fable|mythos/i, rate: { inputPerMTok: 10, outputPerMTok: 50 } },
+  // Sonnet 5 is CHEAPER than Sonnet 4.6 ($2/$10 vs $3/$15) — it must be matched
+  // before the generic /sonnet/ rule or it over-bills by 50%. "sonnet-5" cannot
+  // collide with "claude-sonnet-4-5" or "claude-sonnet-4.5": both carry the
+  // minor version between "sonnet-" and the 5.
+  { match: /sonnet-5/i, rate: { inputPerMTok: 2, outputPerMTok: 10 } },
+  // Opus 5.5 is cheaper than the rest of the Opus line ($4/$20 vs $5/$25), so
+  // it must be matched before the generic /opus/ rule or it over-bills by 25%.
+  { match: /opus-5[-.]5/i, rate: { inputPerMTok: 4, outputPerMTok: 20 } },
+  { match: /opus/i, rate: { inputPerMTok: 5, outputPerMTok: 25 } },
+  { match: /sonnet/i, rate: { inputPerMTok: 3, outputPerMTok: 15 } },
+  { match: /haiku/i, rate: { inputPerMTok: 1, outputPerMTok: 5 } },
+  // ---- OpenAI ----
+  { match: /4o-mini|gpt-4o-mini|o4-mini/i, rate: { inputPerMTok: 0.15, outputPerMTok: 0.6 } },
+  // ---- Google ----
+  // Gemini 3.5+ Flash is ~7.5x the old Flash rate, so the generic /flash/ rule
+  // understated it badly. Introductory pricing through 2026-12-31; the standard
+  // rate doubles on 2027-01-01.
+  { match: /gemini-3\.[5-9]/i, rate: { inputPerMTok: 0.75, outputPerMTok: 3.75 } },
+  { match: /flash/i, rate: { inputPerMTok: 0.1, outputPerMTok: 0.4 } },
+  { match: /gemini/i, rate: { inputPerMTok: 1.25, outputPerMTok: 5 } },
+  // ---- OpenAI (continued) ----
+  // GPT-6 tiers differ by up to 100x (live OpenRouter catalog 2026-09-25):
+  // Luna $0.10/$0.50, Sol $2/$10, Astra $10/$50. The generic rule below billed
+  // every tier at Astra's rate.
+  { match: /gpt-6-luna/i, rate: { inputPerMTok: 0.1, outputPerMTok: 0.5 } },
+  { match: /gpt-6-sol/i, rate: { inputPerMTok: 2, outputPerMTok: 10 } },
+  // GPT-6 Astra (2026-09-03). Standard rate, which applies at or below 272K
+  // input tokens; above that the whole request repriced to $20/$75. We bill the
+  // standard rate here — the ledger has no per-request input size at match time,
+  // and under-reporting a long-context request is the safer of the two errors
+  // versus inflating every ordinary one by 2x.
+  { match: /gpt-6/i, rate: { inputPerMTok: 10, outputPerMTok: 50 } },
+  // GPT-5.6 tiers differ by an order of magnitude, so each is matched before the
+  // generic gpt-5 rule (luna and terra first — "gpt-5.6" alone means Sol).
+  { match: /gpt-5\.6-luna/i, rate: { inputPerMTok: 0.2, outputPerMTok: 1.2 } },
+  { match: /gpt-5\.6-terra/i, rate: { inputPerMTok: 2, outputPerMTok: 12 } },
+  { match: /gpt-5\.6/i, rate: { inputPerMTok: 4, outputPerMTok: 20 } },
+  { match: /gpt-5|gpt-4\.1|gpt-4o|gpt-4/i, rate: { inputPerMTok: 2.5, outputPerMTok: 10 } },
+];
+
+/**
+ * Look up the per-MTok rate for a model id. Returns `null` for an unknown model
+ * so callers can skip economic reasoning. There is no separate gateway rate:
+ * DeepMyst bills models at cost (e.g. claude-haiku-4-5 at $1/$5), so a call
+ * through the gateway costs the same as first-party.
+ */
+export function getModelRate(modelId: string | undefined): ModelRate | null {
+  if (!modelId) { return null; }
+  const id = modelId.trim();
+  if (!id) { return null; }
+  for (const { match, rate } of FAMILY_RATES) {
+    if (match.test(id)) { return rate; }
+  }
+  return null;
+}
+
+/** Crude token estimate (≈4 chars/token) — shared by chunking, budgets, and economics. */
+export function estimateTokens(text: string): number {
+  if (!text) { return 0; }
+  return Math.ceil(text.length / 4);
+}
+
+/** USD for `tokens` priced at `perMTok`. */
+export function tokensCostUsd(tokens: number, perMTok: number): number {
+  return (Math.max(0, tokens) / 1_000_000) * perMTok;
+}
+
+/** USD to READ `tokens` from cache for a model (0.1x base input). */
+export function cacheReadCostUsd(tokens: number, rate: ModelRate): number {
+  return tokensCostUsd(tokens, rate.inputPerMTok * CACHE_READ_MULT);
+}
+
+/** USD to WRITE `tokens` to cache for a model (1.25x base input @5-min, 2x @1-hour). */
+export function cacheWriteCostUsd(tokens: number, rate: ModelRate, ttl: '5m' | '1h' = '5m'): number {
+  const mult = ttl === '1h' ? CACHE_WRITE_MULT_1H : CACHE_WRITE_MULT_5M;
+  return tokensCostUsd(tokens, rate.inputPerMTok * mult);
+}

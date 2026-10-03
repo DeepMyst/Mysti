@@ -16,6 +16,8 @@ import type {
   CumulativeUsage,
   CompactionResult,
   CompactionStrategy,
+  CompactionDecision,
+  SavingsSnapshot,
   UsageStats,
   ProviderType,
   Conversation,
@@ -28,9 +30,26 @@ import {
   COMPACTION_COOLDOWN_MS,
   COMPACTION_MIN_MESSAGES_BEFORE_COMPACT,
   COMPACTION_MESSAGES_TO_PRESERVE,
+  SMART_DEFAULT_CHEAP_MODEL,
+  SMART_MIN_SUMMARY_TOKENS,
 } from '../constants';
+import { estimateTokens } from '../services/ModelPricing';
+import { contextFillTokens, hasUsageSignal } from '../services/TokenAccounting';
+import type { UsageConvention } from '../services/TokenAccounting';
 import type { ProviderManager } from './ProviderManager';
+import type { SessionKind } from '../providers/base/IProvider';
 import type { ConversationManager } from './ConversationManager';
+import type { SmartCompactor, HistoryAppend } from './SmartCompactor';
+
+/**
+ * Boost overlay seam (Plan 24). Structural on purpose — BoostManager satisfies
+ * it without CompactionManager importing it. Each accessor returns undefined
+ * to mean "no overlay; use the stock settings read".
+ */
+export interface BoostCompactionOverlay {
+  compactionThreshold(): number | undefined;
+  smartCompactionEnabled(): boolean | undefined;
+}
 
 /**
  * CompactionManager - Unified context compaction across all providers
@@ -49,6 +68,11 @@ export class CompactionManager {
   // Key: panelId (or panelId-brainstorm-agentId for brainstorm agents)
   private _panelUsage: Map<string, CumulativeUsage> = new Map();
 
+  // The LAST normalized usage record per panel. Kept separately from the
+  // cumulative totals because they answer different questions: the totals are a
+  // session-lifetime spend, this is the current context fill.
+  private _panelLastFill: Map<string, UsageStats> = new Map();
+
   // Cooldown tracking to prevent rapid re-compaction
   private _lastCompactionTime: Map<string, number> = new Map();
 
@@ -58,19 +82,45 @@ export class CompactionManager {
   // Whether compaction is enabled
   private _enabled: boolean;
 
+  // Whether smart compaction (DeepMyst-gated premium) is enabled via settings.
+  // This reflects the user toggle only; full activation additionally requires a
+  // signed-in DeepMyst account + entitlement (resolved by the SmartCompactor).
+  private _smartEnabled: boolean;
+
+  // Smart-compaction tunables (loaded from settings).
+  private _cheapModel: string;
+  private _minSummaryTokens: number;
+  private _retrievalEnabled: boolean;
+
+  // The smart engine, injected post-construction (null until wired in extension.ts).
+  private _smart: SmartCompactor | null = null;
+
+  /** Boost overlay (Plan 24); undefined until wired via setBoostOverlay. */
+  private _boostOverlay: BoostCompactionOverlay | undefined;
+
   private _configDisposable: vscode.Disposable;
 
   constructor(context: vscode.ExtensionContext) {
     this._extensionContext = context;
     this._thresholdPercent = this._loadThreshold();
     this._enabled = this._loadEnabled();
+    this._smartEnabled = this._loadSmartEnabled();
+    this._cheapModel = this._loadCheapModel();
+    this._minSummaryTokens = this._loadMinSummaryTokens();
+    this._retrievalEnabled = this._loadRetrievalEnabled();
 
-    // Listen for configuration changes
+    // Listen for configuration changes. `mysti.boost` is included because the
+    // Boost overlay (Plan 24) feeds _loadThreshold/_loadSmartEnabled — toggling
+    // Boost must re-run the loaders exactly like a compaction settings change.
     this._configDisposable = vscode.workspace.onDidChangeConfiguration(e => {
-      if (e.affectsConfiguration('mysti.compaction')) {
+      if (e.affectsConfiguration('mysti.compaction') || e.affectsConfiguration('mysti.boost')) {
         this._thresholdPercent = this._loadThreshold();
         this._enabled = this._loadEnabled();
-        console.log(`[Mysti] CompactionManager: Config updated - enabled=${this._enabled}, threshold=${this._thresholdPercent}%`);
+        this._smartEnabled = this._loadSmartEnabled();
+        this._cheapModel = this._loadCheapModel();
+        this._minSummaryTokens = this._loadMinSummaryTokens();
+        this._retrievalEnabled = this._loadRetrievalEnabled();
+        console.log(`[Mysti] CompactionManager: Config updated - enabled=${this._enabled}, smart=${this._smartEnabled}, threshold=${this._thresholdPercent}%`);
       }
     });
   }
@@ -89,9 +139,14 @@ export class CompactionManager {
     existing.lastUpdated = Date.now();
 
     this._panelUsage.set(panelId, existing);
+    this._panelLastFill.set(panelId, usage);
 
-    // The most recent input_tokens represents the current context window fill level
-    const currentFill = usage.input_tokens + (usage.cache_read_input_tokens || 0);
+    // Context fill for the most recent turn. `usage` must ALREADY be normalized
+    // (ChatViewProvider normalizes at the stream boundary) — the fill is the sum
+    // of all three disjoint prompt buckets, cache-creation included. Omitting
+    // cache-creation, as this did, reported a cold 400k-token turn as the couple
+    // of thousand uncached tokens and the threshold never tripped.
+    const currentFill = contextFillTokens(usage);
     const percentage = (currentFill / contextWindow) * 100;
 
     console.log(`[Mysti] CompactionManager: Panel ${panelId} - ${currentFill}/${contextWindow} tokens (${percentage.toFixed(1)}%, threshold: ${this._thresholdPercent}%)`);
@@ -120,9 +175,14 @@ export class CompactionManager {
       return false;
     }
 
-    // Check threshold using most recent input_tokens as context fill level
-    const currentFill = usage.input_tokens + (usage.cache_read_input_tokens || 0);
-    const percentage = (currentFill / contextWindow) * 100;
+    // No measurement at all (a backend that omits usage, or defaults every field
+    // to 0) is UNKNOWN, not 0% — thresholding on it silently disables compaction
+    // for the whole session while looking like a healthy "plenty of room" answer.
+    if (!hasUsageSignal(usage)) {
+      return false;
+    }
+
+    const percentage = (contextFillTokens(usage) / contextWindow) * 100;
 
     return percentage >= this._thresholdPercent;
   }
@@ -140,6 +200,61 @@ export class CompactionManager {
       }
     }
     return 'client-summarize';
+  }
+
+  /**
+   * Whether the CLI owns this conversation's history (`sessionKind:
+   * 'cli-resume'`): it resumes its own session and compacts it natively.
+   * Mysti must never summarize or restart such a session. Its view of the
+   * conversation is only the chat text (no tool calls, results or file reads),
+   * and a restart throws away the CLI's own context. The CLI either compacts
+   * itself or, where it exposes one, takes Mysti's native `/compact`.
+   */
+  public cliOwnsHistory(providerId: ProviderType, providerManager: ProviderManager): boolean {
+    return this._historyOwner(providerId, providerManager) === 'cli';
+  }
+
+  /**
+   * Whether Mysti may start a compaction on its own after a turn: only where
+   * the backend takes a native `/compact`, or where Mysti sends the whole
+   * history itself (`sessionKind: 'none'`, e.g. Ollama/OpenRouter). Everywhere
+   * else the CLI compacts on its own, and the usage several of those CLIs
+   * report is a running total (Codex, Gemini, Cline, Hermes), not the context
+   * fill, so thresholding it compacts sessions that are nowhere near full.
+   */
+  public canAutoCompact(providerId: ProviderType, providerManager: ProviderManager): boolean {
+    return this.getStrategy(providerId, providerManager) === 'native-cli'
+      || this._historyOwner(providerId, providerManager) === 'mysti-full';
+  }
+
+  /** Whether Mysti replays this backend's whole history itself (HTTP backends: Ollama, LocalAI, OpenRouter). */
+  public mystiSendsFullHistory(providerId: ProviderType, providerManager: ProviderManager): boolean {
+    return this._historyOwner(providerId, providerManager) === 'mysti-full';
+  }
+
+  /** Whether the backend gets no conversation history at all (e.g. Cursor): nothing to compact. */
+  public keepsNoHistory(providerId: ProviderType, providerManager: ProviderManager): boolean {
+    return this._historyOwner(providerId, providerManager) === 'none';
+  }
+
+  /**
+   * Who holds a backend's conversation: the CLI itself ('cli'), Mysti in full
+   * ('mysti-full', re-sent every request), Mysti's recent messages only
+   * ('mysti-recent', prompt-history), or nobody ('none'). `sessionKind: 'none'`
+   * alone does not mean Mysti sends the history — Cursor is 'none' and gets none.
+   */
+  private _historyOwner(
+    providerId: ProviderType,
+    providerManager: ProviderManager,
+  ): 'cli' | 'mysti-full' | 'mysti-recent' | 'none' {
+    const caps = providerManager.getProviderInstance(providerId)?.capabilities;
+    if (!caps || caps.sendsNoHistory) { return 'none'; }
+    const kinds: Record<SessionKind, 'cli' | 'mysti-full' | 'mysti-recent'> = {
+      'cli-resume': 'cli',
+      'none': 'mysti-full',
+      'prompt-history': 'mysti-recent',
+    };
+    return kinds[caps.sessionKind] ?? 'none';
   }
 
   /**
@@ -267,17 +382,42 @@ export class CompactionManager {
 
   /**
    * Get cumulative usage for a panel.
+   *
+   * These are LIFETIME sums across the session. They answer "what has this panel
+   * spent", never "how full is the context" — use `getLastFill` for that.
    */
   public getUsage(panelId: string): CumulativeUsage | null {
     return this._panelUsage.get(panelId) || null;
   }
 
   /**
-   * Reset usage tracking for a panel (on new conversation).
+   * The most recent measured turn for a panel, in normalized form — the only
+   * record that is comparable to the model's context window. Null before the
+   * panel has completed a measurable turn.
+   */
+  public getLastFill(panelId: string): UsageStats | null {
+    return this._panelLastFill.get(panelId) || null;
+  }
+
+  /**
+   * Reset usage tracking for a panel (on new conversation). Also sweeps the
+   * panel's brainstorm-child keys (`${panelId}-brainstorm-<agent>`): those are
+   * written per agent during brainstorm but were never reset, so they
+   * accumulated across conversations (S7).
    */
   public resetUsage(panelId: string): void {
     this._panelUsage.delete(panelId);
+    this._panelLastFill.delete(panelId);
     this._lastCompactionTime.delete(panelId);
+    this._smart?.resetPanel(panelId);
+    const childPrefix = `${panelId}-brainstorm-`;
+    for (const key of Array.from(this._panelUsage.keys())) {
+      if (key.startsWith(childPrefix)) {
+        this._panelUsage.delete(key);
+        this._panelLastFill.delete(key);
+        this._lastCompactionTime.delete(key);
+      }
+    }
   }
 
   /**
@@ -289,6 +429,11 @@ export class CompactionManager {
     existing.totalCacheReadTokens = 0;
     existing.lastUpdated = Date.now();
     this._panelUsage.set(panelId, existing);
+    // The fill is now the compacted prefix, all of it uncached: compaction
+    // invalidates the prompt cache by construction. Leaving the pre-compaction
+    // record in place would make the very next threshold check re-fire off a
+    // reading that compaction just made obsolete.
+    this._panelLastFill.set(panelId, { input_tokens: afterTokens, output_tokens: 0 });
     console.log(`[Mysti] CompactionManager: Updated usage for ${panelId} to ${afterTokens} tokens post-compaction`);
   }
 
@@ -306,6 +451,137 @@ export class CompactionManager {
     return this._enabled;
   }
 
+  /**
+   * Whether the user has opted into smart compaction via settings
+   * (`mysti.compaction.smart.enabled`). This reflects the toggle only — smart
+   * compaction additionally requires a signed-in DeepMyst account + entitlement
+   * before it actually activates (Plan 08 Phase 2, wired in a later slice).
+   */
+  public isSmartEnabled(): boolean {
+    return this._smartEnabled;
+  }
+
+  /** Inject the smart-compaction engine (Plan 08). Wired in extension.ts. */
+  public setSmartCompactor(smart: SmartCompactor): void {
+    this._smart = smart;
+  }
+
+  /**
+   * Inject the Boost overlay (Plan 24). Wired in extension.ts. Re-runs the two
+   * overlay-aware loaders immediately so an already-constructed manager picks
+   * the boosted values up without waiting for a settings change.
+   */
+  public setBoostOverlay(overlay: BoostCompactionOverlay): void {
+    this._boostOverlay = overlay;
+    this._thresholdPercent = this._loadThreshold();
+    this._smartEnabled = this._loadSmartEnabled();
+  }
+
+  /** Whether smart compaction is currently active (toggle + signed in + entitled). */
+  public isSmartActive(): boolean {
+    return !!this._smart && this._smart.isActive(this._smartEnabled);
+  }
+
+  /**
+   * Decide whether to compact after a completed response. When smart compaction
+   * is active this uses the cache-aware + economic engine (and records cache
+   * warmth / cache-timing savings); otherwise it falls back to the standard
+   * percentage-threshold trigger. `recordUsage` is still the caller's job on the
+   * non-act path (it accumulates the per-panel token totals).
+   */
+  public evaluateCompaction(
+    panelId: string,
+    usage: UsageStats,
+    contextWindow: number,
+    messageCount: number,
+    settings: Settings,
+    conversation?: Conversation | null,
+    /**
+     * The backend's token-accounting convention, so the smart engine can tell
+     * "cache cold" from "this backend cannot report cache". Defaults to 'none'
+     * (the honest answer for a caller that doesn't know) rather than 'anthropic',
+     * which would claim a cache signal that was never observed.
+     */
+    usageConvention: UsageConvention = 'none',
+  ): { act: boolean; smart: boolean; decision?: CompactionDecision } {
+    if (this.isSmartActive() && this._smart) {
+      this._smart.recordTurn(panelId, usage, usageConvention);
+      // Same UNKNOWN-vs-zero rule as shouldCompact: an unmeasured turn must not
+      // reach the economic engine, which would read it as 0% fill.
+      if (!hasUsageSignal(usage)) {
+        return { act: false, smart: true };
+      }
+      if (!this._enabled || messageCount < COMPACTION_MIN_MESSAGES_BEFORE_COMPACT) {
+        return { act: false, smart: true };
+      }
+      const lastCompaction = this._lastCompactionTime.get(panelId) || 0;
+      if (Date.now() - lastCompaction < COMPACTION_COOLDOWN_MS) {
+        return { act: false, smart: true };
+      }
+      const decision = this._smart.evaluate({
+        panelId,
+        usage,
+        contextWindow,
+        messageCount,
+        providerModel: settings.model,
+        cheapModel: this._cheapModel,
+        thresholdPercent: this._thresholdPercent,
+        minSummaryTokens: this._minSummaryTokens,
+        preserveTokens: conversation ? this._estimatePreserveTokens(conversation) : undefined,
+      });
+      console.log(`[Mysti] CompactionManager: smart decision for ${panelId} — act=${decision.act}, ${decision.reason}`);
+      return { act: decision.act, smart: true, decision };
+    }
+    return { act: this.shouldCompact(panelId, usage, contextWindow, messageCount), smart: false };
+  }
+
+  /**
+   * Smart incremental summarization through the cheap gateway model. Returns null
+   * when smart compaction isn't active or the gateway is unavailable, so the
+   * caller falls back to executeClientSummarization.
+   */
+  public async executeSmartSummarization(
+    settings: Settings,
+    conversation: Conversation,
+    panelId: string,
+  ): Promise<CompactionResult | null> {
+    if (!this.isSmartActive() || !this._smart) { return null; }
+    this._lastCompactionTime.set(panelId, Date.now());
+    return this._smart.summarize({
+      panelId,
+      conversation,
+      providerModel: settings.model,
+      cheapModel: this._cheapModel,
+      minSummaryTokens: this._minSummaryTokens,
+    });
+  }
+
+  /** Current savings snapshot for the always-on UI (null when smart isn't wired). */
+  public getSavingsSnapshot(): SavingsSnapshot | null {
+    return this._smart ? this._smart.snapshot() : null;
+  }
+
+  /** Append a finalized turn to the on-disk full history (smart compaction only). */
+  public appendHistory(panelId: string, record: HistoryAppend): void {
+    if (this.isSmartActive() && this._smart) {
+      this._smart.recordHistory(panelId, record);
+    }
+  }
+
+  /**
+   * Cherry-pick relevant buried context for the prompt, as a block to append to
+   * the user turn. Returns '' when smart compaction isn't active or retrieval
+   * shouldn't run. Never throws.
+   */
+  public async retrieveContext(panelId: string, prompt: string): Promise<string> {
+    if (!this.isSmartActive() || !this._smart) { return ''; }
+    try {
+      return await this._smart.retrieve(panelId, prompt, this._cheapModel, this._retrievalEnabled);
+    } catch {
+      return '';
+    }
+  }
+
   public dispose(): void {
     this._panelUsage.clear();
     this._lastCompactionTime.clear();
@@ -314,7 +590,23 @@ export class CompactionManager {
 
   // --- Private helpers ---
 
+  /**
+   * Estimate the tokens in the tail we keep verbatim past a compaction (the last
+   * COMPACTION_MESSAGES_TO_PRESERVE messages). Used to charge the smart path's
+   * cold reseed for re-priming the preserved tail, not just the summary.
+   */
+  private _estimatePreserveTokens(conversation: Conversation): number {
+    const tail = conversation.messages.slice(-COMPACTION_MESSAGES_TO_PRESERVE);
+    return tail.reduce((sum, m) => sum + estimateTokens(m.content || ''), 0);
+  }
+
   private _loadThreshold(): number {
+    // Boost overlay (Plan 24): an effective threshold computed by BoostManager.
+    // The overlay returns undefined when Boost is off OR the user explicitly
+    // set mysti.compaction.threshold — explicit user values always win there,
+    // so this read stays a plain pass-through in the stock configuration.
+    const boosted = this._boostOverlay?.compactionThreshold();
+    if (boosted !== undefined) { return boosted; }
     const config = vscode.workspace.getConfiguration('mysti');
     return config.get<number>('compaction.threshold', COMPACTION_DEFAULT_THRESHOLD_PERCENT);
   }
@@ -322,6 +614,31 @@ export class CompactionManager {
   private _loadEnabled(): boolean {
     const config = vscode.workspace.getConfiguration('mysti');
     return config.get<boolean>('compaction.enabled', true);
+  }
+
+  private _loadSmartEnabled(): boolean {
+    // Boost overlay (Plan 24): forces smart compaction ON under Boost unless
+    // the user explicitly set the key. Safe to force: SmartCompactor.isActive
+    // still requires sign-in + entitlement and fail-opens to the native path.
+    const boosted = this._boostOverlay?.smartCompactionEnabled();
+    if (boosted !== undefined) { return boosted; }
+    const config = vscode.workspace.getConfiguration('mysti');
+    return config.get<boolean>('compaction.smart.enabled', false);
+  }
+
+  private _loadCheapModel(): string {
+    const config = vscode.workspace.getConfiguration('mysti');
+    return config.get<string>('compaction.smart.cheapModel', SMART_DEFAULT_CHEAP_MODEL) || SMART_DEFAULT_CHEAP_MODEL;
+  }
+
+  private _loadMinSummaryTokens(): number {
+    const config = vscode.workspace.getConfiguration('mysti');
+    return config.get<number>('compaction.smart.minSummaryTokens', SMART_MIN_SUMMARY_TOKENS);
+  }
+
+  private _loadRetrievalEnabled(): boolean {
+    const config = vscode.workspace.getConfiguration('mysti');
+    return config.get<boolean>('compaction.smart.retrieval.enabled', true);
   }
 
   private _createEmptyUsage(): CumulativeUsage {

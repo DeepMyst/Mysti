@@ -12,6 +12,7 @@
  */
 
 import * as vscode from 'vscode';
+import { clampSafetyMode } from '../utils/settingsClamp';
 import {
   AskUserQuestionData,
   AutonomousConfig,
@@ -573,8 +574,15 @@ export class AutonomousManager {
 
   private _loadConfig(): AutonomousConfig {
     const config = vscode.workspace.getConfiguration('mysti');
+    // Review [3]: a repo's .vscode/settings.json may only make autonomous mode
+    // MORE conservative, never raise it to 'aggressive' behind the user's back.
+    const rawSafety = config.get('autonomous.safetyMode', 'balanced') as AutonomousConfig['safetyMode'];
+    const clampedSafety = clampSafetyMode(rawSafety, (s) => config.inspect(s) ?? undefined);
+    if (clampedSafety.clamped) {
+      console.warn(`[Mysti] AutonomousManager: workspace tried to raise safetyMode to "${rawSafety}" — clamped to "${clampedSafety.value}" (your user policy).`);
+    }
     return {
-      safetyMode: config.get('autonomous.safetyMode', 'balanced') as AutonomousConfig['safetyMode'],
+      safetyMode: clampedSafety.value as AutonomousConfig['safetyMode'],
       maxSessionDuration: config.get('autonomous.maxSessionDuration', AUTONOMOUS_MAX_SESSION_HOURS),
       allowFileCreation: config.get('autonomous.allowFileCreation', true),
       allowFileEdit: config.get('autonomous.allowFileEdit', true),

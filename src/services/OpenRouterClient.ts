@@ -1,0 +1,632 @@
+/**
+ * Mysti - AI Coding Agent
+ * Copyright (c) 2025 DeepMyst Inc. All rights reserved.
+ *
+ * Author: Baha Abunojaim <baha@deepmyst.com>
+ * Website: https://www.deepmyst.com/mysti
+ *
+ * This file is part of Mysti, licensed under the Apache License, Version 2.0.
+ * See the LICENSE file in the project root for full license terms.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * OpenRouterClient (Plan 15 Phase 1 — the @mysti coordinator's cheap-task model).
+ *
+ * A thin OpenAI-compatible client for OpenRouter (`https://openrouter.ai/api/v1`),
+ * used to run the coordinator's own reasoning (decompose/synthesize) + cheap leaf
+ * tasks on FREE models. Its `chatCompletion(params) → GatewayCompletion` signature
+ * mirrors DeepMystGatewayClient so a facade can dispatch by model id and the
+ * caller is untouched.
+ *
+ * Free-tier reality drives the design (see plans/15):
+ *  - Free models carry a `:free` suffix and the roster ROTATES — never hardcode.
+ *    `listFreeModels()` discovers them at runtime from `/models` and caches.
+ *  - There's a HARD 20 requests/min cap on `:free` that credits don't raise, plus
+ *    a daily cap; failed calls burn quota. So: a small concurrency semaphore, and
+ *    429 retry-with-backoff; on exhaustion return `{ failed: true }` so the caller
+ *    degrades gracefully (or falls back to a user-set paid model).
+ *  - The base URL is fixed (not workspace-overridable) and host-allowlisted so a
+ *    workspace can't redirect the user's OpenRouter key elsewhere.
+ */
+
+import type { GatewayCompletion } from '../types';
+import type { GatewayChatParams } from './DeepMystGatewayClient';
+import { applyCacheBreakpoints, readCacheTokens } from './PromptCache';
+import { createAbortScope } from '../utils/abortScope';
+import { ToolCallAccumulator, type AccumulatedToolCall, type ToolCallDelta } from '../utils/toolCallAccumulator';
+
+/** Fixed OpenRouter API base — deliberately not a workspace setting (key safety). */
+export const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
+
+/** How long a discovered free-model list is trusted before re-fetching. */
+export const OPENROUTER_MODELS_TTL_MS = 10 * 60 * 1000;
+
+/** The meta-router that auto-routes to whatever free model is currently up. */
+export const OPENROUTER_FREE_ROUTER = 'openrouter/free';
+
+export interface OpenRouterModel {
+  id: string;
+  name?: string;
+  contextLength?: number;
+  /** Whether the model advertises tool/function calling (varies on free tier). */
+  supportsTools: boolean;
+  /** True for zero-cost models (a `:free` id, or all-zero pricing). */
+  free: boolean;
+  /** USD per token (prompt/completion) when advertised; absent ⇒ unknown. */
+  pricing?: { prompt: number; completion: number };
+}
+
+export interface OpenRouterClientOptions {
+  /** Max concurrent requests — kept well under the 20 rpm cap. */
+  maxConcurrent?: number;
+  /** Retries on HTTP 429 before giving up. */
+  maxRetries?: number;
+  /** App attribution (OpenRouter `X-Title`); no functional effect. */
+  appTitle?: string;
+  /** App URL (OpenRouter `HTTP-Referer`); no functional effect. */
+  referer?: string;
+  /** Injected fetch for tests. */
+  fetchImpl?: typeof fetch;
+  /** Injected sleep for tests; optional signal lets the implementation release its work. */
+  sleepImpl?: (ms: number, signal?: AbortSignal) => Promise<void>;
+}
+
+export class OpenRouterClient {
+  private readonly _getApiKey: () => string | undefined;
+  private readonly _maxConcurrent: number;
+  private readonly _maxRetries: number;
+  private readonly _appTitle: string;
+  private readonly _referer: string;
+  private readonly _fetch: typeof fetch;
+  private readonly _sleep: (ms: number, signal: AbortSignal) => Promise<void>;
+
+  private _active = 0;
+  private readonly _waiters: Array<() => void> = [];
+  private _modelCache: { models: OpenRouterModel[]; fetchedAt: number } | null = null;
+  private _modelsInFlight: Promise<OpenRouterModel[]> | null = null;
+
+  constructor(getApiKey: () => string | undefined, options: OpenRouterClientOptions = {}) {
+    this._getApiKey = getApiKey;
+    this._maxConcurrent = Math.max(1, options.maxConcurrent ?? 2);
+    this._maxRetries = Math.max(0, options.maxRetries ?? 2);
+    this._appTitle = options.appTitle ?? 'Mysti';
+    this._referer = options.referer ?? 'https://www.deepmyst.com/mysti';
+    this._fetch = options.fetchImpl ?? ((...args: Parameters<typeof fetch>) => fetch(...args));
+    this._sleep = (ms, signal) => sleepWithAbort(ms, signal, options.sleepImpl);
+  }
+
+  /** Whether an OpenRouter key is configured (client is usable). */
+  public isConfigured(): boolean {
+    return !!this._getApiKey();
+  }
+
+  /**
+   * Run a chat completion on OpenRouter. Never throws — returns
+   * `{ failed: true }` on any failure (no key, 429-exhausted, non-2xx, network)
+   * so the caller can degrade gracefully or fall back to a paid model.
+   */
+  public async chatCompletion(params: GatewayChatParams): Promise<GatewayCompletion> {
+    const key = this._getApiKey();
+    if (!key) {
+      return { text: '', failed: true, error: 'No OpenRouter API key configured' };
+    }
+    if (!isAllowedHost(OPENROUTER_BASE_URL)) {
+      // Defensive: OPENROUTER_BASE_URL is a constant, but never send the key off-host.
+      return { text: '', failed: true, error: 'OpenRouter host not allowed' };
+    }
+
+    try {
+      return await this._withSlot(() => this._doChatWithRetry(params, key), params.signal);
+    } catch (err) {
+      return { text: '', failed: true, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  /**
+   * Stream a chat completion as SSE events (for the user-facing OpenRouter
+   * backend provider). Yields incremental text/reasoning deltas, then a final
+   * `{ done, usage }`. On any failure yields a single `{ error }` and returns —
+   * never throws. Not semaphore-gated (a streamed turn holds one connection).
+   */
+  public async *streamChat(params: GatewayChatParams): AsyncGenerator<OpenRouterStreamEvent> {
+    const key = this._getApiKey();
+    if (!key) {
+      yield { error: 'No OpenRouter API key configured' };
+      return;
+    }
+    if (!isAllowedHost(OPENROUTER_BASE_URL)) {
+      yield { error: 'OpenRouter host not allowed' };
+      return;
+    }
+
+    const timeoutMs = params.timeoutMs ?? 120_000;
+    const abortScope = createAbortScope([params.signal], timeoutMs);
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let res: Response | undefined;
+    try {
+      try {
+        abortScope.signal.throwIfAborted();
+        res = await this._fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${key}`,
+            'Content-Type': 'application/json',
+            Accept: 'text/event-stream',
+            'HTTP-Referer': this._referer,
+            'X-Title': this._appTitle,
+          },
+          body: JSON.stringify({
+            model: params.model,
+            // Explicit prompt-cache breakpoints on the stable prefix. The ReAct
+            // loop re-sends the whole system prompt every round-trip, and on
+            // Anthropic models nothing is cached without a breakpoint — so this
+            // was full input price, N times per turn. No-op for models that cache
+            // automatically. See src/services/PromptCache.ts.
+            messages: applyCacheBreakpoints(params.messages, params.model),
+            max_tokens: params.maxTokens ?? 2048,
+            stream: true,
+            // Ask OpenRouter to emit a final usage frame (prompt/completion tokens).
+            stream_options: { include_usage: true },
+            // Reasoning effort — OpenRouter translates effort→token budget for
+            // budget-based models (Anthropic/Gemini). Omitted when unset.
+            ...(params.reasoningEffort ? { reasoning: { effort: params.reasoningEffort } } : {}),
+            ...(params.tools && params.tools.length ? { tools: params.tools, tool_choice: 'auto' } : {}),
+          }),
+          signal: abortScope.signal,
+        });
+      } catch (err) {
+        yield { error: err instanceof Error ? err.message : String(err) };
+        return;
+      }
+
+      if (!res.ok || !res.body) {
+        if (!res.ok) {
+          const detail = redactSecrets(await safeText(res));
+          yield { error: `HTTP ${res.status}${detail ? `: ${detail}` : ''}` };
+        } else {
+          yield { error: 'OpenRouter stream had no body' };
+        }
+        return;
+      }
+
+      reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      // Truncation guard (mirrors DeepMystGatewayClient): if the body closes
+      // cleanly having emitted text but WITHOUT [DONE] or any finish_reason, the
+      // generation was cut short — surface a synthetic 'length' so the coordinator
+      // loop continues rather than accepting the truncated text as the final answer.
+      let sawText = false;
+      let sawTerminal = false;
+      // Plan 19 P4: accumulate native tool_call deltas; emit once at the boundary.
+      const toolAcc = new ToolCallAccumulator();
+      let emittedTools = false;
+      let reportedModel = false;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) {
+            break;
+          }
+          buffer += decoder.decode(value, { stream: true });
+          let nl: number;
+          while ((nl = buffer.indexOf('\n')) >= 0) {
+            const line = buffer.slice(0, nl).trim();
+            buffer = buffer.slice(nl + 1);
+            if (!line.startsWith('data:')) {
+              continue; // SSE comments (': OPENROUTER PROCESSING') and blank lines
+            }
+            const data = line.slice(5).trim();
+            if (data === '[DONE]') {
+              if (!emittedTools && toolAcc.hasAny()) { emittedTools = true; yield { toolCalls: toolAcc.finalize() }; }
+              yield { done: true };
+              return;
+            }
+            let json: OpenRouterStreamChunk & { error?: { message?: string } | string };
+            try {
+              json = JSON.parse(data);
+            } catch {
+              continue;
+            }
+            // In-band error frame (OpenRouter emits these mid-stream instead of an
+            // HTTP status) — surface it so a failed generation isn't reported clean.
+            if (json.error) {
+              yield { error: typeof json.error === 'string' ? json.error : (json.error.message || 'OpenRouter stream error') };
+              return;
+            }
+            // The model that actually answered — for a router like
+            // `openrouter/free` it is not the one requested.
+            if (!reportedModel && typeof json.model === 'string' && json.model) {
+              reportedModel = true;
+              yield { model: json.model };
+            }
+            const delta = json.choices?.[0]?.delta;
+            if (delta?.content) {
+              sawText = true;
+              yield { text: delta.content };
+            }
+            if (typeof delta?.reasoning === 'string' && delta.reasoning) {
+              yield { reasoning: delta.reasoning };
+            }
+            if (Array.isArray(delta?.tool_calls) && delta.tool_calls.length) { toolAcc.add(delta.tool_calls); }
+            if (json.usage) {
+              // `cached_tokens` is a SUBSET of prompt_tokens (OpenAI convention) —
+              // reported separately so the caller can normalize, never added.
+              // Nothing read it before, so every coordinator cache hit was
+              // invisible to the ledger and to the cache-warmth decision.
+              yield {
+                usage: {
+                  inputTokens: json.usage.prompt_tokens,
+                  outputTokens: json.usage.completion_tokens,
+                  ...readCacheTokens(json.usage),
+                },
+              };
+            }
+            const fr = json.choices?.[0]?.finish_reason;
+            if (typeof fr === 'string' && fr) {
+              sawTerminal = true;
+              if (fr === 'tool_calls' && !emittedTools && toolAcc.hasAny()) { emittedTools = true; yield { toolCalls: toolAcc.finalize() }; }
+              yield { finishReason: fr };
+            }
+          }
+        }
+      } catch (err) {
+        yield { error: err instanceof Error ? err.message : String(err) };
+        return;
+      }
+      if (!emittedTools && toolAcc.hasAny()) { yield { toolCalls: toolAcc.finalize() }; }
+      // Clean close without [DONE] (which returns above) or a finish_reason: if we
+      // streamed text, treat it as an incomplete generation, not a clean finish.
+      if (sawText && !sawTerminal) {
+        yield { finishReason: 'length' };
+      }
+      yield { done: true };
+    } finally {
+      abortScope.dispose();
+      if (reader) {
+        void reader.cancel().catch(() => {});
+        try { reader.releaseLock(); } catch { /* already released */ }
+      } else if (res?.body) {
+        void res.body.cancel().catch(() => {});
+      }
+    }
+  }
+
+  private async _doChatWithRetry(params: GatewayChatParams, key: string): Promise<GatewayCompletion> {
+    const timeoutMs = params.timeoutMs ?? 60_000;
+    const body = {
+      model: params.model,
+      messages: params.messages,
+      max_tokens: params.maxTokens ?? 1024,
+      stream: false,
+    };
+
+    for (let attempt = 0; attempt <= this._maxRetries; attempt++) {
+      const abortScope = createAbortScope([params.signal], timeoutMs);
+      let res: Response | undefined;
+      try {
+        abortScope.signal.throwIfAborted();
+        res = await this._fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${key}`,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+            'HTTP-Referer': this._referer,
+            'X-Title': this._appTitle,
+          },
+          body: JSON.stringify(body),
+          signal: abortScope.signal,
+        });
+
+        if (res.status === 429) {
+          // Release the response before waiting; an unread body can keep the
+          // connection alive even after the retry deadline has been disposed.
+          void res.body?.cancel().catch(() => {});
+          // Free-tier 20 rpm / daily cap. Back off and retry a couple of times.
+          if (attempt < this._maxRetries) {
+            await this._sleep(retryAfterMs(res.headers.get('retry-after'), attempt), abortScope.signal);
+            continue;
+          }
+          return { text: '', failed: true, error: 'rate-limited (HTTP 429)' };
+        }
+
+        if (!res.ok) {
+          const detail = redactSecrets(await safeText(res));
+          console.warn(`[Mysti] OpenRouter chat → HTTP ${res.status}${detail ? `: ${detail}` : ''}`);
+          return { text: '', failed: true, error: `HTTP ${res.status}` };
+        }
+
+        const data = await res.json() as OpenRouterChatResponse;
+        const text = data?.choices?.[0]?.message?.content ?? '';
+        const usage = data?.usage;
+        const cacheTokens = readCacheTokens(usage);
+        return {
+          text: typeof text === 'string' ? text : '',
+          inputTokens: usage?.prompt_tokens,
+          outputTokens: usage?.completion_tokens,
+          ...cacheTokens,
+          // Free models are free; no cost header to reconcile.
+          costUsd: 0,
+        };
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        console.warn(`[Mysti] OpenRouter chat failed: ${error}`);
+        return { text: '', failed: true, error };
+      } finally {
+        void res?.body?.cancel().catch(() => {});
+        abortScope.dispose();
+      }
+    }
+    return { text: '', failed: true, error: 'rate-limited (retries exhausted)' };
+  }
+
+  /**
+   * Discover currently-available FREE models (`:free` suffix). Cached for
+   * OPENROUTER_MODELS_TTL_MS. `toolsOnly` filters to tool-calling-capable models
+   * (recommended for a coordinator that may need structured/tool output).
+   */
+  public async listFreeModels(opts: { toolsOnly?: boolean } = {}): Promise<OpenRouterModel[]> {
+    const all = await this._fetchModels();
+    const free = all.filter(m => m.free);
+    return opts.toolsOnly ? free.filter(m => m.supportsTools) : free;
+  }
+
+  /**
+   * The FULL OpenRouter catalog (free + paid), for the coordinator model picker.
+   * Cached like listFreeModels. `toolsOnly` filters to tool-calling-capable
+   * models (recommended for a coordinator that emits structured output).
+   * Returns [] on failure — callers fall back to a curated list.
+   */
+  public async listAllModels(opts: { toolsOnly?: boolean } = {}): Promise<OpenRouterModel[]> {
+    const all = await this._fetchModels();
+    return opts.toolsOnly ? all.filter(m => m.supportsTools) : all;
+  }
+
+  /**
+   * Synchronous lookup in the last fetched catalog, whatever its age. Undefined
+   * before the first fetch — callers fall back to their own heuristics.
+   */
+  public cachedModel(id: string): OpenRouterModel | undefined {
+    return this._modelCache?.models.find(m => m.id === id);
+  }
+
+  /**
+   * The default free model for the coordinator: the first tool-capable free
+   * model discovered, else any free model, else the `openrouter/free` meta-router
+   * (which auto-routes to whatever is up). Never a hardcoded id.
+   */
+  public async getDefaultFreeModel(): Promise<string> {
+    try {
+      const toolCapable = await this.listFreeModels({ toolsOnly: true });
+      if (toolCapable.length > 0) {
+        // Prefer larger context windows for a coordinator (more room for the DAG).
+        toolCapable.sort((a, b) => (b.contextLength ?? 0) - (a.contextLength ?? 0));
+        return toolCapable[0].id;
+      }
+      const anyFree = await this.listFreeModels();
+      if (anyFree.length > 0) {
+        return anyFree[0].id;
+      }
+    } catch {
+      /* fall through to the meta-router */
+    }
+    return OPENROUTER_FREE_ROUTER;
+  }
+
+  private async _fetchModels(): Promise<OpenRouterModel[]> {
+    const now = Date.now();
+    if (this._modelCache && now - this._modelCache.fetchedAt < OPENROUTER_MODELS_TTL_MS) {
+      return this._modelCache.models;
+    }
+    if (this._modelsInFlight) {
+      return this._modelsInFlight;
+    }
+    this._modelsInFlight = (async () => {
+      const abortScope = createAbortScope([], 30_000);
+      let res: Response | undefined;
+      try {
+        const key = this._getApiKey();
+        res = await this._fetch(`${OPENROUTER_BASE_URL}/models`, {
+          method: 'GET',
+          headers: {
+            Accept: 'application/json',
+            ...(key ? { Authorization: `Bearer ${key}` } : {}),
+            'HTTP-Referer': this._referer,
+            'X-Title': this._appTitle,
+          },
+          signal: abortScope.signal,
+        });
+        if (!res.ok) {
+          console.warn(`[Mysti] OpenRouter /models → HTTP ${res.status}`);
+          return this._modelCache?.models ?? [];
+        }
+        const json = await res.json() as OpenRouterModelsResponse;
+        const models = (json?.data ?? []).map(normalizeModel);
+        this._modelCache = { models, fetchedAt: Date.now() };
+        return models;
+      } catch (err) {
+        console.warn(`[Mysti] OpenRouter /models failed: ${err instanceof Error ? err.message : String(err)}`);
+        return this._modelCache?.models ?? [];
+      } finally {
+        void res?.body?.cancel().catch(() => {});
+        abortScope.dispose();
+        this._modelsInFlight = null;
+      }
+    })();
+    return this._modelsInFlight;
+  }
+
+  /** Concurrency semaphore — keeps in-flight requests under the free-tier cap. */
+  private async _withSlot<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    signal?.throwIfAborted();
+    if (this._active >= this._maxConcurrent) {
+      await new Promise<void>((resolve, reject) => {
+        const grant = () => {
+          signal?.removeEventListener('abort', onAbort);
+          resolve();
+        };
+        const onAbort = () => {
+          const index = this._waiters.indexOf(grant);
+          if (index !== -1) { this._waiters.splice(index, 1); }
+          reject(signal?.reason);
+        };
+        this._waiters.push(grant);
+        signal?.addEventListener('abort', onAbort, { once: true });
+      });
+    } else {
+      this._active++;
+    }
+    try {
+      // A queued request can be cancelled after its slot was granted but
+      // before this continuation runs. The reserved slot still needs release.
+      signal?.throwIfAborted();
+      return await fn();
+    } finally {
+      const next = this._waiters.shift();
+      if (next) {
+        // Transfer ownership before waking the waiter. A new request must not
+        // take the freed slot while the queued continuation is still pending.
+        next();
+      } else {
+        this._active--;
+      }
+    }
+  }
+}
+
+/** One SSE event from streamChat: an incremental delta, a usage report, done, or an error. */
+export interface OpenRouterStreamEvent {
+  text?: string;
+  reasoning?: string;
+  done?: boolean;
+  usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheCreationTokens?: number };
+  error?: string;
+  /** OpenAI finish_reason ('length' ⇒ max_tokens truncation). */
+  finishReason?: string;
+  /** Plan 19 P4: finalized native tool calls for this turn (emitted once). */
+  toolCalls?: AccumulatedToolCall[];
+  /** The model OpenRouter served (emitted once, from the first chunk naming it). */
+  model?: string;
+}
+
+interface OpenRouterChatResponse {
+  choices?: Array<{ message?: { content?: string } }>;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+    prompt_tokens_details?: { cached_tokens?: number };
+    cache_creation_input_tokens?: number;
+  };
+}
+
+interface OpenRouterStreamChunk {
+  model?: string;
+  choices?: Array<{ delta?: { content?: string; reasoning?: string; tool_calls?: ToolCallDelta[] }; finish_reason?: string | null }>;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    /** cached_tokens here is a SUBSET of prompt_tokens, never an addition. */
+    prompt_tokens_details?: { cached_tokens?: number };
+    cache_creation_input_tokens?: number;
+  };
+}
+
+interface OpenRouterModelsResponse {
+  data?: Array<{
+    id?: string;
+    name?: string;
+    context_length?: number;
+    supported_parameters?: string[];
+    /** Per-token USD prices as strings, e.g. { prompt: "0.000003", completion: "0.000015" }. */
+    pricing?: { prompt?: string | number; completion?: string | number };
+  }>;
+}
+
+/** Whether `id` names a free model: a `:free` variant, or zero-priced in the catalog. */
+export function isFreeModelId(id: string, catalog: readonly OpenRouterModel[]): boolean {
+  const slug = id.trim().replace(/^openrouter\//, '');
+  return /:free$/.test(slug) || catalog.some(m => m.id === slug && m.free);
+}
+
+function normalizeModel(m: NonNullable<OpenRouterModelsResponse['data']>[number]): OpenRouterModel {
+  const id = String(m.id ?? '');
+  const prompt = Number(m.pricing?.prompt);
+  const completion = Number(m.pricing?.completion);
+  const hasPricing = Number.isFinite(prompt) && Number.isFinite(completion);
+  // Free when the id is a `:free` variant, or the advertised price is all-zero.
+  const free = id.endsWith(':free') || (hasPricing && prompt === 0 && completion === 0);
+  return {
+    id,
+    name: m.name,
+    contextLength: typeof m.context_length === 'number' ? m.context_length : undefined,
+    supportsTools: Array.isArray(m.supported_parameters) && m.supported_parameters.includes('tools'),
+    free,
+    ...(hasPricing ? { pricing: { prompt, completion } } : {}),
+  };
+}
+
+/** Backoff in ms for a 429: honor Retry-After (seconds) when present, else exponential. */
+/** Wait for a retry without retaining timers or abort listeners after Stop. */
+function sleepWithAbort(
+  ms: number,
+  signal: AbortSignal,
+  sleepImpl?: OpenRouterClientOptions['sleepImpl'],
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal.aborted) { reject(signal.reason); return; }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = () => {
+      if (timer !== undefined) { clearTimeout(timer); timer = undefined; }
+      signal.removeEventListener('abort', onAbort);
+    };
+    const onAbort = () => { cleanup(); reject(signal.reason); };
+    const complete = () => { cleanup(); resolve(); };
+    const fail = (error: unknown) => { cleanup(); reject(error); };
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (sleepImpl) {
+      try {
+        // Observe late settlement even when an older injected implementation
+        // ignores the signal, so cancellation never becomes an unhandled rejection.
+        Promise.resolve(sleepImpl(ms, signal)).then(complete, fail);
+      } catch (error) { fail(error); }
+    } else {
+      timer = setTimeout(complete, ms);
+      timer.unref?.();
+    }
+  });
+}
+
+function retryAfterMs(retryAfter: string | null, attempt: number): number {
+  if (retryAfter) {
+    const secs = Number.parseInt(retryAfter, 10);
+    if (Number.isFinite(secs) && secs >= 0) {
+      return Math.min(secs * 1000, 30_000);
+    }
+  }
+  return Math.min(500 * Math.pow(2, attempt), 8_000);
+}
+
+async function safeText(res: Response): Promise<string> {
+  try {
+    return (await res.text()).slice(0, 200);
+  } catch {
+    return '';
+  }
+}
+
+/** Strip any leaked Bearer/OpenRouter key before logging remote content. */
+function redactSecrets(s: string): string {
+  return s.replace(/sk-or-[A-Za-z0-9_-]+/g, 'sk-or-***').replace(/Bearer\s+\S+/gi, 'Bearer ***');
+}
+
+/** Hosts the OpenRouter key may be sent to. */
+function isAllowedHost(urlStr: string): boolean {
+  try {
+    const h = new URL(urlStr).hostname.toLowerCase();
+    return h === 'openrouter.ai' || h.endsWith('.openrouter.ai');
+  } catch {
+    return false;
+  }
+}

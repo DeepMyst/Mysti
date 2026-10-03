@@ -1,0 +1,69 @@
+# Mysti code owners.
+#
+# GitHub requests a review from the owner of every path a PR touches. This file
+# is short on purpose: it names the paths where a wrong change is expensive and
+# hard to see in a diff, not every path in the repo.
+
+# Default owner for everything not listed below.
+*                                   @DeepMyst/mysti-maintainers
+
+# ---------------------------------------------------------------------------
+# TRUST BOUNDARIES
+#
+# A change to any path below can widen the authority an untrusted model has,
+# without changing a single line that looks dangerous. These want two sets of
+# eyes even when the diff is one line, and especially when the change "just
+# simplifies" something.
+# ---------------------------------------------------------------------------
+
+# The permission gate. Its last statement must stay fail-CLOSED: an unhandled
+# mode or access level has to gate, not fall through. It has ended in a bare
+# `return false` before.
+/src/utils/permissionClassifier.ts   @DeepMyst/mysti-security @DeepMyst/mysti-maintainers
+/src/utils/toolNames.ts              @DeepMyst/mysti-security @DeepMyst/mysti-maintainers
+
+# Settings authority. Workspace settings may only ever LOWER authority, and
+# setting scope only ever narrows (window -> machine), never widens.
+/src/utils/settingsClamp.ts          @DeepMyst/mysti-security @DeepMyst/mysti-maintainers
+
+# The agent trust root. Trust here is INTEGRITY (SHA-256 of bundled content),
+# not directory location; and AUTHORITY_FRONTMATTER_KEYS is deliberately
+# stricter than the Agent Skills spec. Both properties are load-bearing.
+/src/managers/agentMarkdown.ts       @DeepMyst/mysti-security @DeepMyst/mysti-maintainers
+/src/managers/AgentLoader.ts         @DeepMyst/mysti-security @DeepMyst/mysti-maintainers
+/src/generated/coreAgentManifest.ts  @DeepMyst/mysti-security @DeepMyst/mysti-maintainers
+/resources/agents/core/              @DeepMyst/mysti-security @DeepMyst/mysti-maintainers
+/scripts/generate-core-agent-manifest.js @DeepMyst/mysti-security @DeepMyst/mysti-maintainers
+
+# Nonce redaction and UNTRUSTED fencing. Every untrusted result re-entering the
+# coordinator passes through here. A "cleanup" that drops a fence is invisible
+# in review unless someone is looking for it.
+/src/utils/mystiDelegateParser.ts    @DeepMyst/mysti-security @DeepMyst/mysti-maintainers
+/src/services/MystiLocalTools.ts     @DeepMyst/mysti-security @DeepMyst/mysti-maintainers
+/src/managers/AgentContextManager.ts @DeepMyst/mysti-security @DeepMyst/mysti-maintainers
+
+# The model-to-shell boundary. There is deliberately NO url or command
+# attribute in the <look:> grammar and no model-controlled dev-server command.
+# Adding one reintroduces a fixed RCE.
+/src/services/visualTestPolicy.ts    @DeepMyst/mysti-security @DeepMyst/mysti-maintainers
+/src/managers/VisualSessionManager.ts @DeepMyst/mysti-security @DeepMyst/mysti-maintainers
+/src/managers/DevServerManager.ts    @DeepMyst/mysti-security @DeepMyst/mysti-maintainers
+/src/services/MystiLocalExec.ts      @DeepMyst/mysti-security @DeepMyst/mysti-maintainers
+/src/services/MystiSandbox.ts        @DeepMyst/mysti-security @DeepMyst/mysti-maintainers
+
+# Child-process lifetime. Fails closed on un-suspendable children; POSIX
+# process groups and Windows `taskkill /T` are not interchangeable.
+/src/utils/processKill.ts            @DeepMyst/mysti-security @DeepMyst/mysti-maintainers
+/src/services/CollaboratorPool.ts    @DeepMyst/mysti-security @DeepMyst/mysti-maintainers
+
+# ---------------------------------------------------------------------------
+# RELEASE SURFACE
+#
+# What ships, and what gates it. A wrong line here is not noticed until it is
+# in someone's install directory.
+# ---------------------------------------------------------------------------
+/.github/workflows/                  @DeepMyst/mysti-maintainers
+/.vscodeignore                       @DeepMyst/mysti-maintainers
+/webpack.config.js                   @DeepMyst/mysti-maintainers
+/package.json                        @DeepMyst/mysti-maintainers
+/scripts/check-package-shape.js      @DeepMyst/mysti-maintainers

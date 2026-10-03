@@ -16,6 +16,24 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { ContextItem } from '../types';
 
+/** workspaceState key prefix for a panel's persisted context (Plan 07 A5). */
+const CONTEXT_KEY_PREFIX = 'mysti.context:';
+
+/**
+ * Panel ids that survive a reload and therefore keep their persisted context:
+ * the sidebar view (ChatViewProvider `_sidebarId`) and the no-panel fallback
+ * every `panelId?` parameter defaults to. Every other id is minted per open
+ * (`panel_<Date.now()>`, `canvas-<Date.now()>`, …) and is never seen again
+ * once its webview is gone, so its key is an orphan.
+ */
+const STABLE_PANEL_IDS: ReadonlySet<string> = new Set(['sidebar', 'default']);
+
+/**
+ * Upper bound on orphan keys deleted per activation. Keeps the sweep O(1)-ish
+ * on a store that leaked for months; the remainder goes on the next reload.
+ */
+export const CONTEXT_SWEEP_LIMIT = 500;
+
 export class ContextManager {
   private _panelContexts: Map<string, ContextItem[]> = new Map();
   private _autoContext: boolean = true;
@@ -24,6 +42,7 @@ export class ContextManager {
   constructor(context: vscode.ExtensionContext) {
     this._extensionContext = context;
     this._autoContext = vscode.workspace.getConfiguration('mysti').get('autoContext', true);
+    this._sweepOrphanedPersistedContext();
   }
 
   /**
@@ -69,10 +88,12 @@ export class ContextManager {
         type: 'file',
         path: filePath,
         content,
-        language
+        language,
+        enabled: true
       };
 
       ctx.push(item);
+      this._persist(id);
       return item;
     } catch (error) {
       console.error(`Failed to read file: ${filePath}`, error);
@@ -98,10 +119,12 @@ export class ContextManager {
       content,
       startLine,
       endLine,
-      language: language || this._getLanguageFromPath(filePath)
+      language: language || this._getLanguageFromPath(filePath),
+      enabled: true
     };
 
     ctx.push(item);
+    this._persist(id);
     return item;
   }
 
@@ -124,11 +147,140 @@ export class ContextManager {
     const ctx = this._getPanelContext(pid);
     const filtered = ctx.filter((c: ContextItem) => c.id !== id);
     this._panelContexts.set(pid, filtered);
+    this._persist(pid);
+  }
+
+  /**
+   * Plan 07: activate/deactivate a context item without removing it. A disabled
+   * item stays in the list (and panel) but is excluded from the prompt.
+   * Returns the new enabled state, or null if the item wasn't found.
+   */
+  public setItemEnabled(id: string, enabled: boolean, panelId?: string): boolean | null {
+    const ctx = this._getPanelContext(panelId || 'default');
+    const item = ctx.find((c: ContextItem) => c.id === id);
+    if (!item) { return null; }
+    item.enabled = enabled;
+    this._persist(panelId || 'default');
+    return enabled;
+  }
+
+  /** Toggle a context item's active state. Returns the new state, or null. */
+  public toggleItem(id: string, panelId?: string): boolean | null {
+    const pid = panelId || 'default';
+    const ctx = this._getPanelContext(pid);
+    const item = ctx.find((c: ContextItem) => c.id === id);
+    if (!item) { return null; }
+    item.enabled = item.enabled === false; // false -> true, true/undefined -> false
+    this._persist(pid);
+    return item.enabled;
+  }
+
+  // ── Persistence (Plan 07 A5) ─────────────────────────────────────────────
+  // Per-panel context survives reloads (workspace-scoped). We persist the LIST
+  // + enabled flags but re-read file content on restore so it's never stale.
+  // (Selections keep their snapshot content — they aren't re-readable by range.)
+
+  private _persistKey(panelId: string): string {
+    return `${CONTEXT_KEY_PREFIX}${panelId}`;
+  }
+
+  /** Delete a panel's persisted key. Never throws, never leaves a rejection unhandled. */
+  private _forgetPersisted(key: string): void {
+    try {
+      const pending = this._extensionContext.workspaceState.update(key, undefined);
+      if (pending && typeof (pending as Thenable<void>).then === 'function') {
+        (pending as Thenable<void>).then(undefined, (err) => {
+          console.log('[Mysti] context key delete failed:', err);
+        });
+      }
+    } catch (err) {
+      console.log('[Mysti] context key delete failed:', err);
+    }
+  }
+
+  /**
+   * Tab panels get a fresh id every time they are opened and `onDidDispose`
+   * does not reliably fire on a window reload, so the dispose path alone
+   * cannot keep the store clean. On construction, delete (bounded) every
+   * context key whose panel id cannot come back. Runs once, never throws.
+   */
+  private _sweepOrphanedPersistedContext(): void {
+    try {
+      const ws = this._extensionContext.workspaceState as { keys?: () => readonly string[] };
+      if (typeof ws.keys !== 'function') { return; }
+      let swept = 0;
+      for (const key of ws.keys()) {
+        if (!key.startsWith(CONTEXT_KEY_PREFIX)) { continue; }
+        if (STABLE_PANEL_IDS.has(key.slice(CONTEXT_KEY_PREFIX.length))) { continue; }
+        if (swept >= CONTEXT_SWEEP_LIMIT) { break; }
+        this._forgetPersisted(key);
+        swept++;
+      }
+      if (swept > 0) {
+        console.log(`[Mysti] context: swept ${swept} orphaned panel context key(s)`);
+      }
+    } catch (err) {
+      console.log('[Mysti] context sweep failed:', err);
+    }
+  }
+
+  private _persist(panelId: string): void {
+    try {
+      const items = this._getPanelContext(panelId).map((c) =>
+        c.type === 'selection'
+          ? c // selections keep their content snapshot
+          : { ...c, content: undefined }, // files: drop content, re-read on restore
+      );
+      // Never let a failed write become an unhandled rejection: the in-memory
+      // list stays authoritative and the loss is logged, nothing more.
+      const pending = this._extensionContext.workspaceState.update(this._persistKey(panelId), items);
+      if (pending && typeof (pending as Thenable<void>).then === 'function') {
+        (pending as Thenable<void>).then(undefined, (err) => {
+          console.log('[Mysti] context persist failed:', err);
+        });
+      }
+    } catch (err) {
+      console.log('[Mysti] context persist failed:', err);
+    }
+  }
+
+  /**
+   * Load a panel's persisted context (if any) and re-read file content. No-op if
+   * the panel already has in-memory context (don't clobber a live session).
+   * Returns the (possibly empty) restored list.
+   */
+  public async restorePanelContext(panelId: string): Promise<ContextItem[]> {
+    const existing = this._panelContexts.get(panelId);
+    if (existing && existing.length > 0) { return [...existing]; }
+
+    let saved: ContextItem[] | undefined;
+    try {
+      saved = this._extensionContext.workspaceState.get<ContextItem[]>(this._persistKey(panelId));
+    } catch { saved = undefined; }
+    if (!saved || saved.length === 0) { return []; }
+
+    const restored: ContextItem[] = [];
+    for (const item of saved) {
+      if (item.type === 'file') {
+        try {
+          item.content = await fs.promises.readFile(item.path, 'utf-8');
+          restored.push(item);
+        } catch {
+          // File gone — drop it silently.
+        }
+      } else {
+        restored.push(item); // selections/symbols keep their snapshot
+      }
+    }
+    this._panelContexts.set(panelId, restored);
+    this._persist(panelId); // re-persist the pruned set
+    return [...restored];
   }
 
   public clearContext(panelId?: string) {
     const id = panelId || 'default';
     this._panelContexts.set(id, []);
+    this._persist(id);
   }
 
   /**
@@ -136,14 +288,17 @@ export class ContextManager {
    */
   public clearPanelContext(panelId: string) {
     this._panelContexts.delete(panelId);
+    // The panel id is minted per open and never reused, so its persisted key
+    // would otherwise outlive the tab forever.
+    this._forgetPersisted(this._persistKey(panelId));
   }
 
   public async refreshContext(panelId?: string) {
     const id = panelId || 'default';
     const ctx = this._getPanelContext(id);
-    // Refresh content for all file items
+    // Refresh content for all enabled file items (skip deactivated ones).
     for (const item of ctx) {
-      if (item.type === 'file') {
+      if (item.type === 'file' && item.enabled !== false) {
         try {
           item.content = await fs.promises.readFile(item.path, 'utf-8');
         } catch (error) {
@@ -156,7 +311,7 @@ export class ContextManager {
 
   public formatContextForPrompt(panelId?: string): string {
     const id = panelId || 'default';
-    const ctx = this._getPanelContext(id);
+    const ctx = this._getPanelContext(id).filter((c) => c.enabled !== false);
     if (ctx.length === 0) {
       return '';
     }

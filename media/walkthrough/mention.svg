@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 300" role="img" aria-label="Typing @codex sends just that message to Codex"><style>text{font-family:var(--vscode-font-family);font-size:14px}.fg{fill:var(--vscode-foreground)}.dim{fill:var(--vscode-descriptionForeground)}.accent{fill:var(--vscode-textLink-foreground)}.card{fill:var(--vscode-editor-background);stroke:var(--vscode-widget-border,var(--vscode-editorWidget-border))}.chip{fill:var(--vscode-editorWidget-background,var(--vscode-editor-background));stroke:var(--vscode-widget-border,var(--vscode-editorWidget-border))}.sel{fill:var(--vscode-button-background)}.selfg{fill:var(--vscode-button-foreground)}.hl{fill:var(--vscode-list-activeSelectionBackground)}.hlfg{fill:var(--vscode-list-activeSelectionForeground,var(--vscode-foreground))}.ok{fill:var(--vscode-charts-green)}.line{stroke:var(--vscode-descriptionForeground);fill:none;stroke-width:1.5}</style>
+<rect class="chip" x="50" y="70" width="380" height="52" rx="8"/>
+<rect class="hl" x="66" y="84" width="64" height="24" rx="4"/><text class="hlfg" x="98" y="101" text-anchor="middle">@codex</text>
+<text class="fg" x="140" y="101">review the auth changes</text>
+<rect class="card" x="50" y="138" width="380" height="48" rx="8"/><text class="fg" x="68" y="167" style="font-weight:600">Codex</text><text class="dim" x="122" y="167">is reviewing 3 files…</text>
+<text class="dim" x="240" y="226" text-anchor="middle">Only this message goes to Codex. Your chat stays where it is.</text>
+</svg>

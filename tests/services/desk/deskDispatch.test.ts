@@ -1,0 +1,194 @@
+/**
+ * DeskDispatch tests (Plan 21 Phase 1, invariants I10/I11).
+ *
+ * The property that matters most here is INDISTINGUISHABILITY: an ungranted
+ * verb, an expired grant, and a genuinely unknown verb must all produce the
+ * same bytes. If they differ, a caller can enumerate the capabilities it was
+ * denied — and that map is precisely what an attacker needs to pick a target.
+ */
+import { describe, it, expect } from 'vitest';
+import { dispatch, listVerbs } from '../../../src/services/desk/DeskDispatch';
+import type { DispatchContext, DeskStatus } from '../../../src/services/desk/DeskDispatch';
+import { DeskIndex } from '../../../src/services/desk/DeskIndex';
+import { resolveScope } from '../../../src/services/desk/DeskScope';
+import type { DeskVerb, PeerGrant } from '../../../src/types';
+
+const NOW = 1_800_000_000_000;
+
+const scope = resolveScope({ ceiling: ['*'], share: { allow: ['src'], version: 'v1' } });
+
+const index = DeskIndex.build(scope, {
+  paths: ['src/billing/retry.ts'],
+  readText: () => 'export const backoffSchedule = [1, 2, 4];\n',
+});
+
+function grantOf(verbs: DeskVerb[], overrides: Partial<PeerGrant> = {}): PeerGrant {
+  return {
+    peerId: 'p_abc',
+    verbs,
+    scope: ['src'],
+    expiresAt: NOW + 60_000,
+    budgetUsd: 1,
+    maxCalls: 10,
+    minRetentionClass: 'zero-retention',
+    ...overrides,
+  };
+}
+
+function ctxOf(grant: PeerGrant, status: DeskStatus | null = null): DispatchContext {
+  return { scope, index, grant, status, now: NOW };
+}
+
+describe('dispatch — status', () => {
+  it('returns owner-typed strings', () => {
+    const res = dispatch('status', {}, ctxOf(grantOf(['status']), {
+      availability: 'busy', focus: 'auth refresh rewrite',
+    }));
+    expect(res.ok).toBe(true);
+    expect(res.payload).toEqual({ availability: 'busy', focus: 'auth refresh rewrite' });
+  });
+
+  it('never leaks a path, repo name or file count', () => {
+    const res = dispatch('status', {}, ctxOf(grantOf(['status']), {
+      availability: 'available', focus: null,
+    }));
+    const s = JSON.stringify(res);
+    expect(s).not.toContain('src');
+    expect(s).not.toContain('retry.ts');
+  });
+
+  it('an unpublished status is shaped exactly like being offline', () => {
+    const res = dispatch('status', {}, ctxOf(grantOf(['status']), null));
+    expect(res.payload).toEqual({ availability: 'offline', focus: null });
+  });
+
+  it('takes no arguments', () => {
+    const res = dispatch('status', { path: 'src' }, ctxOf(grantOf(['status'])));
+    expect(res.ok).toBe(false);
+  });
+});
+
+describe('dispatch — locate', () => {
+  it('returns coordinates for an exact token', () => {
+    const res = dispatch('locate', { token: 'backoffSchedule' }, ctxOf(grantOf(['locate'])));
+    expect(res.ok).toBe(true);
+    expect(res.payload).toEqual({
+      hits: [{ path: 'src/billing/retry.ts', line: 1, symbol: 'backoffSchedule' }],
+    });
+  });
+
+  it('returns no content and no counts', () => {
+    const res = dispatch('locate', { token: 'backoffSchedule' }, ctxOf(grantOf(['locate'])));
+    const s = JSON.stringify(res);
+    expect(s).not.toContain('[1, 2, 4]');
+    expect(s).not.toContain('total');
+    expect(s).not.toContain('scanned');
+  });
+
+  it('a miss returns the same shape as a hit, with an empty list', () => {
+    const res = dispatch('locate', { token: 'nosuchthing' }, ctxOf(grantOf(['locate'])));
+    expect(res).toEqual({ ok: true, payload: { hits: [] } });
+  });
+
+  it('refuses a pattern before it ever reaches the index', () => {
+    const res = dispatch('locate', { token: 'backoff.*' }, ctxOf(grantOf(['locate'])));
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('literal');
+  });
+
+  it('refuses when the scope has moved under a stale index', () => {
+    const moved = resolveScope({ ceiling: ['*'], share: { allow: ['src', 'docs'], version: 'v1' } });
+    const res = dispatch('locate', { token: 'backoffSchedule' }, {
+      ...ctxOf(grantOf(['locate'])), scope: moved,
+    });
+    expect(res.ok).toBe(false);
+    expect(res.error).toBe('scope-changed');
+  });
+});
+
+describe('dispatch — discovery is authorization-scoped', () => {
+  const UNKNOWN = { ok: false, error: 'unknown verb' };
+
+  it('an ungranted verb is indistinguishable from an unknown one', () => {
+    const ungranted = dispatch('locate', { token: 'backoffSchedule' }, ctxOf(grantOf(['status'])));
+    const unknown = dispatch('exec', {}, ctxOf(grantOf(['status'])));
+    expect(ungranted).toEqual(UNKNOWN);
+    expect(unknown).toEqual(UNKNOWN);
+    expect(ungranted).toEqual(unknown);
+  });
+
+  it('an EXPIRED grant is indistinguishable from an absent one', () => {
+    const expired = grantOf(['locate'], { expiresAt: NOW - 1 });
+    expect(dispatch('locate', { token: 'backoffSchedule' }, ctxOf(expired))).toEqual(UNKNOWN);
+  });
+
+  it('a granted but UNIMPLEMENTED verb is also indistinguishable', () => {
+    // consult is in the table but not served until Phase 4. It must not
+    // announce itself as "coming soon" — that is a capability disclosure.
+    expect(dispatch('consult', { question: 'how does retry work?' }, ctxOf(grantOf(['consult']))))
+      .toEqual(UNKNOWN);
+  });
+
+  it('listVerbs shows only what is granted AND implemented', () => {
+    expect(listVerbs(grantOf(['status', 'locate', 'consult', 'assign']), NOW).sort())
+      .toEqual(['locate', 'status']);
+    expect(listVerbs(grantOf(['status']), NOW)).toEqual(['status']);
+    expect(listVerbs(grantOf([]), NOW)).toEqual([]);
+  });
+
+  it('listVerbs shows nothing once the grant expires', () => {
+    expect(listVerbs(grantOf(['status', 'locate'], { expiresAt: NOW - 1 }), NOW)).toEqual([]);
+  });
+
+  it('the expiry boundary is exclusive — a grant expiring exactly now is dead', () => {
+    expect(listVerbs(grantOf(['status'], { expiresAt: NOW }), NOW)).toEqual([]);
+    expect(listVerbs(grantOf(['status'], { expiresAt: NOW + 1 }), NOW)).toEqual(['status']);
+  });
+});
+
+describe('dispatch — hostile input', () => {
+  const ctx = ctxOf(grantOf(['status', 'locate']));
+
+  it('refuses prototype-shaped verb names', () => {
+    for (const v of ['__proto__', 'constructor', 'toString', 'hasOwnProperty']) {
+      expect(dispatch(v, {}, ctx)).toEqual({ ok: false, error: 'unknown verb' });
+    }
+  });
+
+  it('refuses non-string verbs', () => {
+    for (const v of [null, undefined, 42, {}, []]) {
+      expect(dispatch(v, {}, ctx).ok).toBe(false);
+    }
+  });
+
+  it('refuses a token carrying control or bidi characters', () => {
+    // Written as escapes, never literals: a literal NUL makes git treat the
+    // whole test file as binary, which silently removes it from code review.
+    expect(dispatch('locate', { token: 'a\u0000b' }, ctx).ok).toBe(false);
+    expect(dispatch('locate', { token: 'a\u202Eb' }, ctx).ok).toBe(false);
+  });
+
+  it('refuses extra arguments rather than ignoring them', () => {
+    // Silently dropping an unexpected field is how a validator drifts out of
+    // sync with what the caller believes it asked for.
+    expect(dispatch('status', { extra: 1 }, ctx).ok).toBe(false);
+  });
+});
+
+describe('dispatch — purity', () => {
+  it('is deterministic for the same inputs', () => {
+    const ctx = ctxOf(grantOf(['locate']));
+    const a = dispatch('locate', { token: 'backoffSchedule' }, ctx);
+    const b = dispatch('locate', { token: 'backoffSchedule' }, ctx);
+    expect(a).toEqual(b);
+  });
+
+  it('does not mutate the grant or the context it was given', () => {
+    const grant = grantOf(['status', 'locate']);
+    const snapshot = JSON.stringify(grant);
+    const ctx = ctxOf(grant);
+    dispatch('locate', { token: 'backoffSchedule' }, ctx);
+    dispatch('status', {}, ctx);
+    expect(JSON.stringify(grant)).toBe(snapshot);
+  });
+});

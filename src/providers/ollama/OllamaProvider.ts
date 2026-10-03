@@ -13,6 +13,12 @@
 
 import * as vscode from 'vscode';
 import { BaseCliProvider, type PanelSessionState } from '../base/BaseCliProvider';
+import { toolKind } from '../../utils/toolNames';
+import { clampEffort } from '../../utils/effort';
+import type { EffortLevel } from '../../types';
+
+/** Ollama `think` graded strings — reasoning models accept low/medium/high/max (no xhigh). */
+const OLLAMA_EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'max'];
 import type {
   CliDiscoveryResult,
   AuthConfig,
@@ -28,6 +34,7 @@ import type {
   Conversation,
   AgentConfiguration,
   Attachment,
+  ModelInfo,
 } from '../../types';
 
 /**
@@ -36,6 +43,23 @@ import type {
 export interface OllamaSessionState extends PanelSessionState {
   abortController: AbortController | null;
   lastUsageStats: { input_tokens: number; output_tokens: number } | null;
+}
+
+const DEFAULT_OLLAMA_ENDPOINT = 'http://localhost:11434';
+
+/** Timeout for discovery/auth probes — local endpoint, so 1s is plenty. */
+const DISCOVERY_PROBE_TIMEOUT_MS = 1000;
+
+/**
+ * Module-level TTL for skipping background-init probes after a failed probe of
+ * the DEFAULT endpoint. Survives provider re-construction within the process.
+ */
+const DISCOVERY_FAILURE_TTL_MS = 5 * 60 * 1000;
+let _lastDefaultEndpointFailureAt = 0;
+
+/** Reset the module-level discovery failure timestamp (for tests). */
+export function resetOllamaDiscoveryCache(): void {
+  _lastDefaultEndpointFailureAt = 0;
 }
 
 /**
@@ -54,7 +78,22 @@ export class OllamaProvider extends BaseCliProvider {
   readonly config: ProviderConfig = {
     name: 'ollama',
     displayName: 'Ollama',
+    // Trained maxima (ollama.com/library), used only before the first turn:
+    // Ollama runs at the num_ctx it loaded, which each turn reports via
+    // /api/ps (see _loadedContextLength) — 4k on a <24 GiB machine by default.
     models: [
+      {
+        id: 'qwen3-coder',
+        name: 'Qwen3 Coder',
+        description: 'Strongest local coding model most machines can run (30B MoE at Q4)',
+        contextWindow: 262144
+      },
+      {
+        id: 'deepseek-r1',
+        name: 'DeepSeek R1',
+        description: 'Open reasoning model',
+        contextWindow: 128000
+      },
       {
         id: 'llama3.2',
         name: 'Llama 3.2',
@@ -62,16 +101,10 @@ export class OllamaProvider extends BaseCliProvider {
         contextWindow: 128000
       },
       {
-        id: 'codellama',
-        name: 'Code Llama',
-        description: 'Meta code-specialized model',
-        contextWindow: 16384
-      },
-      {
         id: 'deepseek-coder-v2',
         name: 'DeepSeek Coder V2',
         description: 'Strong code generation and understanding',
-        contextWindow: 128000
+        contextWindow: 163840
       },
       {
         id: 'qwen2.5-coder',
@@ -86,7 +119,7 @@ export class OllamaProvider extends BaseCliProvider {
         contextWindow: 32768
       }
     ],
-    defaultModel: 'llama3.2'
+    defaultModel: 'qwen3-coder'
   };
 
   readonly capabilities: ProviderCapabilities = {
@@ -94,8 +127,22 @@ export class OllamaProvider extends BaseCliProvider {
     supportsThinking: false,
     supportsToolUse: true,
     supportsSessions: false,
-    supportsImages: true,
-    supportsAutoInstall: false
+    // Flag/reality alignment (Plan 02 Phase 1): attachments are dropped
+    // before the request (Plan 00 Batch 3.5 owns wiring real image support).
+    supportsImages: false,
+    supportsAutoInstall: false,
+    supportsPromptEnhancement: false,
+    // Plan 02 Phase 1 capability matrix
+    thinkingStyle: 'none',
+    thinkingLevelEffective: false,
+    effortLevels: OLLAMA_EFFORT_LEVELS,  // `think` graded strings (reasoning models)
+    effortDefault: 'medium',
+    planMode: 'detected',
+    sessionKind: 'none',           // stateless HTTP requests
+    emitsToolResults: false,       // tool_use emitted, tool_result never — webview auto-resolves cards
+    emitsUsage: true,
+    usageConvention: 'none',   // prompt_eval_count/eval_count are flat counts.
+    modelSelection: 'custom-only'  // models live on the user's Ollama server
   };
 
   protected _createSession(panelId: string): OllamaSessionState {
@@ -115,19 +162,58 @@ export class OllamaProvider extends BaseCliProvider {
 
   // --- Discovery (HTTP endpoint check) ---
 
+  /** True while background init is running (set by initialize()) — gates the TTL probe skip. */
+  private _initializing = false;
+
   private _getEndpoint(): string {
-    return vscode.workspace.getConfiguration('mysti').get<string>('ollamaEndpoint', 'http://localhost:11434');
+    return vscode.workspace.getConfiguration('mysti').get<string>('ollamaEndpoint', DEFAULT_OLLAMA_ENDPOINT);
   }
 
-  async discoverCli(): Promise<CliDiscoveryResult> {
-    const endpoint = this._getEndpoint();
+  async initialize(): Promise<void> {
+    this._initializing = true;
     try {
-      const response = await fetch(`${endpoint}/api/tags`, { signal: AbortSignal.timeout(3000) });
+      await super.initialize();
+    } finally {
+      this._initializing = false;
+    }
+  }
+
+  /**
+   * Probe the Ollama HTTP endpoint.
+   *
+   * During background init only: when the configured endpoint is the default
+   * and a previous probe failed within the TTL, skip the network I/O and
+   * report not-running. The real probe is deferred to first actual use and
+   * the setup wizard (both call discoverCli() outside initialize(), so they
+   * never hit the skip). Pass `force` to bypass the skip explicitly.
+   */
+  async discoverCli(force = false): Promise<CliDiscoveryResult> {
+    const endpoint = this._getEndpoint();
+    const isDefaultEndpoint = endpoint === DEFAULT_OLLAMA_ENDPOINT;
+
+    if (!force && this._initializing && isDefaultEndpoint &&
+        Date.now() - _lastDefaultEndpointFailureAt < DISCOVERY_FAILURE_TTL_MS) {
+      console.log('[Mysti] Ollama: Skipping init probe (recent failure within TTL)');
+      return {
+        found: false,
+        path: endpoint,
+        installCommand: this.getInstallCommand(),
+      };
+    }
+
+    try {
+      const response = await fetch(`${endpoint}/api/tags`, { signal: AbortSignal.timeout(DISCOVERY_PROBE_TIMEOUT_MS) });
       if (response.ok) {
+        if (isDefaultEndpoint) {
+          _lastDefaultEndpointFailureAt = 0;
+        }
         return { found: true, path: endpoint };
       }
     } catch {
       // Server not reachable
+    }
+    if (isDefaultEndpoint) {
+      _lastDefaultEndpointFailureAt = Date.now();
     }
     return {
       found: false,
@@ -138,6 +224,47 @@ export class OllamaProvider extends BaseCliProvider {
 
   getCliPath(): string {
     return this._getEndpoint();
+  }
+
+  /**
+   * The window Ollama actually loaded `model` with: `/api/ps` `context_length`,
+   * the runtime num_ctx after its VRAM-tier default (4k / 32k / 256k), the
+   * model's trained cap and any out-of-memory reduction. The trained maximum
+   * the catalog lists is up to 64x too big — and Ollama silently cuts the
+   * middle out of an over-long prompt, so fill never reached the threshold.
+   */
+  private async _loadedContextLength(endpoint: string, model: string): Promise<number | undefined> {
+    try {
+      const response = await fetch(`${endpoint}/api/ps`, { signal: AbortSignal.timeout(DISCOVERY_PROBE_TIMEOUT_MS) });
+      if (!response.ok) { return undefined; }
+      const data = await response.json() as { models?: Array<{ name?: string; model?: string; context_length?: number }> };
+      const bare = (id?: string) => id?.replace(/:latest$/, '');
+      const loaded = data.models?.find(m => bare(m.name) === bare(model) || bare(m.model) === bare(model));
+      return typeof loaded?.context_length === 'number' && loaded.context_length > 0 ? loaded.context_length : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Live model discovery (Plan 01 Phase 3): GET /api/tags lists the models
+   * actually pulled on the local Ollama server. Returns null on any failure so
+   * the registry keeps its curated/cached list. Never throws.
+   */
+  async discoverModels(timeoutMs: number): Promise<ModelInfo[] | null> {
+    const endpoint = this._getEndpoint();
+    try {
+      const response = await fetch(`${endpoint}/api/tags`, { signal: AbortSignal.timeout(timeoutMs) });
+      if (!response.ok) { return null; }
+      const data = await response.json() as { models?: Array<{ name?: string; model?: string }> };
+      const models = (data.models || [])
+        .map(m => (m.name || m.model || '').trim())
+        .filter(id => id.length > 0)
+        .map<ModelInfo>(id => ({ id, name: id }));
+      return models.length > 0 ? models : null;
+    } catch {
+      return null;
+    }
   }
 
   // --- Authentication (local, no auth needed) ---
@@ -152,7 +279,7 @@ export class OllamaProvider extends BaseCliProvider {
   async checkAuthentication(): Promise<AuthStatus> {
     const endpoint = this._getEndpoint();
     try {
-      const response = await fetch(`${endpoint}/api/tags`, { signal: AbortSignal.timeout(3000) });
+      const response = await fetch(`${endpoint}/api/tags`, { signal: AbortSignal.timeout(DISCOVERY_PROBE_TIMEOUT_MS) });
       if (response.ok) {
         return { authenticated: true, user: 'Ollama (local)' };
       }
@@ -167,7 +294,47 @@ export class OllamaProvider extends BaseCliProvider {
   }
 
   getInstallCommand(): string {
-    return 'brew install ollama';
+    // OS-correct: Linux uses the install script, macOS uses Homebrew, Windows
+    // uses the OllamaSetup.exe installer (download URL). Derived from the
+    // per-OS getInstallMethods() below so the wizard never shows a Unix-only
+    // `brew install` on Windows.
+    return this._installCommandForCurrentOS('curl -fsSL https://ollama.com/install.sh | sh');
+  }
+
+  getInstallMethods(): import('../../types').InstallMethod[] {
+    return [
+      // Linux — official install script
+      {
+        id: 'curl',
+        label: 'Install script (Linux)',
+        command: 'curl -fsSL https://ollama.com/install.sh | sh',
+        platform: 'linux',
+        priority: 1,
+      },
+      // macOS — Homebrew formula (CLI) or the official .dmg
+      {
+        id: 'brew',
+        label: 'Homebrew (macOS)',
+        command: 'brew install ollama',
+        platform: 'darwin',
+        priority: 1,
+      },
+      {
+        id: 'dmg',
+        label: 'Download Ollama for macOS',
+        command: 'https://ollama.com/download/mac',
+        platform: 'darwin',
+        priority: 2,
+      },
+      // Windows — official installer (download + run)
+      {
+        id: 'exe',
+        label: 'Download OllamaSetup.exe (Windows)',
+        command: 'https://ollama.com/download/OllamaSetup.exe',
+        platform: 'win32',
+        priority: 1,
+      },
+    ];
   }
 
   // --- Stub methods (not used for HTTP provider) ---
@@ -202,7 +369,10 @@ export class OllamaProvider extends BaseCliProvider {
 
     // Read configurable settings
     const endpoint = this._getEndpoint();
-    const model = config.get<string>('ollamaModel', '') || this.config.defaultModel;
+    // Model precedence: effective/routed model FIRST (so the Mysti coordinator's
+    // tier-routing / routedModel is honored, not silently dropped), then the
+    // user-configured provider model, then the provider default.
+    const model = this._getEffectiveModel(settings) || config.get<string>('ollamaModel', '') || this.config.defaultModel;
     const temperature = config.get<number>('ollamaTemperature', 0.7);
     const contextLength = config.get<number>('ollamaContextLength', 0);
     const keepAlive = config.get<string>('ollamaKeepAlive', '5m');
@@ -228,6 +398,12 @@ export class OllamaProvider extends BaseCliProvider {
       };
       if (contextLength > 0) {
         (body.options as Record<string, unknown>).num_ctx = contextLength;
+      }
+      // Reasoning effort → Ollama `think` (top-level graded string). Reasoning
+      // models accept low/medium/high/max; non-reasoning models ignore it.
+      const ollamaEffort = clampEffort(settings.effortLevel, OLLAMA_EFFORT_LEVELS);
+      if (ollamaEffort) {
+        body.think = ollamaEffort;
       }
 
       console.log(`[Mysti] Ollama: Sending request to ${endpoint}/api/chat with model ${model}`);
@@ -271,7 +447,12 @@ export class OllamaProvider extends BaseCliProvider {
           try {
             const chunk = JSON.parse(line);
 
-            // Handle tool calls
+            // Handle tool calls.
+            // Tool-card resolution strategy (Plan 02 Phase 3): Ollama never
+            // executes tools, so no tool_result is EVER emitted — and we must
+            // NOT fabricate one. The manifest declares emitsToolResults: false
+            // and the webview auto-resolves running tool cards for such
+            // providers when the response completes.
             if (chunk.message?.tool_calls && Array.isArray(chunk.message.tool_calls)) {
               for (const toolCall of chunk.message.tool_calls) {
                 const fn = toolCall.function;
@@ -283,6 +464,7 @@ export class OllamaProvider extends BaseCliProvider {
                       name: fn.name || '',
                       input: fn.arguments || {},
                       status: 'running',
+                      kind: toolKind(fn.name || ''),
                     }
                   };
                 }
@@ -311,7 +493,8 @@ export class OllamaProvider extends BaseCliProvider {
 
       const storedUsage = session.lastUsageStats;
       session.lastUsageStats = null;
-      yield storedUsage ? { type: 'done', usage: storedUsage } : { type: 'done' };
+      const contextWindow = await this._loadedContextLength(endpoint, model) ?? (contextLength > 0 ? contextLength : undefined);
+      yield { type: 'done', ...(storedUsage ? { usage: storedUsage } : {}), ...(contextWindow ? { contextWindow } : {}) };
 
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
@@ -322,6 +505,11 @@ export class OllamaProvider extends BaseCliProvider {
       yield { type: 'done' };
     } finally {
       clearTimeout(timeoutId);
+      // Plan 18 (2.4 audit): ABORT on the way out — a consumer that abandons
+      // this generator (Stop, new message, collaborator teardown) otherwise
+      // leaks the connection and the local model keeps generating (GPU burn)
+      // to completion. Aborting an already-finished request is a no-op.
+      session.abortController?.abort();
       session.abortController = null;
     }
   }

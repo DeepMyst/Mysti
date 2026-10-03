@@ -1,0 +1,83 @@
+name: Bug report
+description: Something in Mysti does not do what it says it does.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **If this is a security issue, stop and read SECURITY.md.** Report it
+        privately instead — a public issue is a disclosure.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what happened, and what you expected instead.
+      placeholder: |
+        1. Set mysti.defaultProvider to ...
+        2. Sent "..."
+        3. Expected ..., got ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Which agent
+      description: Which backend was active. Pick "Mysti (coordinator)" for @mysti itself.
+      options:
+        - Mysti (coordinator)
+        - Claude Code
+        - OpenAI Codex
+        - Google Gemini
+        - Cline
+        - GitHub Copilot
+        - Cursor
+        - OpenClaw
+        - OpenCode
+        - Qwen Code
+        - Ollama
+        - LocalAI
+        - Hermes
+        - Continue
+        - OpenRouter
+        - Kimi Code
+        - Several / brainstorm mode
+        - Not provider-specific
+    validations:
+      required: true
+
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Mysti version, VS Code version, OS, and the backend CLI's version if relevant.
+      placeholder: "Mysti 0.5.0, VS Code 1.95.3, macOS 15.1, claude-code 1.0.44"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Extension log
+      description: >
+        Output panel → "Mysti", or the Debug Console filtered to `[Mysti]`.
+        **Redact API keys and paths you would rather not publish before pasting.**
+      render: text
+
+  - type: checkboxes
+    id: gates
+    attributes:
+      label: Authority gates
+      description: >
+        These are off by default. Tick any you had turned on — several bug
+        classes only exist behind one of them, and knowing narrows it fast.
+      options:
+        - label: mysti.mysti.localExecution
+        - label: mysti.mysti.mcpTools
+        - label: mysti.mysti.visualTools
+        - label: mysti.mysti.skills
+        - label: mysti.boost.enabled
+        - label: mysti.desk.enabled
+        - label: mysti.compaction.smart.enabled
+        - label: None of these / not sure

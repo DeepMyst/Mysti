@@ -1,0 +1,22 @@
+{
+  "checkedAt": "2026-10-01T04:59:57.880Z",
+  "platform": "darwin",
+  "arch": "arm64",
+  "scope": "Fresh OpenClaw npm global-layout installation with an isolated Node 24 runtime; launcher/version only.",
+  "root": "/var/folders/_g/_7swhqxx151d577p5xhmmp0m0000gn/T/mysti-openclaw-node24-VkFzeZ",
+  "runtime": {
+    "ok": true,
+    "code": 0,
+    "output": "added 2 packages in 4s"
+  },
+  "install": {
+    "ok": true,
+    "code": 0,
+    "output": "npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead\n\nadded 414 packages in 42s"
+  },
+  "launch": {
+    "ok": true,
+    "code": 0,
+    "output": "OpenClaw 2026.9.7 (c074824)"
+  }
+}

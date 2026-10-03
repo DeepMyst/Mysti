@@ -15,6 +15,20 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as crypto from 'crypto';
+import {
+  AGENT_FILE_BASENAMES,
+  extractAgentInstructions,
+  extractAgentList,
+  extractAgentSection,
+  findAuthorityFrontmatterKeys,
+  isSafeAgentId,
+  parseAgentMarkdown,
+  scanAgentContent,
+  slugifyAgentId,
+  type AgentContentFinding
+} from './agentMarkdown';
+import { CORE_AGENT_HASHES } from '../generated/coreAgentManifest';
 
 // ============================================================================
 // Agent Types - Three-Tier Loading Structure
@@ -30,8 +44,43 @@ export interface AgentMetadata {
   icon?: string;
   category: string;
   source: 'core' | 'plugin' | 'user' | 'workspace';
+  /**
+   * Plan 20 Phase 0 (invariant I1): true ONLY when this file shipped inside the
+   * extension AND its content still matches the compiled-in SHA-256 manifest.
+   *
+   * `source` records where a file was FOUND; `trusted` records whether it is
+   * still the artifact we shipped. They are different questions: the core
+   * directory is writable by any local process — including a delegated CLI
+   * backend, which runs with no sandbox around it — so location alone can never
+   * justify system-tier authority. Only `trusted` content may be concatenated
+   * into a system prompt; everything else is fenced as untrusted data.
+   *
+   * Scope of the measurement differs by tier. On a plain `AgentMetadata`
+   * (Tier 1: `loadAllMetadata()`, `getPersonas()/getSkills()/getRoles()`) it
+   * describes the bytes read at load time and is NOT re-measured until the next
+   * reload — an external writer that never triggers `onDidSaveTextDocument`
+   * leaves it stale. `AgentInstructions` / `AgentFull` (Tiers 2/3) re-measure
+   * it against the bytes they themselves read (`_verifyAtUse`), so on those
+   * objects it describes the content in hand. Any authority or routing decision
+   * must therefore read the Tier-2/3 value, never the Tier-1 cache (this is the
+   * exact gap `buildRoleContext` had).
+   */
+  trusted: boolean;
   filePath: string;
   activationTriggers?: string[];
+  /** Non-blocking content-scan findings, surfaced for review (never instructions). */
+  contentWarnings?: AgentContentFinding[];
+  /**
+   * Plan 14 (roles only): the access profile a collaborator runs under.
+   * Read from the role frontmatter `access:`; defaults to 'read-only' (safe)
+   * when a role omits it. Ignored for personas/skills.
+   */
+  roleAccess?: 'read-only' | 'gated-write';
+  /**
+   * Plan 14 (roles only): interaction pattern, from frontmatter `pattern:`.
+   * Defaults to 'one-shot'.
+   */
+  rolePattern?: 'one-shot' | 'rounds';
 }
 
 /**
@@ -56,12 +105,18 @@ export interface AgentFull extends AgentInstructions {
 /**
  * Agent type discriminator
  */
-export type AgentType = 'persona' | 'skill';
+export type AgentType = 'persona' | 'skill' | 'role';
 
 /**
  * Loading tier level
  */
 export type LoadingTier = 'metadata' | 'instructions' | 'full';
+
+/**
+ * Documentation files that live alongside agent definitions but are not
+ * agents themselves — never load these from flat directories.
+ */
+const DOC_FILE_BASENAMES = ['readme.md', 'contributing.md', 'license.md', 'changelog.md', 'code_of_conduct.md'];
 
 // ============================================================================
 // AgentLoader - Parses and loads agent definitions from markdown files
@@ -78,12 +133,42 @@ export class AgentLoader {
   // Type tracking
   private _agentTypes: Map<string, AgentType> = new Map();
 
+  // Bumped on every reload(); in-flight reads from before a reload must
+  // not populate the caches with stale content
+  private _generation: number = 0;
+
+  // Built-in (core/plugin) ids shadowed by workspace files this load —
+  // surfaced to the user as a prompt-injection guard
+  private _workspaceShadowedIds: string[] = [];
+
   // Source directories
   private _sourceDirs: { path: string; source: AgentMetadata['source'] }[] = [];
 
-  constructor(context: vscode.ExtensionContext) {
+  constructor(
+    context: vscode.ExtensionContext,
+    sourceDirsOverride?: { path: string; source: AgentMetadata['source'] }[]
+  ) {
     this._extensionContext = context;
-    this._initializeSourceDirs();
+    if (sourceDirsOverride) {
+      this._sourceDirs = sourceDirsOverride;
+    } else {
+      this._initializeSourceDirs();
+    }
+  }
+
+  /**
+   * Resolve the base agents directory for a writable scope.
+   * Used by the create/import flows to know where to place new files.
+   */
+  public getScopeBaseDir(scope: 'user' | 'workspace'): string | null {
+    if (scope === 'user') {
+      return path.join(os.homedir(), '.mysti', 'agents');
+    }
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders || workspaceFolders.length === 0) {
+      return null;
+    }
+    return path.join(workspaceFolders[0].uri.fsPath, '.mysti', 'agents');
   }
 
   /**
@@ -114,11 +199,36 @@ export class AgentLoader {
     // Workspace agents (.mysti/agents/ in workspace root)
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (workspaceFolders && workspaceFolders.length > 0) {
-      const workspaceDir = path.join(workspaceFolders[0].uri.fsPath, '.mysti', 'agents');
+      const workspaceRoot = workspaceFolders[0].uri.fsPath;
+      const workspaceDir = path.join(workspaceRoot, '.mysti', 'agents');
       this._sourceDirs.push({
         path: workspaceDir,
         source: 'workspace'
       });
+
+      // Plan 27 Phase 5 — the CROSS-CLIENT skill directories.
+      //
+      // `.agents/skills/<name>/SKILL.md` is the convention other Agent Skills
+      // clients read, and `.claude/skills` is Claude's equivalent. Mysti scanned
+      // only `.mysti/agents/skills`, so a repository that had already written
+      // skills for another tool had none of them here.
+      //
+      // No structural change is needed: this scanner reads `<dir>/skills`, so
+      // pointing it at `.agents` and `.claude` resolves to exactly the
+      // conventional paths. Their `personas/` and `roles/` siblings do not
+      // exist, and `_collectAgentFiles` returns nothing for a missing dir.
+      //
+      // Both are `source: 'workspace'` — the LOWEST trust tier. A cloned repo
+      // can contain anything, so these load as delimited reference data with an
+      // authority ceiling, never as trusted instructions (Plan 20 Phase 0).
+      // They come after `.mysti/agents` so a Mysti-native skill of the same id
+      // wins.
+      for (const crossClient of ['.agents', '.claude']) {
+        this._sourceDirs.push({
+          path: path.join(workspaceRoot, crossClient),
+          source: 'workspace'
+        });
+      }
     }
   }
 
@@ -126,22 +236,48 @@ export class AgentLoader {
    * Load all agent metadata from all sources (Tier 1)
    * Returns only minimal metadata for fast UI rendering
    */
-  public async loadAllMetadata(): Promise<{ personas: AgentMetadata[]; skills: AgentMetadata[] }> {
-    const personas: AgentMetadata[] = [];
-    const skills: AgentMetadata[] = [];
+  public async loadAllMetadata(): Promise<{ personas: AgentMetadata[]; skills: AgentMetadata[]; roles: AgentMetadata[] }> {
+    // Dedupe by id: sources are scanned in priority order (core → plugin →
+    // user → workspace), so a later source overrides an earlier one. An id
+    // can only ever be one type — a workspace skill shadowing a core persona
+    // replaces it entirely.
+    const personaMap = new Map<string, AgentMetadata>();
+    const skillMap = new Map<string, AgentMetadata>();
+    const roleMap = new Map<string, AgentMetadata>();
+    const shadowed: string[] = [];
+
+    const noteShadowing = (metadata: AgentMetadata): void => {
+      if (metadata.source !== 'workspace') {
+        return;
+      }
+      const previous = personaMap.get(metadata.id) || skillMap.get(metadata.id) || roleMap.get(metadata.id);
+      if (previous && (previous.source === 'core' || previous.source === 'plugin')) {
+        shadowed.push(metadata.id);
+      }
+    };
+
+    // A single id maps to exactly one kind; loading it under one kind removes it
+    // from the other two so a later source can flip a persona into a role, etc.
+    const claimId = (id: string, keep: 'persona' | 'skill' | 'role'): void => {
+      if (keep !== 'persona') { personaMap.delete(id); }
+      if (keep !== 'skill') { skillMap.delete(id); }
+      if (keep !== 'role') { roleMap.delete(id); }
+    };
 
     for (const sourceDir of this._sourceDirs) {
       // Load personas
       const personasDir = path.join(sourceDir.path, 'personas');
-      const personaFiles = await this._getMarkdownFiles(personasDir);
+      const personaFiles = await this._collectAgentFiles(personasDir);
 
       for (const filePath of personaFiles) {
         try {
           const metadata = await this._loadMetadata(filePath, sourceDir.source);
           if (metadata) {
+            noteShadowing(metadata);
             this._metadataCache.set(metadata.id, metadata);
             this._agentTypes.set(metadata.id, 'persona');
-            personas.push(metadata);
+            claimId(metadata.id, 'persona');
+            personaMap.set(metadata.id, metadata);
           }
         } catch (error) {
           console.error(`[Mysti] Failed to load persona metadata: ${filePath}`, error);
@@ -150,23 +286,63 @@ export class AgentLoader {
 
       // Load skills
       const skillsDir = path.join(sourceDir.path, 'skills');
-      const skillFiles = await this._getMarkdownFiles(skillsDir);
+      const skillFiles = await this._collectAgentFiles(skillsDir);
 
       for (const filePath of skillFiles) {
         try {
           const metadata = await this._loadMetadata(filePath, sourceDir.source);
           if (metadata) {
+            noteShadowing(metadata);
             this._metadataCache.set(metadata.id, metadata);
             this._agentTypes.set(metadata.id, 'skill');
-            skills.push(metadata);
+            claimId(metadata.id, 'skill');
+            skillMap.set(metadata.id, metadata);
           }
         } catch (error) {
           console.error(`[Mysti] Failed to load skill metadata: ${filePath}`, error);
         }
       }
+
+      // Load roles (Plan 14 — collaboration roles: advisor/critic/reviewer/…)
+      const rolesDir = path.join(sourceDir.path, 'roles');
+      const roleFiles = await this._collectAgentFiles(rolesDir);
+
+      for (const filePath of roleFiles) {
+        try {
+          const metadata = await this._loadMetadata(filePath, sourceDir.source);
+          if (metadata) {
+            noteShadowing(metadata);
+            this._metadataCache.set(metadata.id, metadata);
+            this._agentTypes.set(metadata.id, 'role');
+            claimId(metadata.id, 'role');
+            roleMap.set(metadata.id, metadata);
+          }
+        } catch (error) {
+          console.error(`[Mysti] Failed to load role metadata: ${filePath}`, error);
+        }
+      }
     }
 
-    return { personas, skills };
+    this._workspaceShadowedIds = shadowed;
+    return {
+      personas: Array.from(personaMap.values()),
+      skills: Array.from(skillMap.values()),
+      roles: Array.from(roleMap.values()),
+    };
+  }
+
+  /**
+   * Built-in agent ids overridden by workspace files in the last load.
+   * A cloned repo replacing a trusted persona is a prompt-injection
+   * vector — callers surface this to the user.
+   */
+  public getWorkspaceShadowedIds(): string[] {
+    return [...this._workspaceShadowedIds];
+  }
+
+  /** Absolute paths of all agent source directories (for save watchers). */
+  public getSourceDirPaths(): string[] {
+    return this._sourceDirs.map(d => d.path);
   }
 
   /**
@@ -187,19 +363,33 @@ export class AgentLoader {
     }
 
     try {
+      const generation = this._generation;
       const content = await fs.promises.readFile(metadata.filePath, 'utf-8');
-      const parsed = this._parseMarkdown(content);
+      const parsed = parseAgentMarkdown(content);
+
+      // Plan 20 Phase 0 (invariant I1) at the point of USE. `metadata.trusted`
+      // was decided against the bytes read during loadAllMetadata(); these are
+      // different bytes, read now. Inheriting the boolean through the spread
+      // would make trust a memory rather than a measurement.
+      const verdict = this._verifyAtUse(metadata, content, parsed.frontmatter);
+      if (!verdict) { return null; }
 
       const instructions: AgentInstructions = {
         ...metadata,
-        instructions: this._extractInstructions(parsed.body),
-        communicationStyle: this._extractSection(parsed.body, 'Communication Style'),
-        priorities: this._extractList(parsed.body, 'Priorities'),
-        bestPractices: this._extractList(parsed.body, 'Best Practices'),
-        antiPatterns: this._extractList(parsed.body, 'Anti-Patterns to Avoid')
+        trusted: verdict.trusted,
+        contentWarnings: verdict.contentWarnings,
+        instructions: extractAgentInstructions(parsed.body),
+        communicationStyle: extractAgentSection(parsed.body, 'Communication Style'),
+        priorities: extractAgentList(parsed.body, 'Priorities'),
+        bestPractices: extractAgentList(parsed.body, 'Best Practices'),
+        antiPatterns: extractAgentList(parsed.body, 'Anti-Patterns to Avoid')
       };
 
-      this._instructionsCache.set(agentId, instructions);
+      // A reload() completed while we were reading — serve the result
+      // but don't poison the fresh caches with pre-reload content
+      if (generation === this._generation) {
+        this._instructionsCache.set(agentId, instructions);
+      }
       return instructions;
     } catch (error) {
       console.error(`[Mysti] Failed to load instructions for: ${agentId}`, error);
@@ -224,16 +414,26 @@ export class AgentLoader {
     }
 
     try {
+      const generation = this._generation;
       const content = await fs.promises.readFile(instructions.filePath, 'utf-8');
-      const parsed = this._parseMarkdown(content);
+      const parsed = parseAgentMarkdown(content);
+
+      // Tier 3 performs its own read (the Tier 2 result may have been served
+      // from cache), so it must establish trust from these bytes too.
+      const verdict = this._verifyAtUse(instructions, content, parsed.frontmatter);
+      if (!verdict) { return null; }
 
       const full: AgentFull = {
         ...instructions,
-        codeExamples: this._extractSection(parsed.body, 'Code Examples'),
+        trusted: verdict.trusted,
+        contentWarnings: verdict.contentWarnings,
+        codeExamples: extractAgentSection(parsed.body, 'Code Examples'),
         fullContent: parsed.body
       };
 
-      this._fullCache.set(agentId, full);
+      if (generation === this._generation) {
+        this._fullCache.set(agentId, full);
+      }
       return full;
     } catch (error) {
       console.error(`[Mysti] Failed to load full content for: ${agentId}`, error);
@@ -284,6 +484,7 @@ export class AgentLoader {
    * Clear all caches and reload
    */
   public async reload(): Promise<void> {
+    this._generation++;
     this._metadataCache.clear();
     this._instructionsCache.clear();
     this._fullCache.clear();
@@ -312,27 +513,134 @@ export class AgentLoader {
     return this.getAllMetadata().filter(m => this._agentTypes.get(m.id) === 'skill');
   }
 
+  /**
+   * Get collaboration roles only (Plan 14).
+   */
+  public getRoles(): AgentMetadata[] {
+    return this.getAllMetadata().filter(m => this._agentTypes.get(m.id) === 'role');
+  }
+
   // ============================================================================
   // Private Helper Methods
   // ============================================================================
 
   /**
-   * Get all markdown files in a directory
+   * Collect agent definition files in a directory.
+   * Two layouts are supported:
+   *  - Flat:      `personas/architect.md`, `skills/test-driven.md`
+   *  - Directory: `skills/my-skill/SKILL.md` (Anthropic Agent Skills /
+   *    gstack convention; also accepts skills.md, persona.md, agent.md,
+   *    index.md — case-insensitive)
    */
-  private async _getMarkdownFiles(dirPath: string): Promise<string[]> {
+  private async _collectAgentFiles(dirPath: string): Promise<string[]> {
     try {
-      const exists = await fs.promises.access(dirPath).then(() => true).catch(() => false);
-      if (!exists) {
-        return [];
+      const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
+      const files: string[] = [];
+
+      for (const entry of entries) {
+        const lower = entry.name.toLowerCase();
+        if (entry.isFile() && lower.endsWith('.md') && !DOC_FILE_BASENAMES.includes(lower)) {
+          files.push(path.join(dirPath, entry.name));
+        } else if (entry.isDirectory() && !entry.name.startsWith('.')) {
+          const subDir = path.join(dirPath, entry.name);
+          try {
+            const subEntries = await fs.promises.readdir(subDir, { withFileTypes: true });
+            const agentFile = subEntries.find(
+              e => e.isFile() && AGENT_FILE_BASENAMES.includes(e.name.toLowerCase())
+            );
+            if (agentFile) {
+              files.push(path.join(subDir, agentFile.name));
+            }
+          } catch {
+            // Unreadable subdirectory — skip
+          }
+        }
       }
 
-      const files = await fs.promises.readdir(dirPath);
-      return files
-        .filter(f => f.endsWith('.md'))
-        .map(f => path.join(dirPath, f));
+      return files;
     } catch {
       return [];
     }
+  }
+
+  /**
+   * Plan 20 Phase 0 (invariant I1) — is this core file byte-for-byte what we
+   * shipped?
+   *
+   * The hash map is compiled into `dist/extension.js` (see
+   * `scripts/generate-core-agent-manifest.js`), so forging it means editing the
+   * extension's own code rather than dropping a file into a directory. Content
+   * is LF-normalized before hashing because `.gitattributes` sets `* text=auto`
+   * and a Windows checkout can materialize CRLF.
+   *
+   * Returns false — never throws — for an unknown path, a mismatch, or a core
+   * directory we cannot resolve. Failing closed here means the file still
+   * loads and still works; it just gets fenced instead of trusted.
+   */
+  private _verifyCoreIntegrity(filePath: string, content: string): boolean {
+    const coreDir = this._sourceDirs.find(d => d.source === 'core')?.path;
+    if (!coreDir) { return false; }
+
+    const rel = path.relative(coreDir, filePath).split(path.sep).join('/');
+    // A path that climbs out of the core dir is not a core file, whatever the
+    // caller believed (symlink into core, mis-seeded sourceDirsOverride).
+    if (!rel || rel.startsWith('../') || path.isAbsolute(rel)) { return false; }
+
+    const expected = CORE_AGENT_HASHES[rel];
+    if (!expected) {
+      console.warn(`[Mysti] Core agent file is not in the integrity manifest — loading as untrusted: ${rel}`);
+      return false;
+    }
+
+    const actual = crypto.createHash('sha256')
+      .update(content.replace(/\r\n/g, '\n'), 'utf8')
+      .digest('hex');
+
+    if (actual !== expected) {
+      console.error(`[Mysti] Core agent file has been modified since it was bundled — loading as untrusted: ${rel}`);
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Re-establish trust for content that has just been read from disk.
+   *
+   * Tier 1 decides `trusted` for the bytes it read; Tiers 2 and 3 read the file
+   * again, and those are the bytes that reach a prompt. Between the two reads
+   * the file can change — the core directory is writable by any local process,
+   * and the only auto-reload (`onDidSaveTextDocument`) does not fire for a
+   * write made outside the editor — so trust must be re-measured here rather
+   * than inherited through the `{ ...metadata }` spread.
+   *
+   * Verifies the content ALREADY IN HAND: no extra read, one SHA-256 over a few
+   * KB on a cache miss. Returns null when the content must not load at all
+   * (same refusals as `_loadMetadata`: failed content scan, authority-granting
+   * frontmatter), matching the "hard load failure, not a fence" rule.
+   */
+  private _verifyAtUse(
+    metadata: AgentMetadata,
+    content: string,
+    frontmatter: Record<string, unknown>
+  ): { trusted: boolean; contentWarnings?: AgentContentFinding[] } | null {
+    const scan = scanAgentContent(content);
+    if (scan.rejected) {
+      const reasons = scan.findings.filter(f => f.severity === 'reject')
+        .map(f => `${f.code}${f.detail ? ` (${f.detail})` : ''}`).join(', ');
+      console.error(`[Mysti] Refusing agent content — failed content scan: ${metadata.filePath} [${reasons}]`);
+      return null;
+    }
+
+    const authorityKeys = findAuthorityFrontmatterKeys(frontmatter);
+    if (authorityKeys.length > 0) {
+      console.error(`[Mysti] Refusing agent content — authority-granting frontmatter (${authorityKeys.join(', ')}): ${metadata.filePath}`);
+      return null;
+    }
+
+    return {
+      trusted: metadata.source === 'core' && this._verifyCoreIntegrity(metadata.filePath, content),
+      contentWarnings: scan.findings.length > 0 ? scan.findings : undefined,
+    };
   }
 
   /**
@@ -341,24 +649,78 @@ export class AgentLoader {
   private async _loadMetadata(filePath: string, source: AgentMetadata['source']): Promise<AgentMetadata | null> {
     try {
       const content = await fs.promises.readFile(filePath, 'utf-8');
-      const parsed = this._parseMarkdown(content);
 
-      if (!parsed.frontmatter.id) {
-        console.warn(`[Mysti] Missing 'id' in frontmatter: ${filePath}`);
+      // Plan 20 Phase 0 (invariant I3): refuse content that defeats human
+      // review (hidden codepoints) or forges a coordinator directive. A hard
+      // load failure, not a fence — there is no legitimate artifact that needs
+      // either, and fencing would leave the bytes reachable via Tier 3.
+      const scan = scanAgentContent(content);
+      if (scan.rejected) {
+        const reasons = scan.findings.filter(f => f.severity === 'reject')
+          .map(f => `${f.code}${f.detail ? ` (${f.detail})` : ''}`).join(', ');
+        console.error(`[Mysti] Refusing agent file — failed content scan: ${filePath} [${reasons}]`);
         return null;
       }
 
+      const parsed = parseAgentMarkdown(content);
+
+      // Plan 20 Phase 0: frontmatter may describe content, never grant
+      // authority. Refused rather than ignored — silently dropping the key
+      // leaves both the author and a reviewer believing it took effect.
+      const authorityKeys = findAuthorityFrontmatterKeys(parsed.frontmatter);
+      if (authorityKeys.length > 0) {
+        console.error(`[Mysti] Refusing agent file — authority-granting frontmatter (${authorityKeys.join(', ')}): ${filePath}`);
+        return null;
+      }
+
+      const trusted = source === 'core' && this._verifyCoreIntegrity(filePath, content);
+      const contentWarnings = scan.findings.length > 0 ? scan.findings : undefined;
+
+      // Derive an id when frontmatter lacks one (common in third-party
+      // SKILL.md files): prefer the frontmatter name, then the directory
+      // name for canonical per-directory files, then the file name.
+      const baseName = path.basename(filePath);
+      const fallbackName = AGENT_FILE_BASENAMES.includes(baseName.toLowerCase())
+        ? path.basename(path.dirname(filePath))
+        : baseName;
+      const rawId = parsed.frontmatter.id
+        ? String(parsed.frontmatter.id)
+        : String(parsed.frontmatter.name || '') || fallbackName;
+      // Ids flow into DOM attributes and file paths — keep them slugs
+      const id = isSafeAgentId(rawId) ? rawId : slugifyAgentId(rawId);
+
+      if (!id) {
+        console.warn(`[Mysti] Cannot determine agent id for: ${filePath}`);
+        return null;
+      }
+
+      // Third-party SKILL.md files (gstack et al.) use `triggers`
+      const triggers = Array.isArray(parsed.frontmatter.activationTriggers)
+        ? parsed.frontmatter.activationTriggers
+        : Array.isArray(parsed.frontmatter.triggers)
+          ? parsed.frontmatter.triggers
+          : undefined;
+
+      // Role-only frontmatter (Plan 14). Harmless on personas/skills, which
+      // simply won't declare these keys.
+      const rawAccess = parsed.frontmatter.access ? String(parsed.frontmatter.access) : undefined;
+      const roleAccess = rawAccess === 'gated-write' ? 'gated-write' : rawAccess === 'read-only' ? 'read-only' : undefined;
+      const rawPattern = parsed.frontmatter.pattern ? String(parsed.frontmatter.pattern) : undefined;
+      const rolePattern = rawPattern === 'rounds' ? 'rounds' : rawPattern === 'one-shot' ? 'one-shot' : undefined;
+
       return {
-        id: String(parsed.frontmatter.id),
-        name: String(parsed.frontmatter.name || parsed.frontmatter.id),
+        id,
+        name: String(parsed.frontmatter.name || id),
         description: String(parsed.frontmatter.description || ''),
         icon: parsed.frontmatter.icon ? String(parsed.frontmatter.icon) : undefined,
         category: String(parsed.frontmatter.category || 'general'),
         source,
+        trusted,
         filePath,
-        activationTriggers: Array.isArray(parsed.frontmatter.activationTriggers)
-          ? parsed.frontmatter.activationTriggers.map(t => String(t))
-          : undefined
+        activationTriggers: triggers ? triggers.map(t => String(t)) : undefined,
+        contentWarnings,
+        roleAccess,
+        rolePattern
       };
     } catch (error) {
       console.error(`[Mysti] Failed to parse: ${filePath}`, error);
@@ -366,107 +728,4 @@ export class AgentLoader {
     }
   }
 
-  /**
-   * Parse markdown with YAML frontmatter
-   */
-  private _parseMarkdown(content: string): { frontmatter: Record<string, unknown>; body: string } {
-    const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
-
-    if (!frontmatterMatch) {
-      return { frontmatter: {}, body: content };
-    }
-
-    const frontmatterStr = frontmatterMatch[1];
-    const body = frontmatterMatch[2];
-
-    // Simple YAML parsing (handles basic key: value and arrays)
-    const frontmatter: Record<string, unknown> = {};
-    let currentKey: string | null = null;
-    let currentArray: string[] | null = null;
-
-    for (const line of frontmatterStr.split('\n')) {
-      const trimmed = line.trim();
-
-      // Array item
-      if (trimmed.startsWith('- ') && currentKey) {
-        if (!currentArray) {
-          currentArray = [];
-        }
-        currentArray.push(trimmed.slice(2).trim());
-        frontmatter[currentKey] = currentArray;
-      }
-      // Key-value pair
-      else if (trimmed.includes(':')) {
-        // Save previous array if any
-        if (currentKey && currentArray) {
-          frontmatter[currentKey] = currentArray;
-        }
-
-        const colonIndex = trimmed.indexOf(':');
-        const key = trimmed.slice(0, colonIndex).trim();
-        const value = trimmed.slice(colonIndex + 1).trim();
-
-        currentKey = key;
-        currentArray = null;
-
-        if (value) {
-          frontmatter[key] = value;
-        }
-      }
-    }
-
-    return { frontmatter, body };
-  }
-
-  /**
-   * Extract main instructions from markdown body
-   * For personas: Key Characteristics section
-   * For skills: Instructions section
-   */
-  private _extractInstructions(body: string): string {
-    // Try to extract Key Characteristics (for personas)
-    let instructions = this._extractSection(body, 'Key Characteristics');
-
-    // Fallback to Instructions (for skills)
-    if (!instructions) {
-      instructions = this._extractSection(body, 'Instructions');
-    }
-
-    // Fallback to first paragraph
-    if (!instructions) {
-      const firstParagraph = body.split('\n\n')[0];
-      instructions = firstParagraph.replace(/^#.*\n/, '').trim();
-    }
-
-    return instructions;
-  }
-
-  /**
-   * Extract a specific section from markdown body
-   */
-  private _extractSection(body: string, sectionName: string): string | undefined {
-    const regex = new RegExp(`## ${sectionName}\\n([\\s\\S]*?)(?=\\n## |$)`, 'i');
-    const match = body.match(regex);
-    return match ? match[1].trim() : undefined;
-  }
-
-  /**
-   * Extract a list from a section
-   */
-  private _extractList(body: string, sectionName: string): string[] | undefined {
-    const section = this._extractSection(body, sectionName);
-    if (!section) {return undefined;}
-
-    const items: string[] = [];
-    const lines = section.split('\n');
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (trimmed.startsWith('- ') || trimmed.startsWith('* ') || /^\d+\.\s/.test(trimmed)) {
-        items.push(trimmed.replace(/^[-*]\s|^\d+\.\s/, '').trim());
-      }
-    }
-
-    return items.length > 0 ? items : undefined;
-  }
 }

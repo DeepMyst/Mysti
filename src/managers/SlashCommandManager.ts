@@ -12,6 +12,7 @@
  */
 
 import * as vscode from 'vscode';
+import { DEFAULT_PROVIDER } from '../constants';
 import type { ProviderManager } from './ProviderManager';
 import type { ContextManager } from './ContextManager';
 import type { ConversationManager } from './ConversationManager';
@@ -23,8 +24,54 @@ import type {
   SlashCommandSectionInfo,
   SlashCommandSection,
   ProviderType,
-  WebviewMessage
+  WebviewMessage,
+  ModelInfo,
+  OperationMode
 } from '../types';
+import { isTrustStop, authorityForTrust, TRUST_COPY } from '../utils/trustLadder';
+import {
+  NATIVE_COMMANDS,
+  nativeCommandId,
+  parseNativeCommandId,
+  type NativeCommandSpec,
+} from '../providers/base/NativeCommands';
+import type { NativeCommandDiscovery } from '../services/NativeCommandDiscovery';
+import { SESSION_SHAPES, sessionCommandId, shapeFromCommandId } from './sessionShapes';
+
+/** What the webview picker needs to price a session and gate its Run button. */
+export interface SessionMenuEntry {
+  id: string;
+  commandId: string;
+  command: string;
+  description: string;
+  minAgents: number;
+  maxAgents: number;
+  rounds: number;
+  costRate: number;
+}
+
+/** The catalog as the picker needs it. One builder, every consumer. */
+export function sessionMenuEntries(): SessionMenuEntry[] {
+  return SESSION_SHAPES.map(shape => ({
+    id: shape.id,
+    commandId: sessionCommandId(shape.id),
+    command: shape.command,
+    description: shape.description,
+    minAgents: shape.minAgents,
+    maxAgents: shape.maxAgents,
+    rounds: shape.rounds,
+    costRate: shape.costRate,
+  }));
+}
+
+/** Codicon per session shape, for the menu's icon column. */
+const SESSION_ICONS: Record<string, string> = {
+  review: 'checklist',
+  panel: 'organization',
+  critique: 'debug-alt',
+  race: 'run-all',
+  brainstorm: 'lightbulb',
+};
 
 interface SlashCommandManagerDeps {
   providerManager: ProviderManager;
@@ -33,7 +80,27 @@ interface SlashCommandManagerDeps {
   compactionManager: CompactionManager;
   memoryManager: MemoryManager;
   brainstormManager: BrainstormManager;
+  /**
+   * Source of the user's own commands for each backend (`.claude/commands`,
+   * `.gemini/commands`, `.cursor/commands`, …). Optional so existing tests can
+   * construct the manager without a filesystem; the native section then holds
+   * the curated catalog alone.
+   */
+  nativeCommandDiscovery?: NativeCommandDiscovery;
 }
+
+/**
+ * What a provider-native command turns into when it is run. The manager
+ * resolves; ChatViewProvider dispatches, because sending a turn needs the
+ * panel's settings and context, which only the webview's send payload carries.
+ */
+export type ResolvedNativeCommand =
+  /** Run Mysti's own equivalent instead of the backend's version. */
+  | { kind: 'mysti'; commandId: string }
+  /** Send this text to the backend as the turn's prompt. */
+  | { kind: 'prompt'; text: string }
+  /** Put this in the composer and let the user finish typing the arguments. */
+  | { kind: 'prefill'; text: string };
 
 /**
  * Callbacks provided by ChatViewProvider for executing side-effects
@@ -43,6 +110,29 @@ export interface SlashCommandCallbacks {
   updateSettings: (settings: Record<string, unknown>, panelId?: string) => Promise<void>;
   getPanelProvider: (panelId: string) => string;
   getPanelModel: (panelId: string) => string;
+  /**
+   * Merged model list for a provider (Plan 01 Phase 1) — backed by the
+   * ModelRegistryService so the `/model` QuickPick shows the same curated +
+   * discovered + custom set as the dropdown, not the raw bundled config.models.
+   */
+  getModelsForProvider: (providerId: string) => ModelInfo[];
+  /**
+   * Provider-neutral manual compaction (Plan 02 Phase 2, C7) — routes through
+   * CompactionManager, which picks native-cli vs client-summarize from the
+   * provider's supportsNativeCompact capability.
+   */
+  executeManualCompaction: (panelId: string) => Promise<void>;
+}
+
+/**
+ * True when a command cannot run without arguments.
+ *
+ * `<condition>` is required, `[instructions]` is optional — the convention the
+ * catalog and the CLIs' own help text both use. Getting this backwards makes a
+ * perfectly valid bare `/compact` impossible to run from the menu.
+ */
+function requiresArguments(hint: string | undefined): boolean {
+  return !!hint && hint.trim().startsWith('<');
 }
 
 /**
@@ -57,14 +147,22 @@ export class SlashCommandManager {
   private _compactionManager: CompactionManager;
   private _memoryManager: MemoryManager;
   private _brainstormManager: BrainstormManager;
+  private _nativeCommandDiscovery?: NativeCommandDiscovery;
 
   private static readonly _sections: SlashCommandSectionInfo[] = [
+    // Plan 29 — first, because a session is a decision about who answers, and
+    // that comes before anything you would tune about one agent's turn.
+    { id: 'sessions',  label: 'Sessions',  order: 0 },
     { id: 'context',   label: 'Context',   order: 1 },
     { id: 'model',     label: 'Model',     order: 2 },
     { id: 'customize', label: 'Customize', order: 3 },
     { id: 'commands',  label: 'Commands',  order: 4 },
-    { id: 'settings',  label: 'Settings',  order: 5 },
-    { id: 'support',   label: 'Support',   order: 6 },
+    // Label is replaced per-provider in getCommands() — this section holds the
+    // ACTIVE backend's own vocabulary, so it is titled after that backend
+    // ("Claude commands") rather than with a generic heading.
+    { id: 'native',    label: 'CLI Commands', order: 5 },
+    { id: 'settings',  label: 'Settings',  order: 6 },
+    { id: 'support',   label: 'Support',   order: 7 },
   ];
 
   /** Maps legacy command names to new IDs */
@@ -75,16 +173,30 @@ export class SlashCommandManager {
     'mode': 'settings:mode',
     'model': 'model:switch',
     'agent': 'provider:switch',
-    'brainstorm': 'cmd:brainstorm',
+    // Plan 29: /brainstorm is a SESSION now, so a typed one opens the agent
+    // picker like the other four rather than flipping the old two-agent mode.
+    // Its strategies survive as presets — the setting is untouched.
+    'brainstorm': 'session:brainstorm',
+    'review': 'session:review',
+    'panel': 'session:panel',
+    'critique': 'session:critique',
+    'race': 'session:race',
     'exit-plan-mode': 'cmd:exit-plan',
     'exit-plan': 'cmd:exit-plan',
-    'compact': 'claude:compact',
+    // C7: /compact is provider-neutral — CompactionManager branches on the
+    // provider's supportsNativeCompact capability, so non-Claude providers
+    // get client-side summarization instead of a Claude-only CLI passthrough.
+    'compact': 'cmd:compact',
     'export': 'cmd:export',
     'import': 'cmd:import',
     'share': 'cmd:share',
     'init-team': 'cmd:init-team',
     'memory': 'cmd:memory',
     'rules': 'cmd:rules',
+    'visual-test': 'cmd:visual-test',
+    'update': 'cmd:update-clis',
+    'update-clis': 'cmd:update-clis',
+    'canvas': 'cmd:canvas',
   };
 
   constructor(deps: SlashCommandManagerDeps) {
@@ -94,6 +206,7 @@ export class SlashCommandManager {
     this._compactionManager = deps.compactionManager;
     this._memoryManager = deps.memoryManager;
     this._brainstormManager = deps.brainstormManager;
+    this._nativeCommandDiscovery = deps.nativeCommandDiscovery;
   }
 
   /**
@@ -101,6 +214,40 @@ export class SlashCommandManager {
    */
   public mapLegacyCommand(name: string): string {
     return SlashCommandManager._legacyCommandMap[name] || `cmd:${name}`;
+  }
+
+  /**
+   * True when `commandId` is a command Mysti itself handles for the given panel/
+   * provider. Used to decide native pass-through: an UNKNOWN `/command` (e.g.
+   * Claude Code's `/deep-research`, a `/skill-name`, or a saved workflow) is not
+   * a Mysti command and is forwarded verbatim to the backend instead.
+   */
+  public isKnownCommand(
+    commandId: string,
+    panelId: string,
+    activeProvider: ProviderType,
+    callbacks: SlashCommandCallbacks,
+  ): boolean {
+    if (commandId.endsWith(':terminal')) {
+      return true;
+    }
+    // A name Mysti explicitly claims is OWNED even when it has no menu row.
+    // `cmd:compact` is the case that matters: it is provider-neutral (it picks
+    // native-CLI vs client-side summarization from the backend's capabilities)
+    // and is reachable only by typing, so judging ownership by menu membership
+    // alone would forward `/compact` to the backend and quietly bypass
+    // CompactionManager.
+    if (Object.values(SlashCommandManager._legacyCommandMap).includes(commandId)) {
+      return true;
+    }
+    try {
+      const { commands } = this.getCommands(panelId, activeProvider, callbacks);
+      return commands.some(c => c.id === commandId);
+    } catch {
+      // If we can't resolve the registry, treat as known so we never accidentally
+      // leak a Mysti command to the backend.
+      return true;
+    }
   }
 
   /**
@@ -112,7 +259,11 @@ export class SlashCommandManager {
     activeProvider: ProviderType,
     callbacks: SlashCommandCallbacks,
     _query?: string
-  ): { sections: SlashCommandSectionInfo[]; commands: SlashCommandDefinition[] } {
+  ): {
+    sections: SlashCommandSectionInfo[];
+    commands: SlashCommandDefinition[];
+    sessions: SessionMenuEntry[];
+  } {
     // 1. Collect universal commands
     const universalCmds = this._getUniversalCommands(panelId, activeProvider, callbacks);
 
@@ -127,19 +278,269 @@ export class SlashCommandManager {
       // Provider not available, skip its commands
     }
 
-    // 3. Merge and filter to active provider
-    const allCmds = [...universalCmds, ...providerCmds].filter(cmd =>
+    // 3. The active backend's OWN commands — curated catalog, plus whatever the
+    //    user has authored on disk, plus anything an ACP agent reported live.
+    const nativeCmds = this._getNativeCommands(panelId, activeProvider);
+
+    // 4. Merge and filter to active provider
+    const allCmds = [...universalCmds, ...providerCmds, ...nativeCmds].filter(cmd =>
       cmd.provider === 'all' || cmd.provider === activeProvider
     );
 
-    // 4. Resolve dynamic values
+    // 5. Resolve dynamic values
     this._resolveDynamicValues(allCmds, panelId, activeProvider, callbacks);
 
-    // 5. Only include sections that have commands
+    // 6. Only include sections that have commands, and title the native section
+    //    after the backend whose commands it holds.
     const usedSections = new Set<SlashCommandSection>(allCmds.map(c => c.section));
-    const sections = SlashCommandManager._sections.filter(s => usedSections.has(s.id));
+    const sections = SlashCommandManager._sections
+      .filter(s => usedSections.has(s.id))
+      .map(s => s.id === 'native'
+        ? { ...s, label: `${this._getProviderDisplayName(activeProvider)} commands` }
+        : s);
 
-    return { sections, commands: allCmds };
+    // Plan 29: the shape catalog rides along so the picker can enforce the
+    // minimum and price the run WITHOUT a second round trip — the webview has
+    // to decide whether Run is live as the user ticks boxes.
+    return { sections, commands: allCmds, sessions: sessionMenuEntries() };
+  }
+
+  /**
+   * Build the provider-native section for one panel.
+   *
+   * Three sources, in precedence order — a name found earlier wins, so a repo
+   * cannot shadow a curated built-in with a file of the same name:
+   *   1. NATIVE_COMMANDS   — curated built-ins, and the metadata for a reported
+   *                          name (the reports carry names, not descriptions)
+   *   2. the provider      — what the backend says it has (Claude Code's init
+   *                          event, an ACP agent's available_commands_update)
+   *   3. discovery         — `.claude/commands`, `.gemini/commands`, skills, …
+   *
+   * Once a backend HAS reported, that report is authoritative and every curated
+   * entry that would be handed to the CLI is filtered down to it. This is what
+   * keeps the catalog honest across CLI releases: Claude Code 2.1.263 dropped
+   * `/review` and does not offer `/effort` or `/rename` in a print session (they
+   * answer "isn't available in this environment"), and a curated list alone
+   * would have gone on advertising all three. Entries that run a MYSTI command
+   * are exempt — they never reach the CLI, so its inventory does not govern
+   * them.
+   */
+  private _getNativeCommands(
+    panelId: string,
+    activeProvider: ProviderType
+  ): SlashCommandDefinition[] {
+    const out: SlashCommandDefinition[] = [];
+    const claimed = new Set<string>();
+
+    const add = (
+      spec: NativeCommandSpec,
+      origin: SlashCommandDefinition['origin']
+    ): void => {
+      if (claimed.has(spec.name)) { return; }
+      claimed.add(spec.name);
+      out.push({
+        id: nativeCommandId(activeProvider, spec.name),
+        label: `/${spec.name}`,
+        description: spec.description,
+        section: 'native',
+        icon: spec.icon ?? 'terminal',
+        provider: activeProvider,
+        action: 'execute',
+        // Only the entries actually handed to the CLI are pass-through; the
+        // ones mapped onto a Mysti command are not, and the webview must not
+        // treat them as text to send.
+        isCliPassthrough: spec.execution.kind !== 'mysti',
+        nativeName: spec.name,
+        argumentHint: spec.argumentHint,
+        origin,
+        keywords: spec.keywords,
+      });
+    };
+
+    const reported = this._getDynamicNativeCommands(panelId, activeProvider);
+    const hasReport = this._hasReportedNativeCommands(panelId, activeProvider);
+    const reportedNames = new Set(reported.map(c => c.name));
+
+    const reportedSkills = new Set(reported.filter(c => c.isSkill).map(c => c.name));
+
+    for (const spec of NATIVE_COMMANDS[activeProvider] ?? []) {
+      // Metadata-only entries exist to DESCRIBE a reported command, never to
+      // offer one. Without a report naming it, the entry is not a menu row.
+      if (spec.metadataOnly && !reportedNames.has(spec.name)) { continue; }
+      // …and never over a skill: `design` is both a bundled skill and a local
+      // Claude Design command, so a catalog description would rename the skill.
+      if (spec.metadataOnly && reportedSkills.has(spec.name)) { continue; }
+      // A CLI-bound entry the backend did not list does not exist for this
+      // session; advertising it would spend a turn on "unknown command".
+      if (hasReport && spec.execution.kind !== 'mysti' && !reportedNames.has(spec.name)) {
+        continue;
+      }
+      add(spec, 'builtin');
+    }
+
+    // What the backend itself says it has. Anything the catalog already
+    // described was claimed above (keeping its real description and its Mysti
+    // mapping); what is left is genuinely new — bundled skills, plugin
+    // commands, MCP prompts — and passes through under the reported name.
+    for (const spec of reported) {
+      add(spec, 'agent');
+    }
+
+    for (const found of this._nativeCommandDiscovery?.getCached(activeProvider) ?? []) {
+      add(
+        {
+          name: found.name,
+          description: found.description,
+          icon: found.origin === 'project' ? 'repo' : 'account',
+          execution: found.execution,
+        },
+        found.origin
+      );
+    }
+
+    return out;
+  }
+
+  /**
+   * Rescan the active backend's command directories if the cache has gone
+   * stale. Resolves to `true` only when the visible set actually changed, so
+   * the caller re-posts a menu only when it would look different.
+   */
+  public async refreshNativeCommands(providerId: string): Promise<boolean> {
+    if (!this._nativeCommandDiscovery) { return false; }
+    try {
+      return await this._nativeCommandDiscovery.refreshIfStale(providerId);
+    } catch {
+      // Discovery is a convenience; the curated catalog stands without it.
+      return false;
+    }
+  }
+
+  /**
+   * Map a BARE command name the user typed (`design`, `frontend:audit`) onto a
+   * native command id for the active provider, or null if the backend has no
+   * such command.
+   *
+   * Without this, a typed `/name` and the same entry picked from the menu would
+   * behave differently: the menu resolves `expand` commands by reading the
+   * user's template, while a typed one would be forwarded verbatim to a CLI
+   * whose headless mode cannot expand it.
+   */
+  public findNativeCommandId(
+    name: string,
+    panelId: string,
+    activeProvider: ProviderType
+  ): string | null {
+    if (!name) { return null; }
+    // Resolve rather than test membership: the usability rule (a curated entry
+    // the backend never listed is not runnable) lives there, and a typed name
+    // must obey it exactly as a menu pick does.
+    return this.resolveNativeCommand(nativeCommandId(activeProvider, name), panelId, activeProvider, '')
+      ? nativeCommandId(activeProvider, name)
+      : null;
+  }
+
+  /** True once the backend has reported its own command list; never throws. */
+  private _hasReportedNativeCommands(panelId: string, activeProvider: ProviderType): boolean {
+    try {
+      const instance = this._providerManager.getProviderInstance(activeProvider);
+      return instance?.hasReportedNativeCommands?.(panelId) ?? false;
+    } catch {
+      return false;
+    }
+  }
+
+  /** What the backend says it has; never throws. */
+  private _getDynamicNativeCommands(
+    panelId: string,
+    activeProvider: ProviderType
+  ): NativeCommandSpec[] {
+    try {
+      const instance = this._providerManager.getProviderInstance(activeProvider);
+      return instance?.getDynamicNativeCommands?.(panelId) ?? [];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Turn a `native:<provider>:<name>` id into something runnable, or null when
+   * the id names no command this provider has.
+   */
+  public resolveNativeCommand(
+    commandId: string,
+    panelId: string,
+    activeProvider: ProviderType,
+    args: string
+  ): ResolvedNativeCommand | null {
+    const parsed = parseNativeCommandId(commandId);
+    if (!parsed || parsed.provider !== activeProvider) { return null; }
+
+    const trimmedArgs = args.trim();
+
+    const reportedSpecs = this._getDynamicNativeCommands(panelId, activeProvider);
+    const hasReport = this._hasReportedNativeCommands(panelId, activeProvider);
+
+    const builtin = (NATIVE_COMMANDS[activeProvider] ?? [])
+      .find(c => c.name === parsed.name);
+    // Same rule as the menu build: a CLI-bound curated entry the backend has not
+    // listed is not runnable, so fall through rather than send it.
+    const reportedHere = reportedSpecs.find(c => c.name === parsed.name);
+    const builtinUsable = builtin
+      // A metadata-only entry is only ever reachable through a report, and a
+      // reported SKILL keeps its own identity rather than the catalog's.
+      && (!builtin.metadataOnly || (!!reportedHere && !reportedHere.isSkill))
+      && (!hasReport
+        || builtin.execution.kind === 'mysti'
+        || !!reportedHere);
+    if (builtin && builtinUsable) {
+      if (builtin.execution.kind === 'mysti') {
+        return { kind: 'mysti', commandId: builtin.execution.commandId };
+      }
+      // A command that REQUIRES arguments is prefilled rather than sent: firing
+      // `/goal` with no condition wastes a turn, and the user cannot see what
+      // was sent to correct it. An optional argument still runs bare.
+      if (requiresArguments(builtin.argumentHint) && !trimmedArgs) {
+        return { kind: 'prefill', text: `/${builtin.name} ` };
+      }
+      return {
+        kind: 'prompt',
+        text: trimmedArgs ? `/${builtin.name} ${trimmedArgs}` : `/${builtin.name}`,
+      };
+    }
+
+    // A command the backend reported — it owns the vocabulary, so it is passed
+    // through verbatim.
+    const live = reportedSpecs.find(c => c.name === parsed.name);
+    if (live) {
+      if (requiresArguments(live.argumentHint) && !trimmedArgs) {
+        return { kind: 'prefill', text: `/${live.name} ` };
+      }
+      return {
+        kind: 'prompt',
+        text: trimmedArgs ? `/${live.name} ${trimmedArgs}` : `/${live.name}`,
+      };
+    }
+
+    const found = (this._nativeCommandDiscovery?.getCached(activeProvider) ?? [])
+      .find(c => c.name === parsed.name);
+    if (!found) { return null; }
+
+    if (found.execution.kind === 'mysti') {
+      return { kind: 'mysti', commandId: found.execution.commandId };
+    }
+    if (found.execution.kind === 'passthrough') {
+      return {
+        kind: 'prompt',
+        text: trimmedArgs ? `/${found.name} ${trimmedArgs}` : `/${found.name}`,
+      };
+    }
+
+    // `expand`: this backend's headless mode cannot resolve a slash command, so
+    // Mysti sends the template the user wrote. If it cannot be read, say so
+    // rather than sending a bare `/name` the CLI will treat as prose.
+    const expanded = this._nativeCommandDiscovery?.expandTemplate(found.filePath, trimmedArgs);
+    return expanded ? { kind: 'prompt', text: expanded } : null;
   }
 
   /**
@@ -152,6 +553,28 @@ export class SlashCommandManager {
     callbacks: SlashCommandCallbacks
   ): Promise<string | void> {
     const trimmedArgs = args.trim();
+
+    // Plan 29: a session command is a REQUEST FOR THE PICKER, not a run — who
+    // answers is the decision it exists to make. Handled BEFORE the switch
+    // because it can arrive typed as well as clicked: `/review the auth diff`
+    // matches no menu row (the args are part of the query), so it fell through
+    // to sendMessage, reached this switch, matched nothing, and did nothing at
+    // all. The webview intercepts a CLICK on its own; this covers every other
+    // way the id can get here.
+    const sessionShape = shapeFromCommandId(commandId);
+    if (sessionShape) {
+      callbacks.postToPanel(panelId, {
+        type: 'openSessionPicker',
+        payload: {
+          commandId,
+          // Whatever followed the command is the brief; the composer has
+          // already been cleared by the time this arrives.
+          brief: trimmedArgs,
+          sessions: sessionMenuEntries(),
+        },
+      });
+      return;
+    }
 
     switch (commandId) {
       // ---- Context ----
@@ -199,14 +622,16 @@ export class SlashCommandManager {
         const selectedModel = await this._selectModel(panelId, callbacks);
         if (selectedModel) {
           await callbacks.updateSettings({ model: selectedModel }, panelId);
-          return `Model changed to: ${this._getModelDisplayName(selectedModel)}`;
+          const models = callbacks.getModelsForProvider(callbacks.getPanelProvider(panelId));
+          return `Model changed to: ${this._getModelDisplayName(selectedModel, models)}`;
         }
         return;
       }
 
       case 'provider:switch': {
         if (trimmedArgs) {
-          const agents = ['claude-code', 'openai-codex', 'google-gemini', 'github-copilot', 'cursor', 'cline', 'openclaw', 'opencode', 'ollama', 'localai', 'qwen-code'];
+          // C2: derive ids from the registry, never a hard-coded list
+          const agents: string[] = this._providerManager.getAllProviderIds();
           if (agents.includes(trimmedArgs)) {
             return this._applyProviderSwitch(trimmedArgs, panelId, callbacks);
           }
@@ -230,7 +655,15 @@ export class SlashCommandManager {
         return 'Conversation and session cleared';
 
       case 'cmd:help':
-        return this._getHelpText(panelId, callbacks);
+        // Plan 33: the webview renders a searchable help card.
+        callbacks.postToPanel(panelId, { type: 'showHelp' });
+        return;
+
+      case 'cmd:compact':
+        // C7: fire-and-forget — compaction progress/result is reported via
+        // 'compactionStatus' cards posted by the compaction pipeline itself.
+        void callbacks.executeManualCompaction(panelId);
+        return 'Compacting conversation...';
 
       case 'cmd:brainstorm': {
         const currentProvider = callbacks.getPanelProvider(panelId);
@@ -241,9 +674,9 @@ export class SlashCommandManager {
           callbacks.postToPanel(panelId, { type: 'agentChanged', payload: { agent: 'brainstorm' } });
           return 'Brainstorm mode enabled. Multiple agents will collaborate on your queries.';
         } else if (trimmedArgs === 'off' || trimmedArgs === 'disable') {
-          await callbacks.updateSettings({ provider: 'claude-code' }, panelId);
-          callbacks.postToPanel(panelId, { type: 'agentChanged', payload: { agent: 'claude-code' } });
-          return 'Brainstorm mode disabled. Using Claude Code.';
+          await callbacks.updateSettings({ provider: DEFAULT_PROVIDER }, panelId);
+          callbacks.postToPanel(panelId, { type: 'agentChanged', payload: { agent: DEFAULT_PROVIDER } });
+          return `Brainstorm mode disabled. Using ${this._getProviderDisplayName(DEFAULT_PROVIDER)}.`;
         } else if (trimmedArgs === 'status') {
           return isBrainstormActive
             ? 'Brainstorm mode is ON. Multiple agents will collaborate.'
@@ -251,12 +684,12 @@ export class SlashCommandManager {
         }
 
         // Toggle if no args
-        const newProvider = isBrainstormActive ? 'claude-code' : 'brainstorm';
+        const newProvider = isBrainstormActive ? DEFAULT_PROVIDER : 'brainstorm';
         await callbacks.updateSettings({ provider: newProvider }, panelId);
         callbacks.postToPanel(panelId, { type: 'agentChanged', payload: { agent: newProvider } });
         return newProvider === 'brainstorm'
           ? 'Brainstorm mode enabled. Multiple agents will collaborate on your queries.'
-          : 'Brainstorm mode disabled. Using Claude Code.';
+          : `Brainstorm mode disabled. Using ${this._getProviderDisplayName(DEFAULT_PROVIDER)}.`;
       }
 
       case 'cmd:exit-plan': {
@@ -274,6 +707,30 @@ export class SlashCommandManager {
           return `Exited ${currentMode}. Switched to: ask-before-edit\n(Ready for implementation with ${currentProv})`;
         }
         return 'Not currently in plan mode.';
+      }
+
+      case 'cmd:visual-test': {
+        // Open the visual test dashboard in a separate editor tab.
+        // NOTE: this posts INTO the webview, so it must be a type chat.js
+        // actually handles. It used to post 'openVisualTestDashboard' — the
+        // extension-side type — which no webview case matched, so /visual-test
+        // silently did nothing. chat.js's 'openVisualTestDialog' handler is the
+        // one that bounces the request back to the extension.
+        callbacks.postToPanel(panelId, { type: 'openVisualTestDialog' });
+        return;
+      }
+
+      case 'cmd:canvas': {
+        // Open the canvas in a separate editor tab.
+        //
+        // This used to post `openCanvas` to the webview, which handles no such
+        // message — so the menu entry did nothing. `mysti.openCanvas` is a
+        // registered VS Code command that calls the same
+        // `chatViewProvider.openCanvas()`, so invoke it directly rather than
+        // round-tripping through a webview that has no part to play. Same
+        // pattern as the settings and issue-tracker entries below.
+        await vscode.commands.executeCommand('mysti.openCanvas');
+        return;
       }
 
       case 'cmd:export': {
@@ -306,26 +763,71 @@ export class SlashCommandManager {
         return;
       }
 
+      case 'cmd:update-clis': {
+        // Invoke the registered command directly rather than round-tripping
+        // through a webview that has no part to play — same pattern as
+        // cmd:canvas and the settings entry.
+        await vscode.commands.executeCommand('mysti.updateClis');
+        return;
+      }
+
       case 'cmd:rules': {
         // Open .mysti/rules/ directory
         callbacks.postToPanel(panelId, { type: 'triggerOpenRules' });
         return;
       }
 
+      // ---- Collaboration (Plan 14) ----
+      // These four posted `composeCollaboration` to open a collaborator picker
+      // in the webview. That picker was never built, and NOTHING handles the
+      // message — so all four menu entries did nothing, while advertising a
+      // description. The collaboration machinery itself works: ChatViewProvider
+      // parses `@agent:role` out of the message text and runs it.
+      //
+      // So the picker is a native QuickPick, and the composed mention goes into
+      // the input via `setInputValue` — leaving the user to read it, edit the
+      // brief and press Enter, rather than silently dispatching agents on their
+      // behalf. Nothing new is invented: this is the documented direct path,
+      // pre-composed.
+      case 'cmd:consult':
+        return this._composeCollaboration(callbacks, panelId, 'advisor', trimmedArgs);
+      case 'cmd:review':
+        return this._composeCollaboration(callbacks, panelId, 'reviewer', trimmedArgs);
+      case 'cmd:critique':
+        return this._composeCollaboration(callbacks, panelId, 'critic', trimmedArgs);
+      case 'cmd:panel':
+        return this._composeCollaboration(callbacks, panelId, 'advisor', trimmedArgs, true);
+
       // ---- Settings ----
       case 'settings:mode': {
+        // Plan 33: every branch also tells the PANEL. The webview sends its
+        // own copy of mode/access with each turn, so a config-only write left
+        // the next turn running at the old authority under a reply saying
+        // otherwise.
         if (trimmedArgs) {
-          const modes = ['ask-before-edit', 'edit-automatically', 'quick-plan', 'detailed-plan'];
-          const targetMode = trimmedArgs === 'plan' ? 'quick-plan' : trimmedArgs;
-          if (modes.includes(targetMode)) {
-            await callbacks.updateSettings({ mode: targetMode });
-            return `Mode changed to: ${targetMode}`;
+          const stop = trimmedArgs.toLowerCase();
+          if (isTrustStop(stop)) {
+            // The same pair the mode pill writes: a mode-only write would leave
+            // access on whatever tier it was on before.
+            const current = vscode.workspace.getConfiguration('mysti').get<OperationMode>('defaultMode');
+            const authority = authorityForTrust(stop, current);
+            await callbacks.updateSettings({ ...authority });
+            callbacks.postToPanel(panelId, { type: 'modeChanged', payload: { ...authority } });
+            const copy = TRUST_COPY[stop];
+            return `Mode: ${copy.label}. ${copy.permits}`;
           }
-          return `Invalid mode. Available modes: ${modes.join(', ')} (or 'plan' for quick-plan)`;
+          const modes = ['ask-before-edit', 'edit-automatically', 'quick-plan', 'detailed-plan'];
+          if (modes.includes(trimmedArgs)) {
+            await callbacks.updateSettings({ mode: trimmedArgs });
+            callbacks.postToPanel(panelId, { type: 'modeChanged', payload: { mode: trimmedArgs } });
+            return `Mode changed to: ${trimmedArgs}`;
+          }
+          return `Invalid mode. Use plan, ask, auto or full (or a raw mode: ${modes.join(', ')}).`;
         }
         const selectedMode = await this._selectOperationMode();
         if (selectedMode) {
           await callbacks.updateSettings({ mode: selectedMode });
+          callbacks.postToPanel(panelId, { type: 'modeChanged', payload: { mode: selectedMode } });
           return `Mode changed to: ${selectedMode}`;
         }
         return;
@@ -353,6 +855,7 @@ export class SlashCommandManager {
           const levels = ['read-only', 'ask-permission', 'full-access'];
           if (levels.includes(trimmedArgs)) {
             await callbacks.updateSettings({ accessLevel: trimmedArgs });
+            callbacks.postToPanel(panelId, { type: 'modeChanged', payload: { accessLevel: trimmedArgs } });
             return `Access level changed to: ${trimmedArgs}`;
           }
           return `Invalid level. Available: ${levels.join(', ')}`;
@@ -360,6 +863,7 @@ export class SlashCommandManager {
         const selectedAccess = await this._selectAccessLevel();
         if (selectedAccess) {
           await callbacks.updateSettings({ accessLevel: selectedAccess });
+          callbacks.postToPanel(panelId, { type: 'modeChanged', payload: { accessLevel: selectedAccess } });
           return `Access level changed to: ${selectedAccess}`;
         }
         return;
@@ -385,13 +889,13 @@ export class SlashCommandManager {
       }
 
       // ---- Provider-specific: Claude ----
-      case 'claude:compact':
-        callbacks.postToPanel(panelId, {
-          type: 'sendCliPassthrough',
-          payload: { command: '/compact' }
-        });
-        return 'Compacting conversation...';
-
+      // `claude:compact` used to live here. It posted `sendCliPassthrough`,
+      // which NOTHING in chat.js has ever handled, so selecting it did nothing
+      // at all — the same class of dead entry Plan 27 Phase 4 cleaned out of
+      // the universal section, missed because that test only scans `cmd:` ids.
+      // Claude's real `/compact` is now a pass-through entry in the native
+      // section (it is one of the built-ins that survives headless mode), and
+      // provider-neutral compaction stays on `cmd:compact`.
       case 'claude:thinking': {
         if (trimmedArgs) {
           const levels = ['none', 'low', 'medium', 'high'];
@@ -525,6 +1029,23 @@ export class SlashCommandManager {
         keywords: ['provider', 'agent', 'switch', 'claude', 'codex', 'gemini', 'copilot'],
       },
 
+      // -- Sessions (Plan 29) --
+      // Derived from SESSION_SHAPES so the menu can never offer a shape the
+      // dispatcher does not know, or hide one it does.
+      ...SESSION_SHAPES.map(shape => ({
+        id: sessionCommandId(shape.id),
+        label: shape.command,
+        description: shape.description,
+        section: 'sessions' as SlashCommandSection,
+        icon: SESSION_ICONS[shape.id],
+        provider: 'all' as const,
+        // 'submenu': picking one opens the agent list rather than running
+        // anything. Who answers is the decision the command exists to make, so
+        // it is never assumed.
+        action: 'submenu' as const,
+        keywords: ['session', 'agents', 'multi', shape.id],
+      })),
+
       // -- Commands --
       {
         id: 'cmd:clear',
@@ -539,23 +1060,12 @@ export class SlashCommandManager {
       {
         id: 'cmd:help',
         label: '/help',
-        description: 'Show available commands',
+        description: 'Search Mysti help',
         section: 'commands',
         icon: 'question',
         provider: 'all',
         action: 'execute',
         keywords: ['help', 'commands', 'list'],
-      },
-      {
-        id: 'cmd:brainstorm',
-        label: '/brainstorm',
-        description: 'Toggle brainstorm mode',
-        section: 'commands',
-        icon: 'organization',
-        provider: 'all',
-        action: 'execute',
-        isToggle: true,
-        keywords: ['brainstorm', 'multi', 'agent', 'collaborate'],
       },
       {
         id: 'cmd:exit-plan',
@@ -566,6 +1076,26 @@ export class SlashCommandManager {
         provider: 'all',
         action: 'execute',
         keywords: ['exit', 'plan', 'mode'],
+      },
+      {
+        id: 'cmd:visual-test',
+        label: '/visual-test',
+        description: 'Run visual testing on your app (screenshot → analyze → fix → verify)',
+        section: 'commands',
+        icon: 'device-camera',
+        provider: 'all',
+        action: 'execute',
+        keywords: ['visual', 'test', 'screenshot', 'browser', 'playwright', 'ui'],
+      },
+      {
+        id: 'cmd:canvas',
+        label: '/canvas',
+        description: 'Open infinite canvas for drawing, annotating, and AI design',
+        section: 'commands',
+        icon: 'paintcan',
+        provider: 'all',
+        action: 'execute',
+        keywords: ['canvas', 'draw', 'design', 'annotate', 'mockup', 'reimagine', 'image'],
       },
       {
         id: 'cmd:export',
@@ -628,6 +1158,29 @@ export class SlashCommandManager {
         keywords: ['rules', 'constraints', 'always', 'never'],
       },
 
+      // -- Collaboration (Plan 14): call other agents in a named role --
+      //
+      // Plan 29 retired this family's Review, Critique and Panel entries from
+      // the MENU: each composed an `@agent:role` mention for the user to send,
+      // and each now has a session of the same name that dispatches directly,
+      // merges the answers and can be stopped a lane at a time. Two "Review"
+      // rows doing different things is the duplication sessions exist to end.
+      //
+      // Nothing is taken away — the `@agent:role` grammar they composed is
+      // unchanged and still works typed, and their handlers below still run for
+      // any caller that already holds the id. Consult stays: "ask the others
+      // about this thread" is advice, not a session shape.
+      {
+        id: 'cmd:consult',
+        label: 'Consult',
+        description: 'Ask other agents for advice on the current thread',
+        section: 'commands' as SlashCommandSection,
+        icon: 'comment-discussion',
+        provider: 'all',
+        action: 'execute' as const,
+        keywords: ['consult', 'advisor', 'advice', 'second-opinion', 'ask'],
+      },
+
       // -- Settings --
       {
         id: 'settings:mode',
@@ -658,6 +1211,16 @@ export class SlashCommandManager {
         provider: 'all',
         action: 'execute',
         keywords: ['access', 'permission', 'read', 'write'],
+      },
+      {
+        id: 'cmd:update-clis',
+        label: 'Update CLI backends',
+        description: 'Check for and install newer versions of the installed CLIs',
+        section: 'settings',
+        icon: 'cloud-download',
+        provider: 'all',
+        action: 'execute',
+        keywords: ['update', 'upgrade', 'cli', 'version', 'latest', 'npm'],
       },
       {
         id: 'settings:open',
@@ -721,7 +1284,10 @@ export class SlashCommandManager {
     for (const cmd of commands) {
       switch (cmd.id) {
         case 'model:switch':
-          cmd.currentValue = this._getModelDisplayName(callbacks.getPanelModel(panelId));
+          cmd.currentValue = this._getModelDisplayName(
+            callbacks.getPanelModel(panelId),
+            callbacks.getModelsForProvider(activeProvider)
+          );
           break;
         case 'provider:switch':
           cmd.currentValue = this._getProviderDisplayName(activeProvider);
@@ -755,19 +1321,14 @@ export class SlashCommandManager {
     }
   }
 
-  private _getModelDisplayName(modelId: string): string {
-    // Shorten common model IDs for display
-    const shortNames: Record<string, string> = {
-      'claude-opus-4-6': 'Opus 4.6',
-      'claude-sonnet-4-5-20250929': 'Sonnet 4.5',
-      'claude-opus-4-5-20250918': 'Opus 4.5',
-      'claude-haiku-4-5-20251001': 'Haiku 4.5',
-      'gpt-5.3-codex': 'GPT-5.3 Codex',
-      'gpt-5.2-codex': 'GPT-5.2 Codex',
-      'gemini-2.5-flash': 'Gemini 2.5 Flash',
-      'gemini-2.5-pro': 'Gemini 2.5 Pro',
-    };
-    return shortNames[modelId] || modelId;
+  /**
+   * Human-readable label for a model id. Plan 01 Phase 1: derive the display
+   * name from the registry-backed ModelInfo.name (the single source of truth)
+   * instead of a hand-maintained shortNames map that drifted from the curated
+   * lists. Falls back to the raw id for custom/unlisted models with no metadata.
+   */
+  private _getModelDisplayName(modelId: string, models: ModelInfo[]): string {
+    return models.find(m => m.id === modelId)?.name || modelId;
   }
 
   private _getProviderDisplayName(providerId: string): string {
@@ -783,6 +1344,10 @@ export class SlashCommandManager {
       'ollama': 'Ollama',
       'localai': 'LocalAI',
       'qwen-code': 'Qwen Code',
+      'hermes': 'Hermes',
+      'continue': 'Continue',
+      'openrouter': 'OpenRouter',
+      'kimi-code': 'Kimi Code',
       'brainstorm': 'Brainstorm',
     };
     return names[providerId] || providerId;
@@ -798,14 +1363,16 @@ export class SlashCommandManager {
   ): Promise<string | undefined> {
     const currentProvider = callbacks.getPanelProvider(panelId);
     const currentModel = callbacks.getPanelModel(panelId);
-    const providerConfig = this._providerManager.getProvider(currentProvider);
+    // Plan 01 Phase 1: pull the merged list (curated + discovered + custom)
+    // from the registry-backed callback so /model matches the dropdown.
+    const models = callbacks.getModelsForProvider(currentProvider);
 
-    if (!providerConfig || providerConfig.models.length === 0) {
+    if (models.length === 0) {
       vscode.window.showWarningMessage('No models available for the current provider');
       return undefined;
     }
 
-    const items = providerConfig.models.map(model => ({
+    const items = models.map(model => ({
       label: model.id === currentModel ? `$(check) ${model.name}` : model.name,
       description: model.id,
       detail: model.description,
@@ -939,21 +1506,56 @@ export class SlashCommandManager {
     return `Switched to ${agentName}`;
   }
 
-  private _getHelpText(panelId: string, callbacks: SlashCommandCallbacks): string {
-    const activeProvider = callbacks.getPanelProvider(panelId);
-    let text = 'Available commands:\n' +
-      '/clear - Clear conversation and session\n' +
-      '/help - Show this help message\n' +
-      '/context - Show current context items\n' +
-      '/mode [mode] - Show/change mode (ask-before-edit, edit-automatically, quick-plan, detailed-plan)\n' +
-      '/exit-plan-mode - Exit plan mode\n' +
-      '/model [model] - Show/change AI model\n' +
-      '/agent [agent] - Switch provider\n' +
-      '/brainstorm [on|off|status] - Toggle brainstorm mode';
+  /**
+   * Compose an `@agent:role` mention for the collaboration slash commands
+   * (Plan 27 Phase 4).
+   *
+   * The webview picker these commands were written against does not exist, so
+   * the agent choice is a native QuickPick over the REGISTERED providers —
+   * `getAllProviders()`, so a sixteenth backend appears here with no edit — and
+   * the result is written into the chat input rather than dispatched. The user
+   * sees exactly what will run and still has to press Enter: a slash command
+   * should not fan work out to several backends without a visible confirmation.
+   *
+   * Returns a status string on cancel/none-available so the caller surfaces a
+   * reason instead of the silence these commands used to produce.
+   */
+  private async _composeCollaboration(
+    callbacks: SlashCommandCallbacks,
+    panelId: string,
+    role: string,
+    brief: string,
+    panel = false,
+  ): Promise<string | undefined> {
+    const active = callbacks.getPanelProvider(panelId);
+    const candidates = this._providerManager
+      .getAllProviders()
+      .filter(p => p.id !== active);
 
-    if (activeProvider === 'claude-code') {
-      text += '\n/compact - Compact conversation context';
+    if (candidates.length === 0) {
+      return 'No other agent is available to collaborate with. Add a second backend first.';
     }
-    return text;
+
+    const picked = await vscode.window.showQuickPick(
+      candidates.map(p => ({ label: p.displayName, id: p.id })),
+      {
+        title: panel ? `Convene a panel (${role})` : `Ask another agent as ${role}`,
+        placeHolder: panel ? 'Pick the agents for the panel' : `Pick the agent to act as ${role}`,
+        canPickMany: true,
+        ignoreFocusOut: true,
+      },
+    );
+
+    if (!picked || picked.length === 0) {
+      return undefined; // cancelled — the QuickPick closing is its own feedback
+    }
+
+    const mentions = picked.map(p => `@${p.id}:${role}`).join(' ');
+    callbacks.postToPanel(panelId, {
+      type: 'setInputValue',
+      payload: { value: `${mentions} ${brief}`.trim() + (brief ? '' : ' ') },
+    });
+    return undefined;
   }
+
 }

@@ -1,22 +1,43 @@
 # AI Providers
 
-Mysti supports 12 AI providers. You only need one to get started — install any two to unlock Brainstorm Mode.
+Mysti offers its own coordinator plus 15 registered agent backends. You only need one to get started — install any two to unlock Brainstorm Mode.
 
 ## Provider Overview
 
-| Provider | Type | Models | Best For |
-|----------|------|--------|----------|
-| **Claude Code** | CLI | Claude Opus 4.6, Sonnet 4.5, Haiku 4.5 | Deep reasoning, complex refactoring, thorough analysis |
-| **OpenAI Codex** | CLI | GPT-5.2, GPT-5.2 Thinking, GPT-5 | Quick iterations, familiar OpenAI style |
-| **Google Gemini** | CLI | Gemini 3 Deep Think, Gemini 2.5 Pro | Fast responses, Google ecosystem integration |
-| **Cline** | CLI | Claude 3.5 Sonnet, GPT-4o, Gemini Pro | Plan/Act mode, multi-model flexibility |
-| **GitHub Copilot** | CLI | 14+ models (Claude, GPT, Gemini) | Multi-model access via GitHub subscription |
-| **Cursor** | CLI | Auto, Claude Sonnet 4, GPT-5, o3, Gemini 2.5 Pro | Multi-model with auto-selection |
-| **OpenClaw** | CLI + WebSocket | Claude Opus 4.6, Sonnet 4.5, GPT-5 | Real-time WebSocket streaming, thinking levels |
-| **OpenCode** | CLI | Configurable (Anthropic, OpenAI, Google, Groq) | Multi-backend agent, flexible model selection |
-| **Qwen Code** | CLI | Qwen3 Coder, Qwen3 Coder Plus | Alibaba's AI coding agent, deep reasoning |
-| **Ollama** | CLI | Local models (Llama, Mistral, CodeLlama, etc.) | Local inference, privacy-first, no subscription |
-| **LocalAI** | CLI | Self-hosted models | Full control, on-premise deployment |
+| Provider | Transport | Setup / prerequisites |
+| --- | --- | --- |
+| Mysti | DeepMyst gateway or direct OpenRouter | Sign in to DeepMyst, or configure your own OpenRouter key |
+| Claude Code | Persistent CLI with native approval protocol | `claude`, authenticated account |
+| OpenAI Codex | CLI app-server | `codex`, authenticated account |
+| Google Gemini | CLI | `gemini`, configured account |
+| Cline | CLI | `cline`, configured account/model |
+| GitHub Copilot | CLI | `copilot`, entitled GitHub account |
+| Cursor | CLI | `agent`, configured account |
+| OpenClaw | Gateway or local CLI | Running compatible gateway or `openclaw`, explicit full tool authority |
+| OpenCode | CLI | `opencode`, configured backend |
+| Qwen Code | CLI | `qwen`, configured account |
+| Hermes | ACP over CLI | `hermes`, configured model/backend |
+| Kimi Code | ACP over CLI | `kimi`, configured account |
+| Continue | CLI | `cn`, configured model/backend |
+| Ollama | Local server | Running Ollama and an installed model |
+| LocalAI | HTTP endpoint | Running LocalAI and an installed model |
+| OpenRouter | HTTP | Your OpenRouter key and an available model |
+
+Model lists and entitlements change. Use Mysti's model dropdown and Refresh Models for the current catalog. Custom entries are stored per provider in `mysti.customModels`; a provider-specific model override takes precedence. Manus source exists but is not registered or selectable in this release.
+
+## Mysti coordinator
+
+Select **Mysti**, then use **Mysti: Sign In to DeepMyst**. A direct key in `mysti.openrouter.apiKey` selects OpenRouter instead. The coordinator's model is controlled by `mysti.mysti.coordinatorModel` on the gateway route and `mysti.openrouter.coordinatorModel` on the direct route. Free-model availability and account credits are checked at runtime; local CLI subscriptions do not authenticate the coordinator. Paid fallback remains subject to the spend guard.
+
+## Permissions and compatibility
+
+Claude Code and Codex use native request/response approvals. A failed native transport reports an error instead of falling back to an unrestricted process. Verified with Claude Code 2.1.278 and Codex 0.153.4; older CLIs must support the same protocol. Update the CLI when initialization fails.
+
+Codex uses native thread resume and sends the selected model explicitly. In restricted modes it starts with a read-only sandbox and obtains approval for mutations. External MCP servers and app tools are disabled in those modes because this adapter cannot enforce their remote side effects per call. They remain available with explicit unrestricted authority. Claude questions and plan choices use Mysti's existing follow-up conversation flow.
+
+OpenClaw accepts gateway protocols 3–4 and signs gateway challenges with a Mysti-owned device key stored in VS Code SecretStorage. A remote gateway may require pairing approval; Mysti does not bypass it. Its gateway/local CLI cannot enforce Mysti's Ask or Read Only policy, so Mysti rejects these combinations before sending a prompt. Use a provider with native approvals, or deliberately select Full Access with a mode that permits unrestricted tools. OpenClaw then uses its own configured policy. The fallback does not pass nonexistent `--sandbox` or `--yolo` options.
+
+Other providers have differing permission guarantees. A visible tool card alone does not prove pre-execution consent. See [native approval contracts](NATIVE_APPROVAL.md) for the transport-specific limits.
 
 ## Claude Code
 
@@ -38,9 +59,7 @@ Opens a browser window to authenticate with your Anthropic account.
 
 ### Supported Models
 
-- Claude Opus 4.6
-- Claude Sonnet 4.5
-- Claude Haiku 4.5
+Use the model dropdown for the current bundled/discovered catalog and any provider-scoped custom IDs. Availability depends on the configured account or endpoint.
 
 ### Unique Features
 
@@ -53,7 +72,7 @@ Opens a browser window to authenticate with your Anthropic account.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `mysti.claudePath` | `claude` | Path to Claude CLI executable |
+| `mysti.claudeCodePath` | `claude` | Path to Claude CLI executable |
 | `mysti.claudeModel` | `sonnet` | Default model |
 | `mysti.thinkingLevel` | `none` | Thinking level (none, low, medium, high) |
 
@@ -70,16 +89,14 @@ Follow [OpenAI's Codex CLI installation guide](https://github.com/openai/codex).
 ### Authentication
 
 ```bash
-codex auth login
+codex login
 ```
 
 Or set `OPENAI_API_KEY` environment variable.
 
 ### Supported Models
 
-- GPT-5.2
-- GPT-5.2 Thinking
-- GPT-5
+Use the model dropdown for the current bundled/discovered catalog and any provider-scoped custom IDs. Availability depends on the configured account or endpoint.
 
 ### Unique Features
 
@@ -91,7 +108,8 @@ Or set `OPENAI_API_KEY` environment variable.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `mysti.codexPath` | `codex` | Path to Codex CLI executable |
-| `mysti.codexModel` | `gpt-5.2` | Default model |
+| `mysti.codexModel` | empty | Optional model override; otherwise use the selected model |
+| `mysti.codexProfile` | empty | Named local Codex profile |
 
 ---
 
@@ -108,13 +126,12 @@ npm install -g @google/gemini-cli
 ### Authentication
 
 ```bash
-gemini auth login
+gemini
 ```
 
 ### Supported Models
 
-- Gemini 3 Deep Think
-- Gemini 2.5 Pro
+Use the model dropdown for the current bundled/discovered catalog and any provider-scoped custom IDs. Availability depends on the configured account or endpoint.
 
 ### Unique Features
 
@@ -147,9 +164,7 @@ Depends on the underlying model provider selected within Cline.
 
 ### Supported Models
 
-- Claude 3.5 Sonnet
-- GPT-4o
-- Gemini Pro
+Use the model dropdown for the current bundled/discovered catalog and any provider-scoped custom IDs. Availability depends on the configured account or endpoint.
 
 ### Unique Features
 
@@ -173,7 +188,7 @@ Access 14+ models from Anthropic, OpenAI, and Google through your GitHub subscri
 ### Installation
 
 ```bash
-npm install -g @github/copilot-cli
+npm install -g @github/copilot
 ```
 
 ### Authentication
@@ -185,21 +200,7 @@ copilot
 
 ### Supported Models
 
-**Anthropic:**
-- Claude Sonnet 4.5
-- Claude Opus 4.5
-- Claude Haiku 4.5
-
-**OpenAI:**
-- GPT-5.2
-- GPT-5.1 Codex Max
-- GPT-5.1 Codex
-- GPT-5
-
-**Google:**
-- Gemini 3 Pro
-- Gemini 3 Flash
-- Gemini 2.5 Pro
+Use the model dropdown for the current bundled/discovered catalog and any provider-scoped custom IDs. Availability depends on the configured account or endpoint.
 
 ### Unique Features
 
@@ -236,12 +237,7 @@ Or set `CURSOR_API_KEY` environment variable.
 
 ### Supported Models
 
-- Auto (recommended — intelligently selects the best model)
-- Claude Sonnet 4
-- Claude Sonnet 4 Thinking
-- GPT-5
-- OpenAI o3
-- Gemini 2.5 Pro
+Use the model dropdown for the current bundled/discovered catalog and any provider-scoped custom IDs. Availability depends on the configured account or endpoint.
 
 ### Unique Features
 
@@ -271,16 +267,14 @@ npm install -g openclaw@latest && openclaw onboard --install-daemon
 ### Authentication
 
 ```bash
-openclaw login
+openclaw onboard
 ```
 
 Configuration stored in `~/.openclaw/openclaw.json`.
 
 ### Supported Models
 
-- Claude Opus 4.6
-- Claude Sonnet 4.5
-- GPT-5
+Use the model dropdown for the current bundled/discovered catalog and any provider-scoped custom IDs. Availability depends on the configured account or endpoint.
 
 ### Unique Features
 
@@ -320,7 +314,7 @@ Or set provider API keys: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY
 
 ### Supported Models
 
-OpenCode uses your configured default model. Models depend on your provider setup — run `opencode models` to see available models.
+Use the model dropdown for the current bundled/discovered catalog and any provider-scoped custom IDs. Availability depends on the configured account or endpoint.
 
 ### Unique Features
 
@@ -359,8 +353,7 @@ Or set API keys: `QWEN_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`.
 
 ### Supported Models
 
-- Qwen3 Coder
-- Qwen3 Coder Plus
+Use the model dropdown for the current bundled/discovered catalog and any provider-scoped custom IDs. Availability depends on the configured account or endpoint.
 
 ### Unique Features
 
@@ -396,7 +389,7 @@ No authentication needed — runs entirely locally.
 
 ### Supported Models
 
-Any model available in the Ollama library: Llama 3, Mistral, CodeLlama, Phi, Gemma, and more.
+Use the model dropdown for the current bundled/discovered catalog and any provider-scoped custom IDs. Availability depends on the configured account or endpoint.
 
 ### Unique Features
 
@@ -428,7 +421,7 @@ No authentication needed — runs entirely locally.
 
 ### Supported Models
 
-Supports a wide range of self-hosted models. See LocalAI documentation for compatible models.
+Use the model dropdown for the current bundled/discovered catalog and any provider-scoped custom IDs. Availability depends on the configured account or endpoint.
 
 ### Unique Features
 
@@ -446,30 +439,11 @@ Supports a wide range of self-hosted models. See LocalAI documentation for compa
 
 ---
 
-## Manus (Experimental)
+## Hermes, Kimi Code, Continue and OpenRouter
 
-HTTP API-based provider for Manus AI. Currently under development.
+Install/configure the relevant CLI through Mysti's provider setup flow, then refresh detection. Configure a nonstandard executable with `mysti.hermesPath`, `mysti.kimiCodePath`, or `mysti.continuePath`. Each provider has a matching model override: `mysti.hermesModel`, `mysti.kimiCodeModel`, or `mysti.continueModel`.
 
-> **Note:** Manus is experimental and may not be fully functional. It uses HTTP polling rather than CLI streaming.
-
-### Authentication
-
-Set your API key via settings (`mysti.manusApiKey`) or `MANUS_API_KEY` environment variable.
-
-### Supported Models
-
-- Manus 1.6 Max
-- Manus 1.6
-- Manus 1.6 Lite
-
-### How It Differs
-
-Unlike other providers that use CLI tools, Manus communicates via HTTP API with an async polling workflow:
-1. POST to create a task
-2. GET to poll for completion
-3. Results returned when task finishes
-
----
+Hermes and Kimi use ACP permission requests scoped to the current process and turn. Continue uses restrictive native flags where an interactive host approval is unavailable. OpenRouter requires no CLI: configure `mysti.openrouter.apiKey`, select an available model, and optionally set `mysti.openrouterModel`.
 
 ## Switching Providers
 
@@ -491,14 +465,8 @@ Click the settings gear icon in the Mysti sidebar to access the full settings pa
 
 ---
 
-## Provider Feature Matrix
+## Provider capabilities
 
-| Feature | Claude | Codex | Gemini | Cline | Copilot | Cursor | OpenClaw | OpenCode | Qwen | Ollama | LocalAI |
-|---------|--------|-------|--------|-------|---------|--------|----------|----------|------|--------|---------|
-| Streaming | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Thinking Mode | Yes | Yes | Yes | No | No | Yes | Yes | Yes | Yes | No | No |
-| Native Compaction | Yes | No | No | No | No | No | No | No | No | No | No |
-| Session Resume | Yes | Yes | Yes | No | No | Yes | Yes | Yes | Yes | No | No |
-| Tool Use Display | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Brainstorm Support | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Autonomous Mode | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+The settings and slash menus use the registered capability manifest. Claude and Codex stream text, reasoning, tool activity and usage; both support native session continuity. Claude additionally supports native compaction. Hermes and Kimi use ACP sessions and approvals. Ollama and LocalAI display tool-call proposals without executing them; OpenRouter is chat-only. The Mysti coordinator has its own tools, collaboration, memory and spend controls.
+
+For the complete feature inventory and measured validation status, see the [feature review](../plans/34-feature-review.md). Automated parser coverage is distinct from account-backed validation.

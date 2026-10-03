@@ -1,0 +1,49 @@
+name: integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  vscode:
+    name: VS Code host (${{ matrix.os }}, ${{ matrix.version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        version: [stable]
+        include:
+          # Exercise the oldest host allowed by engines.vscode as well as stable.
+          - os: ubuntu-latest
+            version: '1.86.0'
+    env:
+      MYSTI_TEST_VSCODE_VERSION: ${{ matrix.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Test (Linux — needs a display server)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:vscode
+
+      - name: Test (macOS / Windows)
+        if: runner.os != 'Linux'
+        run: npm run test:vscode

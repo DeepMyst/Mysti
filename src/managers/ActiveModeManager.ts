@@ -11,6 +11,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { gatewayDeviceSigner } from '../providers/openclaw/OpenClawDeviceIdentity';
 import * as vscode from 'vscode';
 import {
   OpenClawGateway,
@@ -62,7 +63,7 @@ export class ActiveModeManager {
       'openclawGatewayUrl', 'ws://127.0.0.1:18789'
     );
     const token = readOpenClawToken();
-    this._gateway = new OpenClawGateway(gatewayUrl, token);
+    this._gateway = new OpenClawGateway(gatewayUrl, token, gatewayDeviceSigner(_context.secrets));
   }
 
   // --- Lifecycle ---
@@ -93,6 +94,22 @@ export class ActiveModeManager {
     );
     console.log('[Mysti] ActiveMode: OpenClaw CLI detected, connecting to daemon at', gatewayUrl);
     await this._connectAndStartPolling();
+
+    // Plan 27 §21.6c #10: `mysti.activeMode.autoStartDaemon` (machine-scoped,
+    // default false). Only when the first connect failed — a running gateway is
+    // never re-spawned — and only in a TRUSTED workspace: the setting turns
+    // "open this folder" into a spawned process, so an untrusted folder gets
+    // the same behaviour as before this was wired (nothing).
+    if (!this._gateway.isConnected() && this._shouldAutoStartDaemon()) {
+      console.log('[Mysti] ActiveMode: Daemon not reachable and autoStartDaemon is on — starting it');
+      void this.startDaemon();
+    }
+  }
+
+  /** `mysti.activeMode.autoStartDaemon` is strictly `true` AND the workspace is trusted. */
+  private _shouldAutoStartDaemon(): boolean {
+    const autoStart = vscode.workspace.getConfiguration('mysti').get<boolean>('activeMode.autoStartDaemon', false);
+    return autoStart === true && vscode.workspace.isTrusted === true;
   }
 
   dispose(): void {

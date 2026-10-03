@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 300" role="img" aria-label="The menu on your message offers Rewind code to here"><style>text{font-family:var(--vscode-font-family);font-size:14px}.fg{fill:var(--vscode-foreground)}.dim{fill:var(--vscode-descriptionForeground)}.accent{fill:var(--vscode-textLink-foreground)}.card{fill:var(--vscode-editor-background);stroke:var(--vscode-widget-border,var(--vscode-editorWidget-border))}.chip{fill:var(--vscode-editorWidget-background,var(--vscode-editor-background));stroke:var(--vscode-widget-border,var(--vscode-editorWidget-border))}.sel{fill:var(--vscode-button-background)}.selfg{fill:var(--vscode-button-foreground)}.hl{fill:var(--vscode-list-activeSelectionBackground)}.hlfg{fill:var(--vscode-list-activeSelectionForeground,var(--vscode-foreground))}.ok{fill:var(--vscode-charts-green)}.line{stroke:var(--vscode-descriptionForeground);fill:none;stroke-width:1.5}</style>
+<rect class="chip" x="200" y="40" width="240" height="44" rx="8"/><text class="fg" x="216" y="67">Rename the config loader</text>
+<circle class="chip" cx="178" cy="62" r="14"/><path class="line" d="M171 58 h6 v-6 M171.6 64 a7 7 0 1 0 1.8 -6"/>
+<rect class="card" x="160" y="100" width="280" height="132" rx="8"/>
+<text class="fg" x="176" y="134">Fork conversation from here</text>
+<rect class="hl" x="168" y="146" width="264" height="36" rx="5"/><text class="hlfg" x="176" y="170" style="font-weight:600">Rewind code to here</text>
+<text class="fg" x="176" y="212">Fork conversation and rewind code</text>
+<text class="dim" x="240" y="268" text-anchor="middle">Mysti keeps its own snapshots — your git history is untouched</text>
+</svg>

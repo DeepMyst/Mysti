@@ -223,6 +223,33 @@ export class TelemetryManager {
   }
 
   /**
+   * Track an aggregate performance snapshot.
+   *
+   * Sends ONLY coarse, anonymous duration numbers (no names, paths, or
+   * content) and respects the same opt-in gate as every other event
+   * (vscode.env.isTelemetryEnabled via sendEvent's enabled check).
+   */
+  trackPerf(aggregate: { activationMs?: number; ttftMs?: number; chunkP95?: number; panelUsableMs?: number }): void {
+    const measurements: Record<string, number> = {};
+    if (typeof aggregate.activationMs === 'number' && isFinite(aggregate.activationMs)) {
+      measurements.activationMs = Math.round(aggregate.activationMs);
+    }
+    if (typeof aggregate.ttftMs === 'number' && isFinite(aggregate.ttftMs)) {
+      measurements.ttftMs = Math.round(aggregate.ttftMs);
+    }
+    if (typeof aggregate.chunkP95 === 'number' && isFinite(aggregate.chunkP95)) {
+      measurements.chunkP95 = Math.round(aggregate.chunkP95);
+    }
+    if (typeof aggregate.panelUsableMs === 'number' && isFinite(aggregate.panelUsableMs)) {
+      measurements.panelUsableMs = Math.round(aggregate.panelUsableMs);
+    }
+    if (Object.keys(measurements).length === 0) {
+      return;
+    }
+    this.sendEvent('perf.aggregate', undefined, measurements);
+  }
+
+  /**
    * Check if telemetry is enabled
    */
   isEnabled(): boolean {

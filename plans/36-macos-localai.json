@@ -1,0 +1,12 @@
+{
+  "provider": "localai",
+  "platform": "darwin",
+  "arch": "arm64",
+  "release": "v4.10.0",
+  "asset": "local-ai-v4.10.0-darwin-arm64",
+  "downloaded": true,
+  "launched": true,
+  "versionOutput": "v4.10.0",
+  "stderr": "",
+  "environmentNote": "The host has DEBUG=release, which LocalAI rejects as a boolean. Version check repeated with child-process DEBUG=false."
+}

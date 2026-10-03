@@ -8,9 +8,11 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import type { GatewayDeviceSigner } from './OpenClawDeviceIdentity';
 import WebSocket from 'ws';
 import type { StreamChunk } from '../../types';
 import { OPENCLAW_GATEWAY_TIMEOUT_MS } from '../../constants';
+import { toolKind } from '../../utils/toolNames';
 
 /**
  * Options for sending an agent message via the Gateway
@@ -125,6 +127,9 @@ export class OpenClawGateway {
   private _url: string;
   private _requestId: number = 0;
   private _connected: boolean = false;
+  private _permanentFailure = false;
+  private _connecting?: Promise<boolean>;
+  private _agentRuns = new Map<string, { sessionKey: string; runId?: string; cancel(): void }>();
   private _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private _reconnectAttempts: number = 0;
   private _maxReconnectAttempts: number = 5;
@@ -136,7 +141,7 @@ export class OpenClawGateway {
   private _disposed: boolean = false;
   private _token: string | undefined;
 
-  constructor(url: string = 'ws://127.0.0.1:18789', token?: string) {
+  constructor(url: string = 'ws://127.0.0.1:18789', token?: string, private readonly _signDevice?: GatewayDeviceSigner) {
     this._url = url;
     this._token = token;
   }
@@ -146,13 +151,23 @@ export class OpenClawGateway {
    * Returns true if connection succeeds, false otherwise
    */
   async connect(): Promise<boolean> {
+    if (this._connecting) { return this._connecting; }
+    this._disposed = false;
+    this._permanentFailure = false;
+    if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
+    this._connecting = this._connect();
+    try { return await this._connecting; } finally { this._connecting = undefined; }
+  }
+
+  private async _connect(): Promise<boolean> {
     if (this._connected && this._ws?.readyState === WebSocket.OPEN) {
       return true;
     }
 
     return new Promise<boolean>((resolve) => {
       try {
-        this._ws = new WebSocket(this._url);
+        const socket = new WebSocket(this._url);
+        this._ws = socket;
         let resolved = false;
 
         const cleanup = () => {
@@ -166,7 +181,8 @@ export class OpenClawGateway {
             resolved = true;
             cleanup();
             console.log('[Mysti] OpenClaw Gateway:', reason);
-            this._ws?.close();
+            clearTimeout(timeout);
+            socket.close();
             resolve(false);
           }
         };
@@ -174,7 +190,7 @@ export class OpenClawGateway {
         // Overall timeout for the entire connect flow (WebSocket open + challenge + handshake)
         const timeout = setTimeout(() => {
           fail('Connection timeout');
-          this._ws?.terminate();
+          socket.terminate();
         }, 10000);
 
         // One-shot handler for the connect.challenge event from the gateway
@@ -183,9 +199,14 @@ export class OpenClawGateway {
           console.log('[Mysti] OpenClaw Gateway: Challenge received, sending connect...');
 
           try {
+            const scopes = ['operator.admin', 'operator.read', 'operator.write'];
+            const nonce = typeof _payload.nonce === 'string' ? _payload.nonce : '';
+            if (this._signDevice && !nonce) { throw new Error('Gateway did not provide a device challenge'); }
+            const device = this._signDevice ? await this._signDevice({ nonce, token: this._token, scopes }) : undefined;
+            if (resolved || this._disposed || this._ws !== socket) { return; }
             const params: Record<string, unknown> = {
               minProtocol: 3,
-              maxProtocol: 3,
+              maxProtocol: 4,
               client: {
                 id: 'cli',
                 version: '1.0.0',
@@ -193,7 +214,8 @@ export class OpenClawGateway {
                 mode: 'cli',
               },
               role: 'operator',
-              scopes: ['operator.admin', 'operator.read', 'operator.write'],
+              scopes,
+              ...(device ? { device } : {}),
               caps: [],
               auth: this._token ? { token: this._token } : {},
               locale: 'en-US',
@@ -201,6 +223,7 @@ export class OpenClawGateway {
 
             const response = await this._sendRequest('connect', params);
 
+            if (resolved || this._disposed || this._ws !== socket) { return; }
             clearTimeout(timeout);
             if (response.ok) {
               this._connected = true;
@@ -209,6 +232,7 @@ export class OpenClawGateway {
               console.log('[Mysti] OpenClaw Gateway: Handshake complete');
               resolve(true);
             } else {
+              this._permanentFailure = response.error?.code !== 'UNAVAILABLE';
               fail('Handshake rejected: ' + (response.error ? JSON.stringify(response.error) : 'unknown'));
             }
           } catch (err) {
@@ -220,16 +244,18 @@ export class OpenClawGateway {
         // when the first message arrives
         this._addEventListener('connect.challenge', challengeHandler);
 
-        this._ws.on('open', () => {
+        socket.on('open', () => {
           console.log('[Mysti] OpenClaw Gateway: WebSocket connected, waiting for challenge...');
           // Don't send anything yet — wait for connect.challenge event
         });
 
-        this._ws.on('message', (data: WebSocket.Data) => {
+        socket.on('message', (data: WebSocket.Data) => {
+          if (this._ws !== socket) { return; }
           this._handleMessage(data);
         });
 
-        this._ws.on('close', () => {
+        socket.on('close', () => {
+          if (this._ws !== socket) { return; }
           this._connected = false;
           console.log('[Mysti] OpenClaw Gateway: Disconnected');
           if (!resolved) {
@@ -238,12 +264,15 @@ export class OpenClawGateway {
             cleanup();
             resolve(false);
           }
-          if (!this._disposed) {
+          for (const pending of this._pendingRequests.values()) { pending.reject(new Error('OpenClaw Gateway disconnected')); }
+          this._pendingRequests.clear();
+          if (!this._disposed && !this._permanentFailure) {
             this._scheduleReconnect();
           }
         });
 
-        this._ws.on('error', (err) => {
+        socket.on('error', (err) => {
+          if (this._ws !== socket) { return; }
           console.log('[Mysti] OpenClaw Gateway: Connection error:', err.message);
           this._connected = false;
           if (!resolved) {
@@ -285,13 +314,17 @@ export class OpenClawGateway {
     }
 
     const requestId = this._nextId();
+    const sessionKey = options.sessionKey || 'main';
+    let streamedText = false;
     // Create a message queue for this request
     const chunks: StreamChunk[] = [];
     let done = false;
     let error: Error | null = null;
     let resolveWait: (() => void) | null = null;
+    let waitTimer: ReturnType<typeof setTimeout> | undefined;
 
     const notify = () => {
+      if (waitTimer) { clearTimeout(waitTimer); waitTimer = undefined; }
       if (resolveWait) {
         const fn = resolveWait;
         resolveWait = null;
@@ -299,11 +332,16 @@ export class OpenClawGateway {
       }
     };
 
-    // Listen for agent events on multiple possible event names
+    const run = { sessionKey, runId: undefined as string | undefined, cancel: () => { done = true; notify(); } };
+    this._agentRuns.set(requestId, run);
+
+    // Listen for events belonging to this run only.
     const eventHandler = (payload: Record<string, unknown>, _seq?: number) => {
-      console.log('[Mysti] OpenClaw Gateway: Agent event payload:', JSON.stringify(payload).substring(0, 500));
+      if (done) { return; }
+      if (run.runId ? payload.runId !== run.runId : payload.sessionKey !== sessionKey) { return; }
       const chunk = this._mapEventToChunk(payload);
       if (chunk) {
+        if (chunk.type === 'text') { streamedText = true; }
         chunks.push(chunk);
         notify();
       }
@@ -324,7 +362,6 @@ export class OpenClawGateway {
 
     // Send the agent request
     const idempotencyKey = `mysti-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const sessionKey = options.sessionKey || 'main';
     const params: Record<string, unknown> = { message, idempotencyKey, sessionKey };
     if (options.thinking) { params.thinking = options.thinking; }
 
@@ -337,11 +374,11 @@ export class OpenClawGateway {
 
     // Handle the response asynchronously
     responsePromise.then((response) => {
-      console.log('[Mysti] OpenClaw Gateway: Final response:', JSON.stringify(response).substring(0, 1000));
+      if (done) { return; }
       if (!response.ok) {
         const errMsg = response.error?.message || 'Agent request failed';
         chunks.push({ type: 'error', content: errMsg });
-      } else if (response.payload) {
+      } else if (response.payload && !streamedText) {
         // Extract content from the final response payload if no streaming events provided it
         const p = response.payload;
         const text = (p.text || p.content || p.message || p.response || p.output || p.result) as string | undefined;
@@ -384,7 +421,7 @@ export class OpenClawGateway {
           await new Promise<void>((resolve) => {
             resolveWait = resolve;
             // Safety timeout to prevent infinite wait
-            setTimeout(() => {
+            waitTimer = setTimeout(() => {
               if (resolveWait === resolve) {
                 resolveWait = null;
                 resolve();
@@ -400,9 +437,12 @@ export class OpenClawGateway {
         yield { type: 'error', content: finalError.message };
       }
     } finally {
+      if (waitTimer) { clearTimeout(waitTimer); }
       for (const name of eventNames) {
         this._removeEventListener(name, eventHandler);
       }
+      if (!done) { void this.cancelAgent(sessionKey); }
+      this._agentRuns.delete(requestId);
       this._pendingRequests.delete(requestId);
     }
   }
@@ -410,14 +450,15 @@ export class OpenClawGateway {
   /**
    * Cancel a running agent request
    */
-  async cancelAgent(): Promise<void> {
-    if (!this.isConnected()) { return; }
-
-    try {
-      await this._sendRequest('agent.stop', {});
-    } catch {
-      // Best effort cancel
-    }
+  async cancelAgent(sessionKey?: string): Promise<void> {
+    const runs = [...this._agentRuns.values()].filter(run => !sessionKey || run.sessionKey === sessionKey);
+    await Promise.all(runs.map(async run => {
+      run.cancel();
+      if (!this.isConnected()) { return; }
+      try {
+        await this._sendRequest('chat.abort', { sessionKey: run.sessionKey, ...(run.runId ? { runId: run.runId } : {}) });
+      } catch { /* connection loss already settles the local stream */ }
+    }));
   }
 
   /**
@@ -437,7 +478,9 @@ export class OpenClawGateway {
       this._ws = null;
     }
     this._connected = false;
+    for (const pending of this._pendingRequests.values()) { pending.reject(new Error('OpenClaw Gateway disconnected')); }
     this._pendingRequests.clear();
+    this._agentRuns.clear();
     this._eventListeners.clear();
   }
 
@@ -770,6 +813,8 @@ export class OpenClawGateway {
           // The final response has status "ok", "error", or no status field.
           const status = (frame.payload as Record<string, unknown>)?.status as string | undefined;
           if (status === 'accepted' || status === 'pending' || status === 'running') {
+            const run = this._agentRuns.get(frame.id);
+            if (run && typeof frame.payload?.runId === 'string') { run.runId = frame.payload.runId; }
             // Ack — don't resolve yet, wait for the final response
             console.log('[Mysti] OpenClaw Gateway: Agent run ack, status:', status,
               'runId:', (frame.payload as Record<string, unknown>)?.runId);
@@ -779,10 +824,7 @@ export class OpenClawGateway {
           pending.resolve(frame as GatewayResponse);
         }
       } else if (frame.type === 'event') {
-        // Debug log all non-tick events to help diagnose inbound message routing
-        if (frame.event !== 'tick') {
-          console.log(`[Mysti] OpenClaw Gateway: Event received: ${frame.event}`, JSON.stringify(frame.payload).substring(0, 200));
-        }
+        // Event bodies can contain private messages; do not dump them to logs.
 
         const listeners = this._eventListeners.get(frame.event);
         if (listeners) {
@@ -831,11 +873,12 @@ export class OpenClawGateway {
     }
 
     if (stream === 'lifecycle' && data) {
-      const phase = data.phase as string | undefined;
-      if (phase === 'end' || phase === 'complete') {
-        return { type: 'done' };
-      }
-      return null; // Ignore start/other lifecycle phases
+      // Lifecycle end is NOT surfaced as a done chunk: the provider's
+      // _sendViaGateway yields the single authoritative done after the
+      // generator finishes (Plan 02 Phase 3: exactly one done per response).
+      // Loop termination in sendAgentMessage is driven by the final Gateway
+      // response, not by this chunk.
+      return null;
     }
 
     // Chat delta events — skip to avoid duplicate text (agent events already provide deltas)
@@ -886,6 +929,7 @@ export class OpenClawGateway {
           name: (payload.name || payload.tool || 'unknown') as string,
           input: (payload.input || payload.arguments || {}) as Record<string, unknown>,
           status: 'running',
+          kind: toolKind((payload.name || payload.tool || '') as string),
         }
       };
     }
@@ -935,9 +979,10 @@ export class OpenClawGateway {
       };
     }
 
-    // Done/complete
+    // Done/complete — swallowed; see the lifecycle handler above
+    // (exactly one done per response, emitted by _sendViaGateway).
     if (eventType === 'done' || eventType === 'complete' || eventType === 'end') {
-      return { type: 'done' };
+      return null;
     }
 
     // Step completion — extract tool/text content instead of dropping

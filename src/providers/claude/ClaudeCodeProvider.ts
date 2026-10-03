@@ -15,6 +15,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { meetsCliVersion } from '../../services/CliModelUpgrade';
 import { BaseCliProvider, PanelSessionState } from '../base/BaseCliProvider';
 import type {
   CliDiscoveryResult,
@@ -31,20 +32,91 @@ import type {
   ProviderConfig,
   AgentConfiguration,
   AuthStatus,
-  SlashCommandDefinition
+  SlashCommandDefinition,
+  ModelInfo
 } from '../../types';
+import {
+  parseClaudeInitCommands,
+  type NativeCommandSpec,
+  type ReportedNativeCommands,
+} from '../base/NativeCommands';
 import { validateModelName } from '../../utils/validation';
 import { getEnrichedEnv } from '../../utils/platform';
+import { toolKind } from '../../utils/toolNames';
+import { clampEffort } from '../../utils/effort';
+import { killProcessTree, isProcessLive } from '../../utils/processKill';
+import { PROCESS_KILL_GRACE_PERIOD_MS } from '../../constants';
+import { handleClaudeControl, initializeClaudeControl, isClaudeControlFailure, type ClaudeControlState } from './ClaudeControlProtocol';
 
 /**
  * Extended per-panel session state for Claude Code provider.
  * Adds tool call accumulation and usage stats tracking per panel.
  */
+/**
+ * The CLI's post-compaction continuation message, trimmed to what a PERSON
+ * should read: the summary alone — no "This session is being continued…"
+ * preamble, no Analysis scratchpad, and none of the tail addressed to the
+ * model ("read the full transcript at…", "Continue … do not acknowledge the
+ * summary"). Unknown wording is left in rather than guessed at.
+ */
+export function userFacingCompactSummary(content: string): string {
+  const start = content.indexOf('Summary:');
+  let text = start >= 0
+    ? content.slice(start + 'Summary:'.length)
+    : content.replace(/^This session is being continued[^\n]*\n+/, '');
+  const tail = text.search(/\n\s*(?:If you need specific details from before compaction|Continue the conversation from where it left off)/);
+  if (tail >= 0) { text = text.slice(0, tail); }
+  return text.trim();
+}
+
+/**
+ * The window the CLI resolved for the model that ran the turn, from the
+ * `result` event's `modelUsage`. That map also lists helper models (a Haiku
+ * title or summary call), so take the entry `system/init` named, else the one
+ * that read the most prompt.
+ */
+export function reportedContextWindow(modelUsage: unknown, model?: string): number | undefined {
+  if (!modelUsage || typeof modelUsage !== 'object') { return undefined; }
+  type Usage = { contextWindow?: unknown; inputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number };
+  const entries = Object.entries(modelUsage as Record<string, Usage>);
+  const prompt = (u: Usage): number => (u?.inputTokens || 0) + (u?.cacheReadInputTokens || 0) + (u?.cacheCreationInputTokens || 0);
+  const main = (model ? entries.find(([id]) => id === model) : undefined)
+    ?? [...entries].sort((a, b) => prompt(b[1]) - prompt(a[1]))[0];
+  const window = main?.[1]?.contextWindow;
+  return typeof window === 'number' && window > 0 ? window : undefined;
+}
+
 export interface ClaudeSessionState extends PanelSessionState {
+  control?: ClaudeControlState;
   activeToolCalls: Map<number, { id: string; name: string; inputJson: string }>;
   lastUsageStats: { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } | null;
   hasStreamedText: boolean;
   awaitingCompactSummary: boolean;
+  /** `pre_tokens` from the last compact_boundary, reported with its summary. */
+  compactPreTokens?: number;
+  /** The model `system/init` says this process runs (aliases resolved by the CLI). */
+  reportedModel?: string;
+  /** `result.modelUsage[model].contextWindow` for the last turn, until taken. */
+  reportedContextWindow?: number;
+  /**
+   * Overflow queue for lines that decode to MORE than one chunk (e.g. a `user`
+   * message carrying multiple parallel tool_result blocks). parseStreamLine
+   * returns the first chunk and queues the rest here; the processStream /
+   * _sendViaPersistentProcess overrides drain the queue immediately after each
+   * yielded chunk (and once more at end-of-stream) so nothing is dropped.
+   * Optional so pre-existing session fixtures stay type-valid.
+   */
+  pendingChunks?: StreamChunk[];
+  /**
+   * The command list the CLI reported for THIS session in its `system`/`init`
+   * event. `null` until that event arrives — an empty array would mean "this
+   * session genuinely has no commands", which is a different claim.
+   *
+   * This is the only accurate source for Claude Code: the set depends on the
+   * installed version, the enabled plugins, the bundled skills (which are
+   * compiled into the binary and cannot be found on disk) and MCP prompts.
+   */
+  reportedCommands?: ReportedNativeCommands;
 }
 
 /**
@@ -57,45 +129,154 @@ export class ClaudeCodeProvider extends BaseCliProvider {
   readonly config: ProviderConfig = {
     name: 'claude-code',
     displayName: 'Claude Code',
+    // Curated fallback list (bundled). Live discovery (discoverModels) refreshes
+    // this from the Anthropic Models API when an ANTHROPIC_API_KEY is present;
+    // otherwise the evergreen aliases (opus/sonnet/haiku) keep the UX current
+    // across model releases without an extension update. Windows verified
+    // 2026-09-25 against Claude Code 2.1.282's own catalog (runtime
+    // max_input_tokens); the CLI may still cap an account at 200k, which the
+    // per-turn `modelUsage.contextWindow` report corrects.
     models: [
+      {
+        id: 'claude-fable-5-1',
+        name: 'Claude Fable 5.1',
+        description: "Anthropic's most capable model — demanding reasoning, long-horizon agents, coding",
+        contextWindow: 1000000,
+        releasedAt: '2026-09-01'
+      },
+      {
+        id: 'claude-opus-5-5',
+        name: 'Claude Opus 5.5',
+        description: 'Most capable Opus for ambitious work (Claude Code ≥ 2.1.280)',
+        contextWindow: 1000000
+      },
+      {
+        id: 'claude-fable-5',
+        name: 'Claude Fable 5',
+        description: 'Previous Fable flagship for the most demanding reasoning and agentic work',
+        contextWindow: 1000000
+      },
+      {
+        id: 'claude-opus-5',
+        name: 'Claude Opus 5',
+        description: 'Flagship Opus — adaptive thinking on by default, best for complex coding',
+        contextWindow: 1000000
+      },
+      {
+        id: 'claude-sonnet-5',
+        name: 'Claude Sonnet 5',
+        description: 'Best balance of speed, intelligence and cost — the default',
+        contextWindow: 1000000
+      },
+      {
+        id: 'claude-opus-4-8',
+        name: 'Claude Opus 4.8',
+        description: 'Previous flagship Opus for complex agentic and coding tasks',
+        contextWindow: 1000000
+      },
+      {
+        // Claude Code CLI's bracket-suffix notation for the 1M-context variant (issue #32).
+        // Reaches the CLI argv intact on every spawn path (the shell:true gate permits
+        // brackets — they are glob chars, not injection vectors).
+        id: 'claude-opus-4-8[1m]',
+        name: 'Claude Opus 4.8 (1M)',
+        description: 'Opus 4.8 with a 1-million-token context window',
+        contextWindow: 1000000
+      },
+      {
+        id: 'claude-opus-4-7',
+        name: 'Claude Opus 4.7',
+        description: 'Previous-generation Opus, highly autonomous for long-horizon work',
+        contextWindow: 1000000
+      },
+      {
+        id: 'claude-sonnet-4-6',
+        name: 'Claude Sonnet 4.6',
+        description: 'Previous-generation Sonnet',
+        contextWindow: 1000000
+      },
       {
         id: 'claude-opus-4-6',
         name: 'Claude Opus 4.6',
-        description: 'Latest flagship model, most capable for complex tasks',
+        description: 'Older Opus flagship, advanced reasoning and analysis',
+        contextWindow: 1000000
+      },
+      {
+        id: 'claude-opus-4-6[1m]',
+        name: 'Claude Opus 4.6 (1M)',
+        description: 'Opus 4.6 with a 1-million-token context window',
+        contextWindow: 1000000
+      },
+      {
+        id: 'claude-opus-4-5-20251101',
+        name: 'Claude Opus 4.5',
+        description: 'Legacy Opus model',
         contextWindow: 200000
       },
       {
         id: 'claude-sonnet-4-5-20250929',
         name: 'Claude Sonnet 4.5',
-        description: 'Best balance of speed and intelligence',
+        description: 'Legacy Sonnet model',
         contextWindow: 200000
       },
       {
-        id: 'claude-opus-4-5-20251101',
-        name: 'Claude Opus 4.5',
-        description: 'Previous flagship, advanced reasoning and analysis',
-        contextWindow: 200000
-      },
-      {
-        id: 'claude-haiku-4-5-20251001',
+        id: 'claude-haiku-4-5',
         name: 'Claude Haiku 4.5',
         description: 'Fast and efficient for simpler tasks',
         contextWindow: 200000
+      },
+      // Evergreen aliases: the Claude Code CLI resolves these to the current
+      // latest model of each tier, so they keep working across model releases
+      // without an extension update.
+      {
+        id: 'opus',
+        name: 'Opus (latest)',
+        description: 'Always the latest Opus model the CLI supports',
+        // Claude Code 2.1.282 resolves this to claude-opus-5-5 (1M).
+        contextWindow: 1000000
+      },
+      {
+        id: 'sonnet',
+        name: 'Sonnet (latest)',
+        description: 'Always the latest Sonnet model the CLI supports',
+        // Claude Code 2.1.282 resolves this to claude-sonnet-5 (1M).
+        contextWindow: 1000000
+      },
+      {
+        id: 'haiku',
+        name: 'Haiku (latest)',
+        description: 'Always the latest Haiku model the CLI supports',
+        contextWindow: 200000
       }
     ],
-    defaultModel: 'claude-sonnet-4-5-20250929'
+    defaultModel: 'claude-sonnet-5'
   };
 
   readonly capabilities: ProviderCapabilities = {
     supportsStreaming: true,
     supportsThinking: true,
     supportsToolUse: true,
+    supportsNativeApproval: true,
     supportsSessions: true,
     supportsNativeCompact: true,
     supportsPersistentProcess: true,
     supportsImages: true,
     supportsFileAttachments: true,
-    supportsAutoInstall: true
+    supportsAutoInstall: true,
+    supportsPromptEnhancement: true,
+    // Plan 02 Phase 1 capability matrix
+    thinkingStyle: 'streamed',     // incremental thinking deltas
+    thinkingLevelEffective: true,  // levels map to real token budgets (getThinkingTokens)
+    effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],  // native --effort; CLI clamps per model
+    effortDefault: 'high',
+    supportsUltracode: true,
+    planMode: 'native',            // sole emitter of exit_plan_mode
+    sessionKind: 'cli-resume',     // --resume with CLI-issued session IDs
+    nativeInstructionFile: 'CLAUDE.md',  // loaded by the CLI itself; Mysti does not resend it
+    emitsToolResults: true,
+    emitsUsage: true,
+    usageConvention: 'anthropic',   // Claude Code emits Anthropic message_delta usage: the three buckets are disjoint.
+    modelSelection: 'full'
   };
 
   async discoverCli(): Promise<CliDiscoveryResult> {
@@ -115,7 +296,11 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     return config.get<string>('claudeCodePath', 'claude');
   }
 
-  protected _getAdditionalSearchPaths(): string[] {
+  // The Claude Code VS Code extension's bundled binary is that extension's
+  // private copy: it auto-updates on its own schedule (2.1.283 crashed in Bun
+  // while the user's own 2.1.278 was on PATH), so it is only a fallback for a
+  // machine with no `claude` on PATH.
+  protected _getFallbackSearchPaths(): string[] {
     const paths: string[] = [];
     const extensionCli = this._findVSCodeExtensionCli();
     if (extensionCli) {
@@ -125,12 +310,37 @@ export class ClaudeCodeProvider extends BaseCliProvider {
   }
 
   async getAuthConfig(): Promise<AuthConfig> {
-    const configPath = path.join(os.homedir(), '.claude', 'config.json');
-    return {
-      type: 'cli-login',
-      isAuthenticated: fs.existsSync(configPath),
-      configPath
-    };
+    // Claude Code v2.x stores the signed-in account in ~/.claude.json (the
+    // `oauthAccount` object) plus the OS keychain; the file itself exists even
+    // before login (numStartups etc.), so EXISTENCE is not enough — we look for
+    // the account marker. Older installs used ~/.claude/config.json. API-key
+    // users authenticate via env vars. Accept any of these.
+    const homeConfig = path.join(os.homedir(), '.claude.json');            // v2.x
+    const legacyConfig = path.join(os.homedir(), '.claude', 'config.json'); // legacy
+
+    if (this._hasClaudeAccount(homeConfig)) {
+      return { type: 'cli-login', isAuthenticated: true, configPath: homeConfig };
+    }
+    if (fs.existsSync(legacyConfig)) {
+      return { type: 'cli-login', isAuthenticated: true, configPath: legacyConfig };
+    }
+    if (process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_CODE_OAUTH_TOKEN) {
+      return { type: 'cli-login', isAuthenticated: true, configPath: homeConfig };
+    }
+    return { type: 'cli-login', isAuthenticated: false, configPath: homeConfig };
+  }
+
+  /** True when ~/.claude.json carries a signed-in account marker (v2.x). */
+  private _hasClaudeAccount(homeConfig: string): boolean {
+    try {
+      if (!fs.existsSync(homeConfig)) { return false; }
+      const j = JSON.parse(fs.readFileSync(homeConfig, 'utf-8')) as {
+        oauthAccount?: { emailAddress?: string; accountUuid?: string };
+      };
+      return !!(j.oauthAccount && (j.oauthAccount.emailAddress || j.oauthAccount.accountUuid));
+    } catch {
+      return false;
+    }
   }
 
   async checkAuthentication(): Promise<AuthStatus> {
@@ -138,19 +348,20 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     if (!auth.isAuthenticated) {
       return {
         authenticated: false,
-        error: 'Not authenticated. Please run "claude auth login" to sign in.'
+        error: 'Not authenticated. Please run "claude" and sign in (or "claude /login").'
       };
     }
 
-    // Try to get user info from config
+    // Try to surface the signed-in email/user for display.
     try {
       if (auth.configPath && fs.existsSync(auth.configPath)) {
-        const configContent = fs.readFileSync(auth.configPath, 'utf-8');
-        const config = JSON.parse(configContent);
-        return {
-          authenticated: true,
-          user: config.email || config.user || 'Authenticated'
+        const config = JSON.parse(fs.readFileSync(auth.configPath, 'utf-8')) as {
+          oauthAccount?: { emailAddress?: string; displayName?: string };
+          email?: string; user?: string;
         };
+        const user = config.oauthAccount?.emailAddress || config.oauthAccount?.displayName
+          || config.email || config.user || 'Authenticated';
+        return { authenticated: true, user };
       }
     } catch {
       // Config exists but couldn't parse - still authenticated
@@ -167,6 +378,28 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     return 'npm install -g @anthropic-ai/claude-code';
   }
 
+  private _ultracodeSettingsDir?: string;
+
+  override dispose(): void {
+    super.dispose();
+    if (this._ultracodeSettingsDir) {
+      fs.rmSync(this._ultracodeSettingsDir, { recursive: true, force: true });
+      this._ultracodeSettingsDir = undefined;
+    }
+  }
+
+  private _ultracodeSettings(settings: Settings): string {
+    const version = this.getCachedCliVersion();
+    if (settings.ultracode && version && !meetsCliVersion(version, '2.1.284')) {
+      throw new Error('Ultracode for this model requires Claude Code version >= 2.1.284. Upgrade Claude Code to keep Ultracode and effort independent.');
+    }
+    // A file avoids passing JSON quotes through cmd.exe or a configured shell.
+    this._ultracodeSettingsDir ??= fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-claude-settings-'));
+    const file = path.join(this._ultracodeSettingsDir, settings.ultracode ? 'ultracode-on.json' : 'ultracode-off.json');
+    fs.writeFileSync(file, JSON.stringify({ ultracode: !!settings.ultracode }), { mode: 0o600 });
+    return file;
+  }
+
   // ============================================================================
   // Slash command menu: Claude-specific commands
   // ============================================================================
@@ -175,17 +408,10 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     const base = super.getSlashCommands(_panelId);
     return [
       ...base,
-      {
-        id: 'claude:compact',
-        label: '/compact',
-        description: 'Compact conversation context',
-        section: 'commands',
-        icon: 'fold',
-        provider: 'claude-code',
-        action: 'execute',
-        isCliPassthrough: true,
-        keywords: ['compact', 'compress', 'context', 'tokens'],
-      },
+      // `/compact` used to be declared here and was DEAD: it posted
+      // `sendCliPassthrough`, a message no webview handler receives. Claude's
+      // real `/compact` now lives in the provider-native section
+      // (NATIVE_COMMANDS['claude-code']) as a verified pass-through.
       {
         id: 'claude:thinking',
         label: 'Thinking level',
@@ -197,6 +423,25 @@ export class ClaudeCodeProvider extends BaseCliProvider {
         keywords: ['thinking', 'reasoning', 'depth'],
       },
     ];
+  }
+
+  /**
+   * What the CLI said it has, for this panel.
+   *
+   * `null` before the panel's first turn, so the menu falls back to the curated
+   * catalog rather than showing nothing.
+   */
+  public override getDynamicNativeCommands(panelId?: string): NativeCommandSpec[] {
+    if (!panelId) { return []; }
+    const session = this._panelSessions.get(panelId) as ClaudeSessionState | undefined;
+    return session?.reportedCommands ?? [];
+  }
+
+  /** True once the CLI has reported — the caller then trusts it over the catalog. */
+  public override hasReportedNativeCommands(panelId?: string): boolean {
+    if (!panelId) { return false; }
+    const session = this._panelSessions.get(panelId) as ClaudeSessionState | undefined;
+    return Array.isArray(session?.reportedCommands);
   }
 
   // ============================================================================
@@ -217,6 +462,8 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       lastUsageStats: null,
       hasStreamedText: false,
       awaitingCompactSummary: false,
+      pendingChunks: [],
+      reportedCommands: null,
     };
   }
 
@@ -251,10 +498,27 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       args.push('--model', effectiveModel);
     }
 
+    // Reasoning effort (Claude Code parity). Clamp to the declared tiers so a
+    // hand-edited/invalid defaultEffortLevel in settings.json degrades to a
+    // supported tier instead of hard-failing the CLI spawn (Plan 18 4.4 —
+    // Codex already clamps). Valid tiers pass through unchanged; the CLI still
+    // clamps per-model on its side.
+    // Explicit false prevents a saved CLI default overriding Mysti's toggle.
+    args.push('--settings', this._ultracodeSettings(settings));
+    const effort = clampEffort(settings.effortLevel, this.capabilities.effortLevels);
+    if (effort) {
+      args.push('--effort', effort);
+    }
+
     // Inject channel system context as real system instructions (not user message)
     if (session.channelSystemContext) {
       args.push('--append-system-prompt', session.channelSystemContext);
       console.log('[Mysti] Claude: Appending channel context to system prompt');
+    }
+
+    // Plan 05 — register the in-extension mysti-canvas MCP server (canvas-linked sessions).
+    if (session.canvasMcpConfigPath) {
+      args.push('--mcp-config', session.canvasMcpConfigPath);
     }
 
     return args;
@@ -271,7 +535,11 @@ export class ClaudeCodeProvider extends BaseCliProvider {
    * The process stays alive and accepts new messages as JSON lines on stdin.
    */
   protected buildPersistentCliArgs(settings: Settings, session: PanelSessionState): string[] | null {
+    (session as ClaudeSessionState).control = {
+      settings: { mode: settings.mode, accessLevel: settings.accessLevel }, initialized: false,
+    };
     const args: string[] = [
+      '--print', '--permission-prompt-tool', 'stdio',
       '--output-format', 'stream-json',
       '--input-format', 'stream-json',
       '--include-partial-messages',
@@ -290,9 +558,23 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       args.push('--model', effectiveModel);
     }
 
+    // Reasoning effort (Claude Code parity). Clamped like the single-shot path
+    // so an invalid settings.json value degrades instead of erroring (Plan 18 4.4).
+    // Explicit false prevents a saved CLI default overriding Mysti's toggle.
+    args.push('--settings', this._ultracodeSettings(settings));
+    const effort = clampEffort(settings.effortLevel, this.capabilities.effortLevels);
+    if (effort) {
+      args.push('--effort', effort);
+    }
+
     // Inject system context at spawn time (only way to set system prompt for persistent process)
     if (session.channelSystemContext) {
       args.push('--append-system-prompt', session.channelSystemContext);
+    }
+
+    // Plan 05 — register the in-extension mysti-canvas MCP server (canvas-linked sessions).
+    if (session.canvasMcpConfigPath) {
+      args.push('--mcp-config', session.canvasMcpConfigPath);
     }
 
     return args;
@@ -303,7 +585,17 @@ export class ClaudeCodeProvider extends BaseCliProvider {
    * Claude CLI expects JSON messages on stdin:
    * {"type":"user","message":{"role":"user","content":[{"type":"text","text":"..."}]}}
    */
-  protected _formatPersistentInput(prompt: string, _session: PanelSessionState): string {
+  protected requiresPersistentTransport(): boolean { return true; }
+
+  protected _persistentSettingsMatch(session: PanelSessionState, settings: Settings): boolean {
+    const control = (session as ClaudeSessionState).control;
+    return super._persistentSettingsMatch(session, settings)
+      && control?.settings.mode === settings.mode && control?.settings.accessLevel === settings.accessLevel;
+  }
+
+  protected _formatPersistentInput(prompt: string, session: PanelSessionState): string {
+    const state = (session as ClaudeSessionState).control;
+    if (state) { return initializeClaudeControl(state, prompt); }
     const message = {
       type: 'user',
       message: {
@@ -315,13 +607,50 @@ export class ClaudeCodeProvider extends BaseCliProvider {
   }
 
   /**
+   * Cancel the in-flight turn on the persistent `--input-format stream-json`
+   * process.
+   *
+   * The base class used to write a raw ETX byte (`\x03`) into stdin. For this
+   * provider stdin is an NDJSON pipe, not a terminal: the byte is not an
+   * interrupt, it lands inside the current JSON line and the NEXT
+   * `{"type":"user",...}` message Mysti writes is unparseable — so Stop
+   * silently bricked the session instead of cancelling the turn.
+   *
+   * Claude Code does expose a stdin control protocol with an interrupt request,
+   * but its wire shape is not part of the published CLI documentation, and a
+   * guessed frame on this pipe would reintroduce exactly the corruption being
+   * fixed. What IS documented is the signal contract: "To end the turn instead,
+   * send SIGINT, or call the Agent SDK's interrupt(), before you stop the
+   * process."
+   * (https://code.claude.com/docs/en/headless — "Stop a run with SIGTERM")
+   *
+   * So: SIGINT first (the documented end-the-turn signal, which lets the CLI
+   * flush its session file), with killProcessTree's SIGKILL escalation as the
+   * backstop, then evict the process. The next turn respawns and re-attaches
+   * via `--resume <sessionId>` in buildPersistentCliArgs, so the conversation
+   * survives — same trade Hermes and Kimi already make, for the same reason.
+   */
+  protected _interruptPersistentProcess(session: PanelSessionState): void {
+    const proc = session.persistentProcess;
+    if (isProcessLive(proc)) {
+      console.log(`[Mysti] Claude: SIGINT to end the turn on the persistent process for panel: ${session.panelId}`);
+      void killProcessTree(proc, PROCESS_KILL_GRACE_PERIOD_MS, {
+        label: this.displayName,
+        initialSignal: 'SIGINT',
+      });
+    }
+    session.persistentProcess = null;
+    session.persistentReady = false;
+  }
+
+  /**
    * Detect response boundary in Claude CLI stream-json output.
    * The `result` event marks the end of a response in interactive mode.
    */
   protected _isResponseBoundary(line: string): boolean {
     try {
       const data = JSON.parse(line.trim());
-      return data.type === 'result';
+      return data.type === 'result' || isClaudeControlFailure(data);
     } catch {
       return false;
     }
@@ -338,6 +667,20 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       'high': 16000
     };
     return tokenMap[thinkingLevel];
+  }
+
+  /**
+   * Keep the headless `claude -p` process waiting for BACKGROUND subagents and
+   * workflows to finish before it exits. Without this, when the model launches a
+   * background workflow (e.g. the Workflow tool) the turn ends and the detached
+   * task's completion is never reported. `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`
+   * (claude ≥ v2.1.182) caps that wait; 0 = wait indefinitely. Configurable via
+   * `mysti.claude.backgroundWaitCeilingMs`.
+   */
+  protected override getExtraSpawnEnv(_settings: Settings): Record<string, string> {
+    const ceiling = vscode.workspace.getConfiguration('mysti').get<number>('claude.backgroundWaitCeilingMs', 600000);
+    const safe = Number.isFinite(ceiling) && ceiling >= 0 ? Math.floor(ceiling) : 600000;
+    return { CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: String(safe) };
   }
 
   /**
@@ -361,21 +704,17 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       return;
     }
 
-    // All non-plan/non-read-only modes: bypass CLI-level permissions with --dangerously-skip-permissions.
-    // Claude CLI's interactive permission prompt tries to read from stdin, which is already closed
-    // (we pipe the prompt and call stdin.end()). This causes the process to hang or crash.
-    // The stream-level tool-use gate in ChatViewProvider intercepts tool_use events and shows
-    // permission cards in the webview UI for user approval when settings require it.
-    // IMPORTANT: Use ONLY --dangerously-skip-permissions. Do NOT combine with --permission-mode
-    // bypassPermissions — the two flags conflict and can cause exit code null.
-    args.push('--dangerously-skip-permissions');
-    console.log(`[Mysti] Claude: Bypassing CLI permissions (stream gate handles UI prompts) [mode=${mode}, access=${accessLevel}]`);
+    // The PreToolUse hook forces native host review even when local allow
+    // rules would otherwise skip can_use_tool. Never bypass that protocol.
+    args.push('--permission-mode', 'default');
   }
 
   /**
    * Get the effective model, preferring provider-specific custom model over dropdown selection
    */
-  private _getEffectiveModel(settings: Settings): string | undefined {
+  protected _getEffectiveModel(settings: Settings): string | undefined {
+    // P2.3/P0.2b: an explicitly routed model wins over the per-provider custom-model config.
+    if (settings.routedModel) { return settings.routedModel; }
     const config = vscode.workspace.getConfiguration('mysti');
     const customModel = config.get<string>('claudeCodeModel', '');
     if (customModel) {
@@ -386,7 +725,53 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       }
       console.warn(`[Mysti] Claude: Invalid custom model "${customModel}": ${validation.error}`);
     }
-    return settings.model || undefined;
+    if (settings.model) {
+      // Bracketed 1M-context ids (e.g. claude-opus-4-6[1m]) reach the CLI argv
+      // intact on every spawn path: the default (array-args) spawn applies no
+      // shell interpretation, and the shell:true gate now permits brackets
+      // (they are glob chars, not injection vectors). No sanitization needed.
+      return settings.model;
+    }
+    return undefined;
+  }
+
+  /**
+   * Live model discovery (Plan 01 Phase 3) via the official Anthropic Models API.
+   *
+   * The Claude Code CLI has no `list models` subcommand and normally authenticates
+   * with a Claude.ai subscription (no API key), so this only fires when an
+   * ANTHROPIC_API_KEY is present in the environment — otherwise it returns null
+   * and the curated list + evergreen aliases (opus/sonnet/haiku) carry the UX.
+   * Returns null on any failure so the registry keeps its curated/cached list.
+   * Never throws.
+   */
+  async discoverModels(timeoutMs: number): Promise<ModelInfo[] | null> {
+    const env = getEnrichedEnv();
+    const apiKey = env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) { return null; }
+    try {
+      const response = await fetch('https://api.anthropic.com/v1/models?limit=100', {
+        signal: AbortSignal.timeout(timeoutMs),
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+      });
+      if (!response.ok) { return null; }
+      const data = await response.json() as {
+        data?: Array<{ id?: string; display_name?: string; max_input_tokens?: number }>;
+      };
+      const models = (data.data || [])
+        .map<ModelInfo>(m => ({
+          id: (m.id || '').trim(),
+          name: m.display_name || m.id || '',
+          contextWindow: typeof m.max_input_tokens === 'number' ? m.max_input_tokens : undefined,
+        }))
+        .filter(m => m.id.length > 0);
+      return models.length > 0 ? models : null;
+    } catch {
+      return null;
+    }
   }
 
   protected parseStreamLine(line: string, session: PanelSessionState): StreamChunk | null {
@@ -394,6 +779,12 @@ export class ClaudeCodeProvider extends BaseCliProvider {
 
     try {
       const data = JSON.parse(line);
+
+      if (data.type === 'control_request' || data.type === 'control_response') {
+        const chunk = handleClaudeControl(data, claudeSession.control, session.persistentProcess, this._nativeApprovalRequests(session));
+        if (isClaudeControlFailure(data)) { this.disposePersistentProcess(session.panelId); }
+        return chunk;
+      }
 
       // Handle stream_event wrapper
       if (data.type === 'stream_event') {
@@ -443,7 +834,8 @@ export class ClaudeCodeProvider extends BaseCliProvider {
                 id: contentBlock.id || '',
                 name: contentBlock.name || '',
                 input: {},
-                status: 'running'
+                status: 'running',
+                kind: toolKind(contentBlock.name || '')
               }
             };
           }
@@ -497,7 +889,8 @@ export class ClaudeCodeProvider extends BaseCliProvider {
                 id: completedTool.id,
                 name: completedTool.name,
                 input: parsedInput,
-                status: 'running'
+                status: 'running',
+                kind: toolKind(completedTool.name)
               }
             };
           }
@@ -538,6 +931,8 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       // For normal messages, text was already streamed via text_delta chunks — skip to avoid duplication.
       // For CLI internal commands like /compact, no text_delta events are emitted, so emit the result text.
       if (data.type === 'result') {
+        const window = reportedContextWindow(data.modelUsage, claudeSession.reportedModel);
+        if (window) { claudeSession.reportedContextWindow = window; }
         if (!claudeSession.hasStreamedText && data.result && typeof data.result === 'string') {
           return { type: 'text', content: data.result };
         }
@@ -547,6 +942,18 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       // Handle system events (session init, etc.)
       if (data.type === 'system') {
         if (data.subtype === 'init') {
+          // The CLI tells us exactly which `/commands` this session has —
+          // built-ins, bundled skills (`/design` and friends, which live inside
+          // the binary and appear in NO directory), plugin commands and MCP
+          // prompts. Mysti used to read `session_id` off this event and drop
+          // the rest, which is why the slash menu could only ever show a
+          // hard-coded guess that went stale with every CLI release.
+          const reported = parseClaudeInitCommands(data.slash_commands, data.skills);
+          if (reported) {
+            claudeSession.reportedCommands = reported;
+            console.log(`[Mysti] Claude: ${reported.length} native command(s) reported by the CLI`);
+          }
+          if (typeof data.model === 'string' && data.model) { claudeSession.reportedModel = data.model; }
           const sessionId = data.session_id || data.sessionId;
           if (sessionId && !session.sessionId) {
             session.sessionId = sessionId;
@@ -555,11 +962,13 @@ export class ClaudeCodeProvider extends BaseCliProvider {
           }
         }
         // Handle compact_boundary — emitted by CLI when /compact completes
+        // Nothing is emitted yet: the summary follows as a `user` event, and the
+        // two go out together as ONE `compaction` chunk.
         if (data.subtype === 'compact_boundary' && data.compact_metadata) {
           claudeSession.awaitingCompactSummary = true;
-          const preTokens = data.compact_metadata.pre_tokens || 0;
-          console.log(`[Mysti] Claude: Compact boundary - pre_tokens: ${preTokens}`);
-          return { type: 'text', content: `Conversation compacted (was ~${Math.round(preTokens / 1000)}k tokens)` };
+          claudeSession.compactPreTokens = data.compact_metadata.pre_tokens || 0;
+          console.log(`[Mysti] Claude: Compact boundary - pre_tokens: ${claudeSession.compactPreTokens}`);
+          return null;
         }
         return null;
       }
@@ -590,26 +999,47 @@ export class ClaudeCodeProvider extends BaseCliProvider {
           const content = data.message.content;
           if (content.includes('session is being continued')) {
             claudeSession.awaitingCompactSummary = false;
-            // Extract just the Summary section (skip the verbose Analysis section)
-            const summaryIdx = content.indexOf('Summary:');
-            const summaryText = summaryIdx >= 0 ? content.substring(summaryIdx) : content;
-            return { type: 'text', content: summaryText };
+            // A `compaction` chunk, not `text`: as text it streamed into the
+            // answer (or the /compact notice) verbatim, instructions to the
+            // model included.
+            return {
+              type: 'compaction',
+              compactionEvent: {
+                beforeTokens: claudeSession.compactPreTokens || 0,
+                summary: userFacingCompactSummary(content),
+              },
+            };
           }
           return null; // skip "Compacted" echo and other noise
         }
-        // Handle tool_result blocks (array content)
-        for (const block of data.message.content) {
-          if (block.type === 'tool_result') {
-            return {
-              type: 'tool_result',
-              toolCall: {
-                id: block.tool_use_id || '',
-                name: '',
-                input: {},
-                output: typeof block.content === 'string' ? block.content : JSON.stringify(block.content),
-                status: block.is_error ? 'failed' : 'completed'
-              }
-            };
+        // Handle tool_result blocks (array content). A single `user` message can
+        // carry MULTIPLE tool_result blocks (parallel tool calls) — returning
+        // only the first silently dropped the siblings (Plan 18 4.5). Since
+        // parseStreamLine returns exactly one chunk per call, the first result
+        // is returned and the rest are queued on the session; the
+        // processStream/_sendViaPersistentProcess wrappers drain the queue
+        // right after each yielded chunk and again at end-of-stream.
+        if (Array.isArray(data.message.content)) {
+          const results: StreamChunk[] = [];
+          for (const block of data.message.content) {
+            if (block.type === 'tool_result') {
+              results.push({
+                type: 'tool_result',
+                toolCall: {
+                  id: block.tool_use_id || '',
+                  name: '',
+                  input: {},
+                  output: typeof block.content === 'string' ? block.content : JSON.stringify(block.content),
+                  status: block.is_error ? 'failed' : 'completed'
+                }
+              });
+            }
+          }
+          if (results.length > 0) {
+            if (results.length > 1) {
+              (claudeSession.pendingChunks ??= []).push(...results.slice(1));
+            }
+            return results[0];
           }
         }
       }
@@ -639,9 +1069,68 @@ export class ClaudeCodeProvider extends BaseCliProvider {
   }
 
   /**
+   * Drain chunks queued by parseStreamLine for lines that decoded to more than
+   * one chunk (parallel tool_results — Plan 18 4.5).
+   */
+  private *_drainPendingChunks(session: ClaudeSessionState): Generator<StreamChunk> {
+    const pending = session.pendingChunks;
+    if (!pending) { return; }
+    while (pending.length > 0) {
+      yield pending.shift()!;
+    }
+  }
+
+  /**
+   * Single-shot stream wrapper: emit queued sibling chunks immediately after
+   * each base-yielded chunk, and flush once more after the stream ends so
+   * queued chunks are emitted even when no further lines arrive (Plan 18 4.5).
+   */
+  protected async *processStream(stderrRef: { output: string }, session: PanelSessionState): AsyncGenerator<StreamChunk> {
+    const claudeSession = session as ClaudeSessionState;
+    claudeSession.pendingChunks = []; // drop any stale leftovers from a cancelled run
+    for await (const chunk of super.processStream(stderrRef, session)) {
+      yield chunk;
+      yield* this._drainPendingChunks(claudeSession);
+    }
+    yield* this._drainPendingChunks(claudeSession);
+  }
+
+  /**
+   * Persistent-process stream wrapper — same pending-chunk drain contract as
+   * the single-shot processStream override above (Plan 18 4.5).
+   */
+  protected async *_sendViaPersistentProcess(
+    content: string,
+    context: ContextItem[],
+    settings: Settings,
+    conversation: Conversation | null,
+    session: PanelSessionState,
+    persona?: PersonaConfig,
+    agentConfig?: AgentConfiguration,
+    attachments?: Attachment[],
+  ): AsyncGenerator<StreamChunk> {
+    const claudeSession = session as ClaudeSessionState;
+    claudeSession.pendingChunks = []; // drop any stale leftovers from a cancelled run
+    for await (const chunk of super._sendViaPersistentProcess(
+      content, context, settings, conversation, session, persona, agentConfig, attachments,
+    )) {
+      yield chunk;
+      yield* this._drainPendingChunks(claudeSession);
+    }
+    yield* this._drainPendingChunks(claudeSession);
+  }
+
+  /**
    * Get stored usage stats from the last message and clear them
    * Called by sendMessage after stream processing to include in final done chunk
    */
+  protected override takeReportedContextWindow(panelId?: string): number | undefined {
+    const session = this._getSession(panelId) as ClaudeSessionState;
+    const window = session.reportedContextWindow;
+    session.reportedContextWindow = undefined;
+    return window;
+  }
+
   getStoredUsage(panelId?: string): { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } | null {
     const session = this._getSession(panelId) as ClaudeSessionState;
     const usage = session.lastUsageStats;
@@ -657,59 +1146,9 @@ export class ClaudeCodeProvider extends BaseCliProvider {
    */
   protected async prepareAttachments(
     attachments: Attachment[] | undefined,
-    _args: string[]
+    args: string[]
   ): Promise<(() => Promise<void>) | null> {
-    if (!attachments || attachments.length === 0) {
-      return null;
-    }
-
-    const allAttachments = attachments.filter(a => a.type === 'image' || a.type === 'file');
-    if (allAttachments.length === 0) {
-      return null;
-    }
-
-    // Write attachments to workspace .mysti/tmp/ so Claude Code CLI has guaranteed filesystem access
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    const wsRoot = workspaceFolders?.[0]?.uri.fsPath;
-    const attachmentDir = wsRoot
-      ? path.join(wsRoot, '.mysti', 'tmp')
-      : os.tmpdir();
-
-    await fs.promises.mkdir(attachmentDir, { recursive: true });
-
-    const tempFiles: string[] = [];
-
-    for (const att of allAttachments) {
-      if (att.filePath && !att.base64Data) {
-        // File from disk via attach button — already has path
-        console.log(`[Mysti] Claude: Attachment from disk: ${att.fileName} -> ${att.filePath}`);
-      } else if (att.base64Data) {
-        // Clipboard/dropped file — write to workspace temp dir
-        const ext = att.fileName.split('.').pop() || (att.type === 'image' ? (att.mimeType.split('/')[1] || 'png') : 'bin');
-        const tempPath = path.join(attachmentDir, `mysti-attachment-${att.id}.${ext}`);
-        const buffer = Buffer.from(att.base64Data, 'base64');
-        await fs.promises.writeFile(tempPath, buffer);
-        tempFiles.push(tempPath);
-        att.filePath = tempPath;
-        console.log(`[Mysti] Claude: Wrote ${att.type} attachment to workspace: ${att.fileName} -> ${tempPath}`);
-      }
-    }
-
-    // Return cleanup function if we created any temp files
-    if (tempFiles.length > 0) {
-      return async () => {
-        for (const tempFile of tempFiles) {
-          try {
-            await fs.promises.unlink(tempFile);
-            console.log(`[Mysti] Claude: Cleaned up temp attachment: ${tempFile}`);
-          } catch {
-            // Ignore cleanup errors
-          }
-        }
-      };
-    }
-
-    return null;
+    return super.prepareAttachments(attachments, args);
   }
 
   /**
@@ -727,7 +1166,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     _systemContext?: string
   ): Promise<string> {
     // Skip systemContext for Claude — it's injected as real system instructions via --append-system-prompt in buildCliArgs()
-    let prompt = await super.buildPromptAsync(content, context, conversation, settings, persona, agentConfig, attachments, undefined);
+    let prompt = await super.buildPromptAsync(content, context, conversation, settings, persona, agentConfig, undefined, undefined);
 
     // Prepend attachment file references so Claude sees them first and uses its Read tool
     const imageAttachments = (attachments || []).filter(a => a.type === 'image' && a.filePath);

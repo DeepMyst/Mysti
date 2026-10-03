@@ -25,9 +25,11 @@ import type {
   Settings,
   StreamChunk,
   ProviderConfig,
-  AuthStatus
+  AuthStatus,
+  ModelInfo
 } from '../../types';
 import { validateModelName } from '../../utils/validation';
+import { normalizeToolName, toolKind } from '../../utils/toolNames';
 
 /**
  * Per-panel session state for Gemini, extending base with tool call tracking.
@@ -48,7 +50,48 @@ export class GeminiProvider extends BaseCliProvider {
   readonly config: ProviderConfig = {
     name: 'google-gemini',
     displayName: 'Gemini',
+    // Curated fallback list (bundled). Live discovery (discoverModels) refreshes
+    // this from the Google Generative Language Models API when a GEMINI_API_KEY /
+    // GOOGLE_API_KEY is present. Verified 2026-06.
     models: [
+      {
+        id: 'gemini-3.8-flash',
+        name: 'Gemini 3.8 Flash',
+        description: 'Most intelligent Flash — long-horizon software engineering and autonomous agents',
+        contextWindow: 1048576,
+        releasedAt: '2026-09-02'
+      },
+      {
+        id: 'gemini-3.7-flash',
+        name: 'Gemini 3.7 Flash',
+        description: 'Strong coding and agent workflows, refinement of 3.6 Flash',
+        contextWindow: 1048576,
+        releasedAt: '2026-08-13'
+      },
+      {
+        id: 'gemini-3.6-flash',
+        name: 'Gemini 3.6 Flash',
+        description: 'Improved token efficiency and agentic planning',
+        contextWindow: 1048576
+      },
+      {
+        id: 'gemini-3.5-flash-lite',
+        name: 'Gemini 3.5 Flash-Lite',
+        description: 'Low-latency, cost-effective option for high-volume automation',
+        contextWindow: 1048576
+      },
+      {
+        id: 'gemini-3.1-pro-preview',
+        name: 'Gemini 3.1 Pro (Preview)',
+        description: 'Most intelligent, best for complex agentic and coding tasks',
+        contextWindow: 1048576
+      },
+      {
+        id: 'gemini-3.5-flash',
+        name: 'Gemini 3.5 Flash',
+        description: 'Fast and capable — strong on coding and agentic workflows',
+        contextWindow: 1048576
+      },
       {
         id: 'gemini-3-pro-preview',
         name: 'Gemini 3 Pro (Preview)',
@@ -80,7 +123,7 @@ export class GeminiProvider extends BaseCliProvider {
         contextWindow: 1048576
       }
     ],
-    defaultModel: 'gemini-2.5-flash'
+    defaultModel: 'gemini-3.8-flash'
   };
 
   readonly capabilities: ProviderCapabilities = {
@@ -88,8 +131,23 @@ export class GeminiProvider extends BaseCliProvider {
     supportsThinking: false, // Gemini doesn't expose thinking tokens like Claude
     supportsToolUse: true,
     supportsSessions: true,
-    supportsImages: false,
-    supportsAutoInstall: true
+    // Plan 27 Phase 5: attachments are written to a temp file and referenced
+    // by PATH (BaseCliProvider.prepareAttachments). This backend has file-read
+    // tools, so it can open what it is given.
+    supportsImages: true,
+    supportsFileAttachments: true,
+    supportsAutoInstall: true,
+    supportsPromptEnhancement: false,
+    // Plan 02 Phase 1 capability matrix
+    thinkingStyle: 'none',
+    thinkingLevelEffective: false,
+    planMode: 'detected',
+    sessionKind: 'cli-resume',
+    nativeInstructionFile: 'GEMINI.md',  // loaded by the CLI itself; Mysti does not resend it
+    emitsToolResults: true,
+    emitsUsage: true,
+    usageConvention: 'none',   // Gemini CLI's result stats carry no cache split.
+    modelSelection: 'full'
   };
 
   protected _createSession(panelId: string): GeminiSessionState {
@@ -125,42 +183,114 @@ export class GeminiProvider extends BaseCliProvider {
   }
 
   async getAuthConfig(): Promise<AuthConfig> {
-    // Check for API key in environment
-    const hasApiKey = !!process.env.GEMINI_API_KEY;
+    // API-key auth: the Gemini CLI honors GEMINI_API_KEY *and* GOOGLE_API_KEY.
+    // (Checking only GEMINI_API_KEY reported a working GOOGLE_API_KEY user as
+    // unauthenticated — a false negative that splices a live backend.)
+    const hasApiKey = !!(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY);
 
-    // Check for settings file
+    // Vertex AI mode (GOOGLE_GENAI_USE_VERTEXAI) authenticates via Application
+    // Default Credentials / the ambient GCP project, not a Gemini key.
+    const hasVertex = this._isTruthyEnv(process.env.GOOGLE_GENAI_USE_VERTEXAI) &&
+      !!(process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.GOOGLE_CLOUD_PROJECT);
+
+    // OAuth login (gemini + Google account) stores tokens in ~/.gemini/oauth_creds.json.
+    // settings.json is only the config file (written on first launch without login),
+    // so its mere existence is NOT proof of auth — recognize the OAuth token file.
     const settingsPath = path.join(os.homedir(), '.gemini', 'settings.json');
-    const hasSettings = fs.existsSync(settingsPath);
+    const oauthPath = path.join(os.homedir(), '.gemini', 'oauth_creds.json');
 
     return {
-      type: hasApiKey ? 'api-key' : 'oauth',
-      isAuthenticated: hasApiKey || hasSettings,
+      type: (hasApiKey || hasVertex) ? 'api-key' : 'oauth',
+      isAuthenticated: hasApiKey || hasVertex || fs.existsSync(oauthPath),
       configPath: settingsPath
     };
   }
 
+  /**
+   * Parse a boolean-ish env var. The Gemini CLI treats "1"/"true"/"yes"/"on"
+   * as enabling GOOGLE_GENAI_USE_VERTEXAI; empty/undefined/"false"/"0" → false.
+   */
+  private _isTruthyEnv(value: string | undefined): boolean {
+    return /^(1|true|yes|on)$/i.test((value || '').trim());
+  }
+
   async checkAuthentication(): Promise<AuthStatus> {
-    // Check for GEMINI_API_KEY environment variable
-    if (process.env.GEMINI_API_KEY) {
+    // API-key auth: the Gemini CLI honors GEMINI_API_KEY and GOOGLE_API_KEY.
+    // (Only checking GEMINI_API_KEY made a working GOOGLE_API_KEY user look
+    // unauthenticated, splicing a live backend out of the coordinator.)
+    if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) {
       return {
         authenticated: true,
         user: 'API Key'
       };
     }
 
-    // Check for settings file with auth config
+    // Vertex AI: GOOGLE_GENAI_USE_VERTEXAI enables Vertex mode, authenticated via
+    // Application Default Credentials (GOOGLE_APPLICATION_CREDENTIALS) or the
+    // ambient project (GOOGLE_CLOUD_PROJECT). Missing this reported a working
+    // Vertex backend as unauthenticated (false negative).
+    if (this._isTruthyEnv(process.env.GOOGLE_GENAI_USE_VERTEXAI) &&
+        (process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.GOOGLE_CLOUD_PROJECT)) {
+      return {
+        authenticated: true,
+        user: 'Vertex AI'
+      };
+    }
+
+    // OAuth login: tokens live in ~/.gemini/oauth_creds.json; the account email
+    // (if present) is in ~/.gemini/google_accounts.json.
+    const oauthPath = path.join(os.homedir(), '.gemini', 'oauth_creds.json');
+    if (fs.existsSync(oauthPath)) {
+      let user = 'Google Account';
+      try {
+        const accounts = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.gemini', 'google_accounts.json'), 'utf-8'));
+        // The account entry may be a plain string OR an object ({email,...}).
+        // Never assign an object to the label — it renders "[object Object]"
+        // in the UI (Plan 18 4.7b). Strings pass through; objects surface
+        // their email/account/user field; anything else keeps the generic label.
+        const candidate: unknown = accounts.active || accounts.email ||
+          (Array.isArray(accounts.accounts) ? accounts.accounts[0] : undefined);
+        if (typeof candidate === 'string' && candidate) {
+          user = candidate;
+        } else if (candidate && typeof candidate === 'object') {
+          const obj = candidate as { email?: unknown; account?: unknown; user?: unknown };
+          const field = [obj.email, obj.account, obj.user]
+            .find((v): v is string => typeof v === 'string' && v.length > 0);
+          if (field) {
+            user = field;
+          }
+        }
+      } catch {
+        // no/unparseable account file — fall back to the generic label
+      }
+      return { authenticated: true, user };
+    }
+
+    // Legacy fallback: settings.json records the selected auth method. This
+    // marker SURVIVES logout / an aborted OAuth flow, so it is NOT proof on its
+    // own. For an OAuth login type, require the actual oauth_creds.json token
+    // file (checked above — absent here, so a stale OAuth marker correctly falls
+    // through to not-authenticated). A non-OAuth selection (api-key / vertex) is
+    // trusted as before.
     const settingsPath = path.join(os.homedir(), '.gemini', 'settings.json');
     if (fs.existsSync(settingsPath)) {
       try {
         const content = fs.readFileSync(settingsPath, 'utf-8');
         const settings = JSON.parse(content);
+        const authCfg = settings.security?.auth || settings.auth;
 
-        // Check for auth configuration
-        if (settings.auth || settings.security?.auth) {
-          return {
-            authenticated: true,
-            user: settings.auth?.email || 'Google Account'
-          };
+        if (authCfg) {
+          const selectedType = String(
+            authCfg.selectedType || settings.selectedAuthType || ''
+          ).toLowerCase();
+          const isOAuthType = selectedType.includes('oauth') || selectedType.includes('google');
+
+          if (!isOAuthType || fs.existsSync(oauthPath)) {
+            return {
+              authenticated: true,
+              user: authCfg.email || 'Google Account'
+            };
+          }
         }
       } catch {
         // Settings file exists but couldn't parse
@@ -209,6 +339,17 @@ export class GeminiProvider extends BaseCliProvider {
   }
 
   /**
+   * Gemini CLI refuses a headless run in a folder it has not been told to trust
+   * ("Gemini CLI is not running in a trusted directory"), and its trust also
+   * gates loading the project's `.gemini/` settings. Forward VS Code's workspace
+   * trust — the user's decision for the same folder — and nothing more. The env
+   * var rather than `--skip-trust`, so older CLIs without the flag still spawn.
+   */
+  protected override getExtraSpawnEnv(_settings: Settings): Record<string, string> {
+    return vscode.workspace.isTrusted ? { GEMINI_CLI_TRUST_WORKSPACE: 'true' } : {};
+  }
+
+  /**
    * Gemini doesn't support thinking tokens like Claude
    * Returns undefined to indicate no thinking token support
    */
@@ -223,10 +364,14 @@ export class GeminiProvider extends BaseCliProvider {
   private _addPermissionFlags(args: string[], settings: Settings): void {
     const { mode, accessLevel } = settings;
 
-    // Plan modes or read-only → sandbox mode
+    // Plan modes or read-only → the CLI's documented read-only mode.
+    // Plan 18 (4.3): this was `--sandbox`, which is a container/seatbelt
+    // boolean, NOT read-only — and it hard-fails to spawn on hosts where a
+    // container runtime is configured but absent. `--approval-mode plan`
+    // (gemini >= 0.2x) is the actual "analyze, don't act" mode.
     if (mode === 'quick-plan' || mode === 'detailed-plan' || accessLevel === 'read-only') {
-      args.push('--sandbox');
-      console.log('[Mysti] Gemini: Using sandbox mode (read-only)');
+      args.push('--approval-mode', 'plan');
+      console.log('[Mysti] Gemini: Using approval-mode plan (read-only)');
       return;
     }
 
@@ -253,7 +398,9 @@ export class GeminiProvider extends BaseCliProvider {
   /**
    * Get the effective model, preferring provider-specific custom model over dropdown selection
    */
-  private _getEffectiveModel(settings: Settings): string | undefined {
+  protected _getEffectiveModel(settings: Settings): string | undefined {
+    // P2.3/P0.2b: an explicitly routed model wins over the per-provider custom-model config.
+    if (settings.routedModel) { return settings.routedModel; }
     const config = vscode.workspace.getConfiguration('mysti');
     const customModel = config.get<string>('geminiModel', '');
     if (customModel) {
@@ -265,16 +412,65 @@ export class GeminiProvider extends BaseCliProvider {
       console.warn(`[Mysti] Gemini: Invalid custom model "${customModel}": ${validation.error}`);
     }
 
-    // Only pass settings.model if it's actually a Gemini model —
-    // the global defaultModel may belong to another provider (e.g. claude-sonnet-*)
+    // Only pass settings.model if it's actually a Gemini model — the global
+    // defaultModel may belong to another provider (cross-provider guard).
+    // Genuine custom Gemini models go through the `geminiModel` setting above
+    // (now unblocked by the relaxed validation pattern — #39); full pass-through
+    // of arbitrary dropdown models is deferred to pair with per-provider model
+    // memory (Plan 02 Phase 6, #33) to avoid a leaked model reaching the CLI.
     if (settings.model) {
       const isKnownGeminiModel = this.config.models.some(m => m.id === settings.model);
       if (isKnownGeminiModel) {
         return settings.model;
       }
-      console.log(`[Mysti] Gemini: Ignoring non-Gemini model "${settings.model}", using CLI default`);
+      console.warn(`[Mysti] Gemini: Ignoring non-Gemini model "${settings.model}" (use the geminiModel setting for a custom Gemini model); using CLI default`);
     }
     return undefined;
+  }
+
+  /**
+   * Live model discovery (Plan 01 Phase 3) via the official Google Generative
+   * Language Models API. Only fires when a GEMINI_API_KEY / GOOGLE_API_KEY is
+   * present (the Gemini CLI may instead use Google-account OAuth, in which case
+   * there is no usable list endpoint and the curated list serves). Filters to
+   * models that support generateContent and strips the "models/" id prefix the
+   * API uses (the CLI's --model flag takes the short id). Returns null on any
+   * failure so the registry keeps its curated/cached list. Never throws.
+   */
+  async discoverModels(timeoutMs: number): Promise<ModelInfo[] | null> {
+    const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+    if (!apiKey) { return null; }
+    try {
+      // API key travels in the x-goog-api-key header, NOT the URL query string
+      // (Plan 18 4.7a — query-string keys leak into logs/proxies/history).
+      const response = await fetch(
+        'https://generativelanguage.googleapis.com/v1beta/models?pageSize=200',
+        {
+          signal: AbortSignal.timeout(timeoutMs),
+          headers: { 'x-goog-api-key': apiKey },
+        },
+      );
+      if (!response.ok) { return null; }
+      const data = await response.json() as {
+        models?: Array<{
+          name?: string;
+          displayName?: string;
+          inputTokenLimit?: number;
+          supportedGenerationMethods?: string[];
+        }>;
+      };
+      const models = (data.models || [])
+        .filter(m => (m.supportedGenerationMethods || []).includes('generateContent'))
+        .map<ModelInfo>(m => ({
+          id: (m.name || '').replace(/^models\//, '').trim(),
+          name: m.displayName || (m.name || '').replace(/^models\//, ''),
+          contextWindow: typeof m.inputTokenLimit === 'number' ? m.inputTokenLimit : undefined,
+        }))
+        .filter(m => m.id.length > 0);
+      return models.length > 0 ? models : null;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -330,19 +526,28 @@ export class GeminiProvider extends BaseCliProvider {
             };
           }
 
+          // Normalize native Gemini tool names (write_file, replace,
+          // run_shell_command, ...) to the canonical names used by the
+          // permission gate and the webview renderer. The stream-level gate
+          // is the sole enforcement point (the CLI runs with --yolo), so raw
+          // names that the classifier doesn't recognize would otherwise be
+          // gated as unknown instead of classified correctly.
+          const canonicalName = normalizeToolName(toolName);
+
           // Track active tool call
           geminiSession.activeToolCalls.set(data.tool_id, {
             id: data.tool_id,
-            name: toolName,
+            name: canonicalName,
             input: params
           });
           return {
             type: 'tool_use',
             toolCall: {
               id: data.tool_id,
-              name: toolName,
+              name: canonicalName,
               input: params,
-              status: 'running'
+              status: 'running',
+              kind: toolKind(canonicalName)
             }
           };
         }
@@ -374,8 +579,10 @@ export class GeminiProvider extends BaseCliProvider {
         case 'result':
           if (data.stats) {
             geminiSession.lastUsageStats = {
-              input_tokens: data.stats.input_tokens || data.stats.total_tokens || 0,
-              output_tokens: data.stats.output_tokens || 0
+              // NOT `|| data.stats.total_tokens`: total includes the completion,
+              // so the old fallback booked output tokens as context fill.
+              input_tokens: Number(data.stats.input_tokens ?? 0),
+              output_tokens: Number(data.stats.output_tokens ?? 0)
             };
             console.log('[Mysti] Gemini: Captured usage stats:', geminiSession.lastUsageStats);
           }

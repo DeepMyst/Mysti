@@ -1,0 +1,4168 @@
+{
+  "reviewDate": "2026-09-30",
+  "baseCommit": "081875532b4e14792c9fcb677bdbb0848d1ca784",
+  "extensionVersion": "0.5.1",
+  "scope": "Static surface inventory. Presence or registration is not proof of functional behavior; use the review matrix and live journeys. Literal test references added after implementation; they are traceability, not individual feature sign-off.",
+  "commands": [
+    {
+      "command": "mysti.deskPair",
+      "title": "Desk: Pair with a teammate",
+      "category": "Mysti",
+      "registeredInExtension": true,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "command": "mysti.deskRoster",
+      "title": "Desk: Show teammates",
+      "category": "Mysti",
+      "registeredInExtension": true,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "command": "mysti.getStarted",
+      "title": "Get Started",
+      "category": "Mysti",
+      "registeredInExtension": true,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "command": "mysti.openChat",
+      "title": "Open Chat",
+      "shortTitle": "Chat",
+      "category": "Mysti",
+      "registeredInExtension": true,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "command": "mysti.boostSummary",
+      "title": "Boost: Session Summary",
+      "category": "Mysti",
+      "registeredInExtension": true,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "command": "mysti.newConversation",
+      "title": "New Conversation",
+      "shortTitle": "New",
+      "category": "Mysti",
+      "registeredInExtension": true,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "command": "mysti.addToContext",
+      "title": "Add to Context",
+      "shortTitle": "Add Context",
+      "category": "Mysti",
+      "registeredInExtension": true,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "command": "mysti.clearContext",
+      "title": "Clear Context",
+      "category": "Mysti",
+      "registeredInExtension": true,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "command": "mysti.createPersona",
+      "title": "Create New Persona",
+      "category": "Mysti",
+      "registeredInExtension": true,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "command": "mysti.createSkill",
+      "title": "Create New Skill",
+      "category": "Mysti",
+      "registeredInExtension": true,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "command": "mysti.createRole",
+      "title": "Create New Collaboration Role",
+      "category": "Mysti",
+      "registeredInExtension": true,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "command": "mysti.importSkills",
+      "title": "Import Skills from GitHub",
+      "category": "Mysti",
+      "registeredInExtension": true,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "command": "mysti.reloadAgents",
+      "title": "Reload Agents (Personas, Skills & Roles)",
+      "category": "Mysti",
+      "registeredInExtension": true,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "command": "mysti.setCoordinatorModel",
+      "title": "Set Mysti Agent Coordinator Model",
+      "category": "Mysti",
+      "registeredInExtension": true,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "command": "mysti.viewMystiMemory",
+      "title": "View & Prune Mysti Memory",
+      "category": "Mysti",
+      "registeredInExtension": true,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "command": "mysti.openInNewTab",
+      "title": "Open in Editor Tab",
+      "shortTitle": "New Tab",
+      "category": "Mysti",
+      "icon": {
+        "light": "resources/Mysti-Logo.png",
+        "dark": "resources/Mysti-Logo.png"
+      },
+      "registeredInExtension": true,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "command": "mysti.revokeCapabilities",
+      "title": "Mysti: Quarantine All User Agent Artifacts (kill switch)",
+      "category": "Mysti",
+      "registeredInExtension": true,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "command": "mysti.reviewSkillProposals",
+      "title": "Mysti: Review Agent Proposals",
+      "category": "Mysti",
+      "registeredInExtension": true,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "command": "mysti.skillReport",
+      "title": "Mysti: Agent Catalog Report (retrieval go/no-go)",
+      "category": "Mysti",
+      "registeredInExtension": true,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "command": "mysti.updateClis",
+      "title": "Update CLI Backends",
+      "category": "Mysti",
+      "icon": "$(cloud-download)",
+      "registeredInExtension": true,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "command": "mysti.debugSetup",
+      "title": "Debug: Test Setup Flow",
+      "category": "Mysti",
+      "registeredInExtension": true,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "command": "mysti.debugSetupFailure",
+      "title": "Debug: Test Setup Failure",
+      "category": "Mysti",
+      "registeredInExtension": true,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "command": "mysti.toggleAutonomous",
+      "title": "Toggle Autonomous Mode",
+      "category": "Mysti",
+      "registeredInExtension": true,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "command": "mysti.codeLensAction",
+      "title": "CodeLens Action",
+      "category": "Mysti",
+      "registeredInExtension": true,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "command": "mysti.openVisualTestDashboard",
+      "title": "Open Visual Test Dashboard",
+      "category": "Mysti",
+      "registeredInExtension": true,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "command": "mysti.openCanvas",
+      "title": "Open Canvas",
+      "category": "Mysti",
+      "registeredInExtension": true,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "command": "mysti.openConnections",
+      "title": "Open DeepMyst Connections",
+      "category": "Mysti",
+      "icon": "$(plug)",
+      "registeredInExtension": true,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "command": "mysti.deepmyst.signIn",
+      "title": "Sign in to DeepMyst",
+      "category": "Mysti",
+      "registeredInExtension": true,
+      "testReferenceFiles": [
+        "tests/webview/wizardZeroInstallPath.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "command": "mysti.deepmyst.signOut",
+      "title": "Sign out of DeepMyst",
+      "category": "Mysti",
+      "registeredInExtension": true,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "command": "mysti.canvasDiagnostics",
+      "title": "Mysti: Canvas Diagnostics",
+      "category": "Mysti",
+      "registeredInExtension": true,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "command": "mysti.canvasAddScaffold",
+      "title": "Mysti: Add Canvas Page",
+      "category": "Mysti",
+      "registeredInExtension": true,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    }
+  ],
+  "settings": [
+    {
+      "key": "mysti.defaultProvider",
+      "type": "string",
+      "scope": "window",
+      "default": "claude-code",
+      "enum": [
+        "claude-code",
+        "openai-codex",
+        "google-gemini",
+        "cline",
+        "github-copilot",
+        "cursor",
+        "openclaw",
+        "opencode",
+        "ollama",
+        "localai",
+        "qwen-code",
+        "hermes",
+        "continue",
+        "openrouter",
+        "kimi-code"
+      ],
+      "description": "Primary AI provider for coding assistance. Switch providers anytime without losing context.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/integration/mystiDefaultAgent.test.ts",
+        "tests/integration/agentSelectionStability.test.ts",
+        "tests/providers/promptEnhancement.test.ts",
+        "tests/managers/providerManagerRouting.test.ts",
+        "tests/managers/conversationShareableImport.test.ts",
+        "tests/managers/brainstormIsolation.test.ts",
+        "tests/managers/conversationStoreResilience.test.ts",
+        "tests/services/collaboratorPoolNativeApproval.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.defaultAgent",
+      "type": "string",
+      "scope": "window",
+      "default": "mysti",
+      "enum": [
+        "mysti",
+        "brainstorm",
+        "claude-code",
+        "openai-codex",
+        "google-gemini",
+        "cline",
+        "github-copilot",
+        "cursor",
+        "openclaw",
+        "opencode",
+        "ollama",
+        "localai",
+        "qwen-code",
+        "hermes",
+        "continue",
+        "openrouter",
+        "kimi-code"
+      ],
+      "description": "The agent selected when a chat panel opens. Unlike `#mysti.defaultProvider#` this may be a pseudo-agent (`mysti`, `brainstorm`) that has no CLI of its own. `mysti.defaultProvider` remains the CLI backend used for delegation, brainstorm, `@agent` mentions and prompt enhancement.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/integration/canvasLaneHardening.test.ts",
+        "tests/integration/mystiDefaultAgent.test.ts",
+        "tests/integration/modelAttributionSync.test.ts",
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.claudeCodePath",
+      "type": "string",
+      "scope": "machine",
+      "default": "claude",
+      "description": "Path to Claude Code CLI executable",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/utils/cliPathResolution.test.ts",
+        "tests/services/CliDiscoveryService.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.codexPath",
+      "type": "string",
+      "scope": "machine",
+      "default": "codex",
+      "description": "Path to OpenAI Codex CLI executable",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.geminiPath",
+      "type": "string",
+      "scope": "machine",
+      "default": "gemini",
+      "description": "Path to Google Gemini CLI executable",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.clinePath",
+      "type": "string",
+      "scope": "machine",
+      "default": "cline",
+      "description": "Path to Cline CLI executable",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.copilotPath",
+      "type": "string",
+      "scope": "machine",
+      "default": "copilot",
+      "description": "Path to GitHub Copilot CLI executable",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.cursorPath",
+      "type": "string",
+      "scope": "machine",
+      "default": "agent",
+      "description": "Path to Cursor CLI (agent) executable",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.cursorApiKey",
+      "type": "string",
+      "scope": "machine",
+      "default": "",
+      "description": "Cursor API key. Set this instead of the CURSOR_API_KEY environment variable. Get your key from Cursor settings.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/providers/providerManifest.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.openclawPath",
+      "type": "string",
+      "scope": "machine",
+      "default": "openclaw",
+      "description": "Path to OpenClaw CLI executable",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.openclawGatewayUrl",
+      "type": "string",
+      "scope": "machine",
+      "default": "ws://127.0.0.1:18789",
+      "description": "URL of the OpenClaw Gateway WebSocket server",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/providers/providerManifest.test.ts",
+        "tests/utils/settingsScopeHardening.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.openclawUseGateway",
+      "type": "boolean",
+      "scope": "window",
+      "default": true,
+      "description": "Use OpenClaw Gateway WebSocket for streaming (falls back to CLI if unavailable)",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.opencodePath",
+      "type": "string",
+      "scope": "machine",
+      "default": "opencode",
+      "description": "Path to OpenCode CLI executable",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.qwenCodePath",
+      "type": "string",
+      "scope": "machine",
+      "default": "qwen",
+      "description": "Path to Qwen Code CLI executable",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.hermesPath",
+      "type": "string",
+      "scope": "machine",
+      "default": "hermes",
+      "description": "Path to Hermes Agent CLI executable",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.continuePath",
+      "type": "string",
+      "scope": "machine",
+      "default": "cn",
+      "description": "Path to Continue CLI (cn) executable",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.kimiCodePath",
+      "type": "string",
+      "scope": "machine",
+      "default": "kimi",
+      "description": "Path to Kimi Code CLI (kimi) executable",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.ollamaEndpoint",
+      "type": "string",
+      "scope": "machine",
+      "default": "http://localhost:11434",
+      "description": "Ollama API server URL (host and port)",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/providers/providerManifest.test.ts",
+        "tests/providers/ollama/discovery.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.ollamaModel",
+      "type": "string",
+      "scope": "window",
+      "default": "",
+      "description": "Model to use with Ollama (e.g., llama3.2, codellama, deepseek-coder). Leave empty to use the default model.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/integration/modelAttributionSync.test.ts",
+        "tests/providers/providerManifest.test.ts",
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.ollamaTemperature",
+      "type": "number",
+      "scope": "window",
+      "default": 0.7,
+      "description": "Sampling temperature for Ollama (0.0-2.0). Lower values produce more deterministic output.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.ollamaContextLength",
+      "type": "number",
+      "scope": "window",
+      "default": 0,
+      "description": "Context window size in tokens for Ollama (0 = use model default). Increase for longer conversations.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.ollamaKeepAlive",
+      "type": "string",
+      "scope": "window",
+      "default": "5m",
+      "description": "How long Ollama keeps the model loaded in memory after the last request (e.g., '5m', '1h', '0' to unload immediately).",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.ollamaRequestTimeout",
+      "type": "number",
+      "scope": "window",
+      "default": 120000,
+      "description": "Request timeout in milliseconds for Ollama. Increase for large models or slow hardware.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.localaiEndpoint",
+      "type": "string",
+      "scope": "machine",
+      "default": "http://localhost:8080",
+      "description": "LocalAI API server URL (host and port)",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/providers/providerManifest.test.ts",
+        "tests/providers/localai/discovery.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.localaiModel",
+      "type": "string",
+      "scope": "window",
+      "default": "",
+      "description": "Model to use with LocalAI. Leave empty to use the default model.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/providers/providerManifest.test.ts",
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.localaiTemperature",
+      "type": "number",
+      "scope": "window",
+      "default": 0.7,
+      "description": "Sampling temperature for LocalAI (0.0-2.0). Lower values produce more deterministic output.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.localaiMaxTokens",
+      "type": "number",
+      "scope": "window",
+      "default": 0,
+      "description": "Maximum tokens to generate with LocalAI (0 = no limit). Useful for controlling response length.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.localaiApiKey",
+      "type": "string",
+      "scope": "machine",
+      "default": "",
+      "description": "API key for LocalAI (if authentication is configured on your server). Leave empty if not required.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/providers/localai/discovery.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.localaiRequestTimeout",
+      "type": "number",
+      "scope": "window",
+      "default": 120000,
+      "description": "Request timeout in milliseconds for LocalAI. Increase for large models or slow hardware.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.defaultMode",
+      "type": "string",
+      "scope": "window",
+      "default": "ask-before-edit",
+      "enum": [
+        "default",
+        "ask-before-edit",
+        "edit-automatically",
+        "quick-plan",
+        "detailed-plan"
+      ],
+      "description": "Default operation mode. Must match the OperationMode union in src/types.ts — a value offered here that the code does not handle would fall through the permission gate (Plan 23 B1).",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/integration/canvasLaneHardening.test.ts",
+        "tests/integration/chatViewSettingKeys.test.ts",
+        "tests/integration/chatViewTrustAndGate.test.ts",
+        "tests/managers/slashCommandModeHelp.test.ts",
+        "tests/utils/settingsEnumParity.test.ts",
+        "tests/utils/settingsScopeParity.test.ts",
+        "tests/services/CliDiscoveryService.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.defaultThinkingLevel",
+      "type": "string",
+      "scope": "window",
+      "default": "none",
+      "enum": [
+        "none",
+        "low",
+        "medium",
+        "high"
+      ],
+      "description": "Default thinking level for AI responses",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.defaultEffortLevel",
+      "type": "string",
+      "scope": "window",
+      "default": "high",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "description": "Reasoning effort tier (Claude Code parity). Each backend maps this to its native reasoning control (Claude Code → --effort, Codex → model_reasoning_effort, OpenRouter → reasoning.effort, …). Backends with no reasoning control ignore it. Distinct from thinking level.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.updates.notifyNewModels",
+      "type": "boolean",
+      "scope": "window",
+      "default": true,
+      "description": "Show a notification when a backend publishes a model you have not seen before, with a one-click button to select it for that agent. Detection only — Mysti never switches your model on its own.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.updates.checkCliUpdates",
+      "type": "boolean",
+      "scope": "window",
+      "default": true,
+      "description": "Check installed CLI backends against their published npm versions once a day and offer a one-click update. New models are often gated on a CLI version (GPT-6 Astra needs Codex CLI 0.153.1+). Nothing is ever installed without an explicit click.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.defaultModel",
+      "type": "string",
+      "scope": "window",
+      "default": "claude-sonnet-4-6",
+      "description": "Default model to use",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/integration/chatViewSettingKeys.test.ts",
+        "tests/integration/modelAttributionSync.test.ts",
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.claudeCodeModel",
+      "type": "string",
+      "scope": "window",
+      "default": "",
+      "description": "Custom model for Claude Code. Overrides the dropdown selection. Leave empty to use the selected model. Example: claude-opus-4-8 (or claude-opus-4-8[1m] for the 1M-context variant)",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/providers/providerManifest.test.ts",
+        "tests/providers/routedModelPrecedence.test.ts",
+        "tests/providers/claude/buildCliArgs.test.ts",
+        "tests/webview/providerManifestWebview.test.ts",
+        "tests/utils/settingsScopeParity.test.ts",
+        "tests/utils/cliPathResolution.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.claude.backgroundWaitCeilingMs",
+      "type": "number",
+      "scope": "window",
+      "default": 600000,
+      "description": "How long (ms) the headless Claude Code process waits for **background subagents/workflows** to finish before exiting, so their results are reported back through the turn (sets `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`; requires `claude` ≥ v2.1.182). Default `600000` (10 min). `0` = wait indefinitely. Raise it if you run long background workflows. If a workflow launched via Claude Code never reports its result, first check `claude --version` is ≥ 2.1.182.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/providers/claude/buildCliArgs.test.ts",
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.codexModel",
+      "type": "string",
+      "scope": "window",
+      "default": "",
+      "description": "Custom model for OpenAI Codex. Overrides the dropdown selection. Leave empty to use the selected model. Example: gpt-5.4-codex",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/integration/modelAttributionSync.test.ts",
+        "tests/providers/providerManifest.test.ts",
+        "tests/providers/routedModelPrecedence.test.ts",
+        "tests/webview/providerManifestWebview.test.ts",
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.codexProfile",
+      "type": "string",
+      "scope": "machine",
+      "default": "",
+      "description": "Codex profile from ~/.codex/config.toml. Leave empty to use default profile.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/providers/providerManifest.test.ts",
+        "tests/webview/settingsHubBrowser.test.ts",
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.geminiModel",
+      "type": "string",
+      "scope": "window",
+      "default": "",
+      "description": "Custom model for Google Gemini. Overrides the dropdown selection. Leave empty to use the selected model. Example: gemini-3-pro-preview",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/providers/providerManifest.test.ts",
+        "tests/providers/routedModelPrecedence.test.ts",
+        "tests/webview/providerManifestWebview.test.ts",
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.clineModel",
+      "type": "string",
+      "scope": "window",
+      "default": "",
+      "description": "Custom model for Cline. Overrides the dropdown selection. Leave empty to use the selected model. Example: claude-sonnet-4-5-20250929",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/providers/providerManifest.test.ts",
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.copilotModel",
+      "type": "string",
+      "scope": "window",
+      "default": "",
+      "description": "Custom model for GitHub Copilot. Overrides the dropdown selection. Leave empty to use the selected model. Example: claude-opus-4.5",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/providers/providerManifest.test.ts",
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.cursorModel",
+      "type": "string",
+      "scope": "window",
+      "default": "",
+      "description": "Custom model for Cursor. Overrides the dropdown selection. Leave empty to use the default model. Example: claude-sonnet-4-5-20250929",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/integration/chatViewDebranding.test.ts",
+        "tests/providers/providerManifest.test.ts",
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.openclawModel",
+      "type": "string",
+      "scope": "window",
+      "default": "",
+      "description": "Custom model for OpenClaw. Overrides the dropdown selection. Leave empty to use the selected model. Example: claude-opus-4-6",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/providers/providerManifest.test.ts",
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.opencodeModel",
+      "type": "string",
+      "scope": "window",
+      "default": "",
+      "description": "Custom model for OpenCode. Overrides the dropdown selection. Leave empty to use the default model. Example: anthropic/claude-sonnet-4-5",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/providers/providerManifest.test.ts",
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.qwenCodeModel",
+      "type": "string",
+      "scope": "window",
+      "default": "",
+      "description": "Custom model for Qwen Code. Overrides the dropdown selection. Leave empty to use the default model. Example: qwen3-coder-plus",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/integration/chatViewWizardRouting.test.ts",
+        "tests/integration/chatViewDebranding.test.ts",
+        "tests/providers/providerManifest.test.ts",
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.hermesModel",
+      "type": "string",
+      "scope": "window",
+      "default": "",
+      "description": "Reserved for Hermes model overrides. Hermes selects its model from its own config (`hermes model` / `hermes setup`); this setting currently has no effect on the ACP transport.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.continueModel",
+      "type": "string",
+      "scope": "window",
+      "default": "",
+      "description": "Custom model for Continue, passed as `cn --model <slug>`. Hub slug in owner/package format (e.g. anthropic/claude-sonnet-4-5). Leave empty to use the models in ~/.continue/config.yaml.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/providers/continue/buildCliArgs.test.ts",
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.openrouterModel",
+      "type": "string",
+      "scope": "window",
+      "default": "",
+      "description": "Model for the OpenRouter backend, e.g. `openai/gpt-oss-120b:free`, `anthropic/claude-sonnet-4-5`, or `openrouter/free` (free auto-router). Append `:free` for a free variant. Leave empty to use the default (`openrouter/free`). Uses the same key as `mysti.openrouter.apiKey`.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.kimiCodeModel",
+      "type": "string",
+      "scope": "window",
+      "default": "",
+      "description": "Custom model for Kimi Code (e.g. kimi-for-coding, kimi-for-coding-highspeed, k3, kimi-k2.7-code). Passed to the CLI via the ANTHROPIC_MODEL env; the model is otherwise chosen inside Kimi with `/model`. Leave empty to use the account default.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.customModels",
+      "type": "object",
+      "scope": "machine",
+      "default": {},
+      "description": "User-defined custom models per provider, keyed by provider id (e.g. `{ \"claude-code\": [\"claude-opus-4-6[1m]\"] }`). These appear in the model dropdown alongside the built-in list and survive marketplace updates. Managed automatically by the \"Custom...\" model entry in the chat UI.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/integration/modelAttributionSync.test.ts",
+        "tests/providers/codex/modelSelection.test.ts",
+        "tests/utils/settingsScopeParity.test.ts",
+        "tests/services/ModelRegistryService.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.codeLens.enabled",
+      "type": "boolean",
+      "scope": "window",
+      "default": true,
+      "description": "Show 'Mysti: Explain | Refactor | Write Tests' CodeLens above functions in the editor.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.accessLevel",
+      "type": "string",
+      "scope": "window",
+      "default": "ask-permission",
+      "enum": [
+        "read-only",
+        "ask-permission",
+        "full-access"
+      ],
+      "description": "Control what the AI can do with your files. Choose based on your trust level and task requirements.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/integration/canvasLaneHardening.test.ts",
+        "tests/integration/chatViewSettingKeys.test.ts",
+        "tests/providers/nativeApprovalPolicy.test.ts",
+        "tests/utils/settingsEnumParity.test.ts",
+        "tests/utils/settingsClamp.test.ts",
+        "tests/utils/settingsScopeParity.test.ts",
+        "tests/canvas/canvasStagedTransport.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.autoContext",
+      "type": "boolean",
+      "scope": "window",
+      "default": true,
+      "description": "Automatically include open files and selections as context for better AI responses",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.planDetection.enabled",
+      "type": "boolean",
+      "scope": "window",
+      "default": true,
+      "description": "Detect and show implementation plan options in AI responses. Disable to reduce post-response latency.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.checkpoints.enabled",
+      "type": "boolean",
+      "scope": "window",
+      "default": true,
+      "description": "Snapshot the workspace before each chat turn so you can rewind code to any prior turn. Uses a private git repository stored outside your project — it never touches your own .git.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.checkpoints.maxFiles",
+      "type": "number",
+      "scope": "window",
+      "default": 20000,
+      "description": "Skip checkpointing when the workspace has more than this many tracked/untracked files (0 = no limit). Protects very large repositories from slow snapshots.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.checkpoints.maxSnapshots",
+      "type": "number",
+      "scope": "window",
+      "default": 200,
+      "description": "Maximum checkpoints to retain per workspace before the oldest are pruned (0 = unlimited).",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/managers/checkpointRetention.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.tips.enabled",
+      "type": "boolean",
+      "scope": "window",
+      "default": true,
+      "description": "Show a one-line tip the first time you meet a Mysti feature: approvals, @-mentions, rewind, Brainstorm and compaction. Each tip appears once.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/integration/chatViewWizardRouting.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.compaction.enabled",
+      "type": "boolean",
+      "scope": "window",
+      "default": true,
+      "description": "Enable automatic context compaction when token usage exceeds the threshold",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.compaction.threshold",
+      "type": "number",
+      "scope": "window",
+      "default": 75,
+      "description": "Context usage percentage at which automatic compaction triggers (50-95%)",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/managers/boostManager.test.ts",
+        "tests/managers/compactionBoostOverlay.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.compaction.smart.enabled",
+      "type": "boolean",
+      "scope": "window",
+      "default": false,
+      "description": "Enable **smart compaction** (requires a connected DeepMyst account). Adds cache-aware timing, a cheap incremental compactor agent, an economic compact-vs-cache decision with a quality floor, cherry-pick retrieval over full history, and an always-on savings display. When off — or when no DeepMyst account is connected — Mysti uses the standard threshold compaction configured above.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/managers/boostManager.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.compaction.smart.cheapModel",
+      "type": "string",
+      "scope": "window",
+      "default": "claude-haiku-4-5",
+      "description": "Model used by the smart compactor agent for summarization + retrieval scoring, routed through the DeepMyst gateway. A cheap, reliable model is recommended (default `claude-haiku-4-5`).",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.compaction.smart.minSummaryTokens",
+      "type": "number",
+      "scope": "window",
+      "default": 5000,
+      "description": "Quality floor for smart compaction — the compacted prefix is never targeted below this size. Keeps it above the model's minimum cacheable prefix (≈4096 on Opus/Haiku) so the summary still caches, and preserves enough context for quality.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.compaction.smart.retrieval.enabled",
+      "type": "boolean",
+      "scope": "window",
+      "default": true,
+      "description": "When smart compaction is active, allow parallel cherry-pick retrieval over the full on-disk history to pull back relevant summarized-away context. Only fires when a prompt needs buried history (gated by a free local relevance check), so it rarely adds cost.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.deepmyst.gatewayUrl",
+      "type": "string",
+      "scope": "machine",
+      "default": "https://gateway.v2.deepmyst.com",
+      "description": "Base URL of the DeepMyst OpenAI-compatible LLM **gateway** used by smart compaction (`/v1/chat/completions`). Distinct from `mysti.deepmyst.apiUrl` (the MCP/REST host). The same `dm_` key authenticates both. Machine-scoped so a workspace can't redirect your key; the client also only ever sends it to a `*.deepmyst.com` host.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/utils/settingsScopeHardening.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.boost.enabled",
+      "type": "boolean",
+      "scope": "machine",
+      "default": false,
+      "description": "**Boost mode (Plan 24).** One switch that applies measured-better defaults: compaction fires earlier (profile-dependent threshold instead of 75%), smart compaction turns on (still entitlement-gated, fail-open), and un-tiered `@mysti` delegations get tier/effort routing — strong for security/review-shaped tasks, fast only for prose-shaped ones. Overlay only: values you set explicitly always win, and turning Boost off restores stock behaviour instantly. Never touches mode, access level, autonomy, or permission settings. Machine-scoped so a workspace cannot change model routing or spend behaviour.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/integration/boostLedgerWiring.test.ts",
+        "tests/managers/boostManager.test.ts",
+        "tests/managers/compactionBoostOverlay.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.boost.profile",
+      "type": "string",
+      "scope": "machine",
+      "default": "balanced",
+      "enum": [
+        "economy",
+        "balanced",
+        "quality"
+      ],
+      "description": "Boost preset profile. Only applies while `mysti.boost.enabled` is on. Machine-scoped so a workspace cannot change model routing or spend behaviour.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/managers/boostManager.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.models.autoRefresh",
+      "type": "boolean",
+      "scope": "window",
+      "default": true,
+      "description": "Keep each agent's model list up to date automatically. A few seconds after startup — once provider discovery has settled, so it never competes with it — Mysti refreshes the model lists of every backend that supports live discovery (CLI or HTTP), staggered, and pushes the result to any open chat panel. Only lists past their cache lifetime are re-probed, so opening another window costs nothing. Disable to rely only on the bundled/curated and cached lists.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.mysti.coordinatorModel",
+      "type": "string",
+      "scope": "machine",
+      "default": "",
+      "description": "**Pin** the **Mysti agent**'s coordinator to a single model, routed through the **DeepMyst gateway** using your signed-in DeepMyst account (no local key needed; a free account works). Leave **empty** (default) to rotate the curated free-model list in `mysti.mysti.freeModels` — on a rate-limit Mysti rolls over to the next free model, then to the paid `mysti.mysti.fallbackModel`. Set an id (e.g. `openrouter/openai/gpt-oss-120b:free` — the `openrouter/` prefix picks the OpenRouter provider via the gateway, or a bare gateway model like `claude-haiku-4-5`) to disable rotation. (Only used when no `mysti.openrouter.apiKey` is set — an OpenRouter key opts into OpenRouter directly instead.)",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.mysti.freeModels",
+      "type": "array",
+      "scope": "machine",
+      "default": [
+        "openrouter/stealth/space-bunny-alpha",
+        "openrouter/openai/gpt-oss-120b:free",
+        "openrouter/nvidia/nemotron-3-super-120b-a12b:free",
+        "openrouter/google/gemma-4-31b-it:free"
+      ],
+      "description": "Ordered list of **free** models (routed through the DeepMyst gateway) the Mysti coordinator tries when `mysti.mysti.coordinatorModel` is empty. Defaults to STRONG concrete free models (strongest first, from https://openrouter.ai/collections/free-models) rather than OpenRouter's random `openrouter/free` auto-router — the coordinator has to follow the delegation protocol reliably, and the random router can pick weak models that can't. On any transient failure — rate-limit, provider drop, 5xx, mid-stream fallback — Mysti advances to the next entry (graceful degradation), and only after all are exhausted falls back to the paid `mysti.mysti.fallbackModel`. To use the random free auto-router instead, set this to `[\"openrouter/openrouter/free\"]` (note the doubled prefix: `openrouter/` selects the OpenRouter provider via litellm, `openrouter/free` is the router slug; a bare `openrouter/free` mis-parses to a 502). Reorder or trim to taste. Ignored when a single model is pinned in `mysti.mysti.coordinatorModel`.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/services/coordinatorDefaults.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.mysti.subagentModel",
+      "type": "string",
+      "scope": "machine",
+      "default": "",
+      "description": "Model for **native Mysti subagents** (`delegate agent=\"mysti\"`) when the coordinator names none. Empty (default) = the subagent runs on the coordinator's own model chain (whatever `mysti.mysti.coordinatorModel` / the fallback resolves to). An OpenRouter id, e.g. `stealth/space-bunny-alpha`. If the OpenRouter catalog lists it as paid, every subagent call goes through `mysti.mysti.paidBudgetPerTurnUsd` (asking when over budget) and it never runs inside a parallel batch.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/integration/chatViewMessagePersistence.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.mysti.advisorAgents",
+      "type": "array",
+      "scope": "machine",
+      "default": [
+        "claude-code",
+        "openai-codex"
+      ],
+      "description": "Backends the Mysti coordinator asks for **advice** (`delegate agent=\"advisor\"`), in order. The first installed one runs read-only on its strongest model, billed to the plan you already have.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.mysti.advisorModel",
+      "type": "string",
+      "scope": "machine",
+      "default": "anthropic/claude-opus-5.5",
+      "description": "Paid OpenRouter model the advisor falls back to when none of `mysti.mysti.advisorAgents` is installed. One call, no tools, subject to `mysti.mysti.paidBudgetPerTurnUsd`. Empty = no paid fallback.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.mysti.paidBudgetPerTurnUsd",
+      "type": "number",
+      "scope": "machine",
+      "default": 0,
+      "description": "Per-turn budget (USD) for **paid** model calls made by the Mysti coordinator's paid advisor fallback (`mysti.mysti.advisorModel`) and by native subagents whose explicit model — a `model=` the coordinator names, or `mysti.mysti.subagentModel` — the OpenRouter catalog lists as paid. Calls within it proceed; anything over it — or of unknown price — asks first. `0` (default) = every such call asks. Approval cards deny on timeout. A subagent with no explicit model runs on the coordinator's own model and is not counted here. Spend is shown in the turn footer.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.mysti.maxDelegations",
+      "type": "number",
+      "scope": "machine",
+      "default": 6,
+      "description": "Max sub-agent **delegations** per Mysti-agent run (doubled at xhigh/max effort). The coordinator's own read-only tools (read/ls/grep/diag) have a separate budget and never consume delegation slots. Machine-scoped so a workspace cannot raise your per-run spend ceiling (consistent with the coordinator-model settings).",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.mysti.maxTurns",
+      "type": "number",
+      "scope": "machine",
+      "default": 24,
+      "description": "Hard cap on coordinator **model streams** per Mysti-agent run (doubled at xhigh/max effort) — the run's spend ceiling. One stream = one turn; a delegation result, a local read-tool result, and a length-continue each start a new turn. Machine-scoped so a workspace cannot raise your per-run spend ceiling. Lower it to cap spend more tightly.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.mysti.memory",
+      "type": "boolean",
+      "scope": "machine",
+      "default": true,
+      "description": "**Unified cross-backend memory** for the Mysti agent: durable project facts (learned by the coordinator via a `remember` tool) are stored per-workspace and injected into every future Mysti run — so the 14 backends behave like one agent that knows your project. Injected as untrusted, nonce-fenced data. Disable to stop persisting/injecting learnings. Review or delete individual facts with the `Mysti: View & Prune Mysti Memory` command.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.mysti.crossReview",
+      "type": "string",
+      "scope": "machine",
+      "default": "off",
+      "enum": [
+        "off",
+        "advisory"
+      ],
+      "description": "**Cross-vendor review** (the coordinator-only superpower): after a delegation modifies files, Mysti dispatches a *different-vendor* backend (e.g. Anthropic wrote it → OpenAI or Google reviews it) in READ-ONLY mode to catch bugs the writer's own model would miss — decorrelated blind spots no single-vendor agent gets. `advisory` runs one review per run and feeds findings back to the coordinator; `off` (default) disables it. Costs one extra read-only delegation; requires ≥2 different-vendor backends installed.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.mysti.verify",
+      "type": "string",
+      "scope": "machine",
+      "default": "suggest",
+      "enum": [
+        "off",
+        "suggest"
+      ],
+      "description": "Verification loop for the **Mysti agent**: after a delegation modifies files, Mysti automatically runs a read-only editor-diagnostics check and prompts its coordinator to verify the change (e.g. run the project's tests/build) before answering — the single biggest 'did it actually work' quality lever. `off` disables it.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.mysti.localExecution",
+      "type": "string",
+      "scope": "machine",
+      "default": "off",
+      "enum": [
+        "off",
+        "on"
+      ],
+      "description": "**Standalone execution for the Mysti agent (Plan 19).** When `on`, the `@mysti` coordinator gets its OWN gated `write` / `edit` tools AND a **sandboxed `bash`** tool (run tests/builds/linters) — so it works even with no CLI backend installed. Every op goes through the **same permission gate** as CLI backends (default-deny in ask modes), is **workspace-scoped** (secret files blocked), and is **checkpointed** (undoable); `bash` additionally runs in an **OS sandbox** (macOS Seatbelt / Linux bwrap — no network, writes limited to the workspace; on platforms without a sandbox only genuinely read-only commands run). Destructive commands (`rm`, `sudo`, `git push --force`, `curl|sh`, container/daemon control, …) are hard-blocked; chained/compound commands and anything not on the read-only allowlist ALWAYS require explicit approval (a command auto-runs only when it is read-only-safe, non-compound, sandboxed, and a capable coordinator model is pinned). Machine-scoped on purpose: a workspace cannot enable it. Disabled in untrusted workspaces and in plan / read-only tiers. A pinned capable coordinator model (`mysti.mysti.coordinatorModel`) is recommended.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/integration/refusalSpeaks.test.ts",
+        "tests/integration/chatViewTrustAndGate.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.mysti.bashNetwork",
+      "type": "string",
+      "scope": "machine",
+      "default": "off",
+      "enum": [
+        "off",
+        "on"
+      ],
+      "description": "Whether the `@mysti` agent's sandboxed `bash` tool may access the **network**. Default `off` (the sandbox blocks all egress) — the safest posture, since the coordinator model is prompt-injectable. Turn `on` only if you need the agent to run installs/downloads itself; it widens the attack surface. Requires `mysti.mysti.localExecution` = `on`. Machine-scoped.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.mysti.skills",
+      "type": "string",
+      "scope": "machine",
+      "default": "off",
+      "enum": [
+        "off",
+        "prose",
+        "full"
+      ],
+      "description": "**Agent catalog for the Mysti agent (Plan 20).** When set to `prose`, the `@mysti` coordinator can **search and read** the project's reusable working practices - the bundled personas/skills/roles plus any you have written in `.mysti/agents/` - instead of re-deriving the same procedures every session. Retrieval only: it reads files you already have and calls nothing, so there is no permission card. What it reads is injected as **reference material, not instructions**, and only integrity-verified bundled content is ever trusted further (workspace- and user-authored files are fenced). Costs nothing when off, and nothing when fewer than 8 artifacts exist. `full` additionally turns on the **authoring and execution** capabilities - the `publish` and `skillrun` directives (Plan 20 Phases 3-4). `full` is **necessary but not sufficient**: those tags are added to the parser only when ALL of the following also hold - `mysti.mysti.localExecution` is `on`, the turn is not in a plan mode and not `read-only` access, the workspace is **trusted**, and this machine has a working OS sandbox (macOS Seatbelt or Linux `bwrap`; Windows and Linux without `bwrap` have none, so `full` grants nothing extra there). When any one is false the tags are not recognized at all, so the capability does not exist rather than existing and erroring. `publish` additionally requires two forced confirmation cards, and `skillrun` runs a host-owned command shape with arguments passed by file. Machine-scoped so a workspace cannot enable it.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/integration/refusalSpeaks.test.ts",
+        "tests/utils/manifestPackaging.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.mysti.mcpTools",
+      "type": "string",
+      "scope": "machine",
+      "default": "off",
+      "enum": [
+        "off",
+        "on"
+      ],
+      "description": "**External MCP tools for the Mysti agent (Plan 19).** When `on`, the `@mysti` coordinator can call the external tools you've **connected via DeepMyst** (Gmail, Slack, Trello, Notion, databases, …), discovered live through the DeepMyst broker. Every call is an un-undoable network side effect (sending mail, creating a ticket), so it **always** requires an explicit approval card — it is never auto-approved, even in full-access or autonomous-aggressive. Only your already-connected tools are callable (a model-invented tool name is refused); results re-enter the model as untrusted, nonce-fenced data. Requires a signed-in DeepMyst account and a trusted workspace. Off by default; machine-scoped so a workspace cannot enable it. Budget: `mysti.mysti.maxMcpCalls` per run.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/integration/refusalSpeaks.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.mysti.maxMcpCalls",
+      "type": "number",
+      "scope": "machine",
+      "default": 6,
+      "description": "Max **external MCP tool calls** the `@mysti` agent may make per run (each still requires explicit approval). NOT effort-scaled. Machine-scoped so a workspace cannot raise your per-run external-call ceiling. Requires `mysti.mysti.mcpTools` = `on`.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.mysti.fallbackModel",
+      "type": "string",
+      "scope": "machine",
+      "default": "",
+      "description": "Optional **paid** gateway model the Mysti agent falls back to when **every** free model (`mysti.mysti.freeModels`, or the pinned `mysti.mysti.coordinatorModel`) is unavailable. Empty (default) = free-only: when every free model is rate-limited or offline, Mysti says so and offers **Choose model** instead of spending. Set e.g. `claude-haiku-4-5` to spend DeepMyst credits as a last resort.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/services/coordinatorDefaults.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.openrouter.apiKey",
+      "type": "string",
+      "scope": "machine",
+      "default": "",
+      "description": "**Optional power-user opt-in.** An OpenRouter API key (`sk-or-...`) to run the **Mysti agent**'s coordinator on OpenRouter **free** models INSTEAD of the DeepMyst gateway. Leave empty (default) to run through your DeepMyst account. Get one at https://openrouter.ai/keys. Machine-scoped so a workspace can't read or redirect it; only ever sent to `openrouter.ai`. The `OPENROUTER_API_KEY` environment variable is used as a fallback.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.openrouter.coordinatorModel",
+      "type": "string",
+      "scope": "machine",
+      "default": "auto",
+      "description": "Model the Mysti agent uses for its own coordination (decompose/synthesize). `auto` (default) discovers a currently-available OpenRouter **free** model at runtime (the roster rotates, so ids are never hardcoded). Set an explicit id (e.g. `openai/gpt-oss-120b:free`) to pin one, or `openrouter/free` to use OpenRouter's free meta-router.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.deepmyst.apiUrl",
+      "type": "string",
+      "scope": "machine",
+      "default": "https://api.v2.deepmyst.com",
+      "description": "Base URL of the DeepMyst API used for brokered MCP connections (Plan 04). The user's `dm_` API key is sent as `Authorization: Bearer`; DeepMyst exposes MCP tools at `/api/v1/mcp/{agent}`. Machine-scoped so a workspace can't redirect your key; the client also only ever sends it to a `*.deepmyst.com` host.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.deepmyst.webUrl",
+      "type": "string",
+      "scope": "machine",
+      "default": "https://v2.deepmyst.com",
+      "description": "Base URL of the DeepMyst web app, opened in the browser for Clerk sign-in/sign-up and for managing connections.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/utils/settingsScopeHardening.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.deepmyst.useInLocalClis",
+      "type": "boolean",
+      "scope": "machine",
+      "default": false,
+      "description": "Expose your DeepMyst MCP connections (Smithery/Composio) to your local AI CLIs (Claude Code, Gemini, Qwen, OpenCode, Codex, Cline) by writing the per-user MCP broker endpoint (`/api/v1/me/mcp`) into each CLI's MCP config, with your `dm_` key as the Bearer. **Off by default** — when on, your `dm_` key is written into those config files (including the workspace `.mcp.json`, which may be committed to git). Toggle it from the DeepMyst Connections panel.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/utils/settingsScopeHardening.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.activeMode.enabled",
+      "type": "boolean",
+      "scope": "window",
+      "default": true,
+      "description": "Show Active Mode panel and connect to OpenClaw daemon automatically (provider-independent)",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/managers/activeModeManager.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.activeMode.pollInterval",
+      "type": "number",
+      "scope": "window",
+      "default": 30,
+      "description": "Seconds between daemon status polls",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.activeMode.activityLimit",
+      "type": "number",
+      "scope": "window",
+      "default": 50,
+      "description": "Maximum number of activity entries to display",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.activeMode.autoStartDaemon",
+      "type": "boolean",
+      "scope": "machine",
+      "default": false,
+      "description": "Automatically start the OpenClaw daemon (`openclaw gateway --detach`) when it is not running at extension activation. Only in trusted workspaces; a workspace's settings cannot enable this.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/managers/activeModeManager.test.ts",
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.lifecycle.enabled",
+      "type": "boolean",
+      "scope": "window",
+      "default": true,
+      "description": "Enable agent lifecycle management with idle timeout and process tree protection",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/managers/agentLifecycleManager.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.lifecycle.idleTimeoutMinutes",
+      "type": "number",
+      "scope": "window",
+      "default": 60,
+      "description": "Minutes of inactivity before an agent session is automatically cleared (1-1440)",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/managers/agentLifecycleManager.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.lifecycle.processTreeTracking",
+      "type": "boolean",
+      "scope": "window",
+      "default": true,
+      "description": "Track child processes spawned by CLI agents to prevent premature shutdown",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/managers/agentLifecycleManager.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.lifecycle.protectActiveChildren",
+      "type": "boolean",
+      "scope": "window",
+      "default": true,
+      "description": "Block automatic shutdown when the agent has active child processes (requires explicit user action)",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/managers/agentLifecycleManager.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.lifecycle.checkIntervalSeconds",
+      "type": "number",
+      "scope": "window",
+      "default": 30,
+      "description": "Seconds between process tree scans for idle sessions (10-300)",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/managers/agentLifecycleManager.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.showSuggestions",
+      "type": "boolean",
+      "scope": "window",
+      "default": true,
+      "description": "Show quick action suggestions after AI responses",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/integration/suggestionPreference.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.brainstorm.enabled",
+      "type": "boolean",
+      "scope": "window",
+      "default": false,
+      "description": "Enable multi-agent brainstorm mode where two AI providers collaborate, debate, and synthesize solutions",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.brainstorm.strategy",
+      "type": "string",
+      "scope": "window",
+      "default": "quick",
+      "enum": [
+        "quick",
+        "debate",
+        "red-team",
+        "perspectives",
+        "delphi"
+      ],
+      "description": "Collaboration strategy for brainstorm mode. Determines how agents interact as a team.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/integration/settingsHubTab.test.ts",
+        "tests/webview/onboardingBrowser.test.ts",
+        "tests/webview/settingsHubBrowser.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.brainstorm.discussionMode",
+      "type": "string",
+      "scope": "window",
+      "default": "quick",
+      "enum": [
+        "quick",
+        "full"
+      ],
+      "description": "Deprecated: Use mysti.brainstorm.strategy instead. Kept for backward compatibility.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.brainstorm.maxDiscussionRounds",
+      "type": "number",
+      "scope": "window",
+      "default": 2,
+      "description": "Maximum discussion rounds for debate and delphi strategies (may stop early with auto-converge)",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.brainstorm.discussionRounds",
+      "type": "number",
+      "scope": "window",
+      "default": 2,
+      "description": "Deprecated: Use mysti.brainstorm.maxDiscussionRounds instead.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.brainstorm.autoConverge",
+      "type": "boolean",
+      "scope": "window",
+      "default": true,
+      "description": "Automatically stop discussion when agents reach consensus (reduces unnecessary rounds)",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.brainstorm.synthesisAgent",
+      "type": "string",
+      "scope": "window",
+      "default": "claude-code",
+      "enum": [
+        "claude-code",
+        "openai-codex",
+        "google-gemini",
+        "cline",
+        "github-copilot",
+        "cursor",
+        "openclaw",
+        "opencode",
+        "ollama",
+        "localai",
+        "qwen-code",
+        "hermes",
+        "continue",
+        "openrouter",
+        "kimi-code"
+      ],
+      "description": "Agent to use for synthesis in brainstorm mode",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.brainstorm.agents",
+      "type": "array",
+      "scope": "window",
+      "default": [
+        "claude-code",
+        "openai-codex"
+      ],
+      "description": "Select any 2 of 15 AI providers to collaborate in brainstorm mode. Different combinations offer unique strengths.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/integration/settingsHubTab.test.ts",
+        "tests/integration/chatViewDebranding.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.claudePersona",
+      "type": "string",
+      "scope": "machine",
+      "default": "neutral",
+      "enum": [
+        "neutral",
+        "architect",
+        "pragmatist",
+        "engineer",
+        "reviewer",
+        "designer",
+        "custom"
+      ],
+      "description": "Persona for Claude agent in brainstorm mode",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.claudeCustomPrompt",
+      "type": "string",
+      "scope": "machine",
+      "default": "",
+      "description": "Custom persona prompt for Claude (when persona is 'custom')",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.codexPersona",
+      "type": "string",
+      "scope": "machine",
+      "default": "neutral",
+      "enum": [
+        "neutral",
+        "architect",
+        "pragmatist",
+        "engineer",
+        "reviewer",
+        "designer",
+        "custom"
+      ],
+      "description": "Persona for Codex agent in brainstorm mode",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.codexCustomPrompt",
+      "type": "string",
+      "scope": "machine",
+      "default": "",
+      "description": "Custom persona prompt for Codex (when persona is 'custom')",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.geminiPersona",
+      "type": "string",
+      "scope": "machine",
+      "default": "neutral",
+      "enum": [
+        "neutral",
+        "architect",
+        "pragmatist",
+        "engineer",
+        "reviewer",
+        "designer",
+        "custom"
+      ],
+      "description": "Persona for Gemini agent in brainstorm mode",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.geminiCustomPrompt",
+      "type": "string",
+      "scope": "machine",
+      "default": "",
+      "description": "Custom persona prompt for Gemini (when persona is 'custom')",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.clinePersona",
+      "type": "string",
+      "scope": "machine",
+      "default": "neutral",
+      "enum": [
+        "neutral",
+        "architect",
+        "pragmatist",
+        "engineer",
+        "reviewer",
+        "designer",
+        "custom"
+      ],
+      "description": "Persona for Cline agent in brainstorm mode",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.clineCustomPrompt",
+      "type": "string",
+      "scope": "machine",
+      "default": "",
+      "description": "Custom persona prompt for Cline (when persona is 'custom')",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.copilotPersona",
+      "type": "string",
+      "scope": "machine",
+      "default": "neutral",
+      "enum": [
+        "neutral",
+        "architect",
+        "pragmatist",
+        "engineer",
+        "reviewer",
+        "designer",
+        "custom"
+      ],
+      "description": "Persona for Copilot agent in brainstorm mode",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.copilotCustomPrompt",
+      "type": "string",
+      "scope": "machine",
+      "default": "",
+      "description": "Custom persona prompt for Copilot (when persona is 'custom')",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.cursorPersona",
+      "type": "string",
+      "scope": "machine",
+      "default": "neutral",
+      "enum": [
+        "neutral",
+        "architect",
+        "pragmatist",
+        "engineer",
+        "reviewer",
+        "designer",
+        "custom"
+      ],
+      "description": "Persona for Cursor agent in brainstorm mode",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.cursorCustomPrompt",
+      "type": "string",
+      "scope": "machine",
+      "default": "",
+      "description": "Custom persona prompt for Cursor (when persona is 'custom')",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.openclawPersona",
+      "type": "string",
+      "scope": "machine",
+      "default": "neutral",
+      "enum": [
+        "neutral",
+        "architect",
+        "pragmatist",
+        "engineer",
+        "reviewer",
+        "designer",
+        "custom"
+      ],
+      "description": "Persona for OpenClaw agent in brainstorm mode",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.openclawCustomPrompt",
+      "type": "string",
+      "scope": "machine",
+      "default": "",
+      "description": "Custom persona prompt for OpenClaw (when persona is 'custom')",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.opencodePersona",
+      "type": "string",
+      "scope": "machine",
+      "default": "neutral",
+      "enum": [
+        "neutral",
+        "architect",
+        "pragmatist",
+        "engineer",
+        "reviewer",
+        "designer",
+        "custom"
+      ],
+      "description": "Persona for OpenCode agent in brainstorm mode",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.opencodeCustomPrompt",
+      "type": "string",
+      "scope": "machine",
+      "default": "",
+      "description": "Custom persona prompt for OpenCode (when persona is 'custom')",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.ollamaPersona",
+      "type": "string",
+      "scope": "machine",
+      "default": "neutral",
+      "enum": [
+        "neutral",
+        "architect",
+        "pragmatist",
+        "engineer",
+        "reviewer",
+        "designer",
+        "custom"
+      ],
+      "description": "Persona for Ollama agent in brainstorm mode",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.ollamaCustomPrompt",
+      "type": "string",
+      "scope": "machine",
+      "default": "",
+      "description": "Custom persona prompt for Ollama (when persona is 'custom')",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.localaiPersona",
+      "type": "string",
+      "scope": "machine",
+      "default": "neutral",
+      "enum": [
+        "neutral",
+        "architect",
+        "pragmatist",
+        "engineer",
+        "reviewer",
+        "designer",
+        "custom"
+      ],
+      "description": "Persona for LocalAI agent in brainstorm mode",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.localaiCustomPrompt",
+      "type": "string",
+      "scope": "machine",
+      "default": "",
+      "description": "Custom persona prompt for LocalAI (when persona is 'custom')",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.qwenCodePersona",
+      "type": "string",
+      "scope": "machine",
+      "default": "neutral",
+      "enum": [
+        "neutral",
+        "architect",
+        "pragmatist",
+        "engineer",
+        "reviewer",
+        "designer",
+        "custom"
+      ],
+      "description": "Persona for Qwen Code agent in brainstorm mode",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.qwenCodeCustomPrompt",
+      "type": "string",
+      "scope": "machine",
+      "default": "",
+      "description": "Custom persona prompt for Qwen Code (when persona is 'custom')",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.hermesPersona",
+      "type": "string",
+      "scope": "machine",
+      "default": "neutral",
+      "enum": [
+        "neutral",
+        "architect",
+        "pragmatist",
+        "engineer",
+        "reviewer",
+        "designer",
+        "custom"
+      ],
+      "description": "Persona for Hermes agent in brainstorm mode",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.hermesCustomPrompt",
+      "type": "string",
+      "scope": "machine",
+      "default": "",
+      "description": "Custom persona prompt for Hermes (when persona is 'custom')",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.continuePersona",
+      "type": "string",
+      "scope": "machine",
+      "default": "neutral",
+      "enum": [
+        "neutral",
+        "architect",
+        "pragmatist",
+        "engineer",
+        "reviewer",
+        "designer",
+        "custom"
+      ],
+      "description": "Persona for Continue agent in brainstorm mode",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.continueCustomPrompt",
+      "type": "string",
+      "scope": "machine",
+      "default": "",
+      "description": "Custom persona prompt for Continue (when persona is 'custom')",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.openrouterPersona",
+      "type": "string",
+      "scope": "machine",
+      "default": "neutral",
+      "enum": [
+        "neutral",
+        "architect",
+        "pragmatist",
+        "engineer",
+        "reviewer",
+        "designer",
+        "custom"
+      ],
+      "description": "Persona for OpenRouter agent in brainstorm mode",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.openrouterCustomPrompt",
+      "type": "string",
+      "scope": "machine",
+      "default": "",
+      "description": "Custom persona prompt for OpenRouter (when persona is 'custom')",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.kimiCodePersona",
+      "type": "string",
+      "scope": "machine",
+      "default": "neutral",
+      "enum": [
+        "neutral",
+        "architect",
+        "pragmatist",
+        "engineer",
+        "reviewer",
+        "designer",
+        "custom"
+      ],
+      "description": "Persona for Kimi Code agent in brainstorm mode",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.kimiCodeCustomPrompt",
+      "type": "string",
+      "scope": "machine",
+      "default": "",
+      "description": "Custom persona prompt for Kimi Code (when persona is 'custom')",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.autoSuggest",
+      "type": "boolean",
+      "scope": "window",
+      "default": true,
+      "description": "Smart persona suggestions: Mysti analyzes your message and recommends the best persona (Architect, Debugger, etc.) for your task",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.maxTokenBudget",
+      "type": "number",
+      "scope": "window",
+      "default": 0,
+      "description": "Limit tokens used for agent context. Set to 0 for unlimited (default). Use lower values to reduce API costs.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/webview/settingsHubBrowser.test.ts",
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.agents.skillSources",
+      "type": "array",
+      "scope": "application",
+      "default": [
+        "garrytan/gstack",
+        "anthropics/skills"
+      ],
+      "description": "GitHub repositories to discover skills from (SKILL.md convention). Format: owner/repo, optionally with /path and @branch — e.g. 'garrytan/gstack' or 'anthropics/skills@main'. Used by the 'Mysti: Import Skills from GitHub' command. Application-scoped so workspaces cannot inject sources.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.collab.maxConcurrent",
+      "type": "number",
+      "scope": "window",
+      "default": 3,
+      "description": "Maximum collaborators (advisor/critic/reviewer/coworker) dispatched at once when using @agent:role mentions or the /consult, /review, /critique, /panel commands. Higher values run more agents in parallel but use more resources.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/managers/collaborationManager.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.permission.timeout",
+      "type": "number",
+      "scope": "machine",
+      "default": 30,
+      "description": "Seconds to wait for permission approval (0 = no timeout, requires explicit action). Machine-scoped: a workspace cannot shorten it to fast-track an auto-accept.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/integration/permissionManager.test.ts",
+        "tests/integration/chatPermissionLifecycle.test.ts",
+        "tests/managers/permissionScoping.test.ts",
+        "tests/managers/permissionManagerCanvas.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.permission.timeoutBehavior",
+      "type": "string",
+      "scope": "machine",
+      "default": "auto-reject",
+      "enum": [
+        "auto-accept",
+        "auto-reject",
+        "require-action",
+        "semi-autonomous"
+      ],
+      "description": "Behavior when a permission request times out. Machine-scoped (security): a repository's workspace settings cannot flip this to auto-accept to silently approve delegation/edit writes — the workspace-raises-authority escalation review[0] closed.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/integration/permissionManager.test.ts",
+        "tests/integration/permissionOrigin.test.ts",
+        "tests/integration/settingsHubTab.test.ts",
+        "tests/integration/chatPermissionLifecycle.test.ts",
+        "tests/managers/permissionScoping.test.ts",
+        "tests/managers/permissionManagerCanvas.test.ts",
+        "tests/webview/settingsHubBrowser.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.semiAutonomous.timeout",
+      "type": "number",
+      "scope": "window",
+      "default": 60,
+      "description": "Seconds before AI takes over in semi-autonomous mode. Applies to both permission requests and questions.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/integration/settingsHubTab.test.ts",
+        "tests/webview/settingsHubBrowser.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.useShellForCli",
+      "type": "boolean",
+      "scope": "machine",
+      "default": false,
+      "description": "Run AI provider CLIs using a shell (sets shell=true when spawning processes). Enable this on Windows if you see \"spawn EINVAL\" errors with CLI .cmd wrappers.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/providers/claude/buildCliArgs.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.debugVerbose",
+      "type": "boolean",
+      "scope": "window",
+      "default": false,
+      "description": "Pass --verbose flag to CLI providers (Claude Code, Cline). Adds extra diagnostic output but may slow responses. Only enable for debugging.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.debug.performanceLogging",
+      "type": "boolean",
+      "scope": "window",
+      "default": false,
+      "description": "Log detailed performance instrumentation to the Debug Console with the `[Mysti][perf]` prefix: activation and provider-init timings, panel time-to-usable, time-to-first-token, per-chunk render cost percentiles, and heap samples. When off, only a few coarse timings (activation, panel ready, first token) are recorded. Only enable when diagnosing performance issues.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/utils/perfTracker.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.autonomous.safetyMode",
+      "type": "string",
+      "scope": "window",
+      "default": "balanced",
+      "enum": [
+        "conservative",
+        "balanced",
+        "aggressive"
+      ],
+      "description": "Safety level for autonomous mode decisions",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/integration/autonomousContinuationGate.test.ts",
+        "tests/utils/settingsClamp.test.ts",
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.autonomous.maxSessionDuration",
+      "type": "number",
+      "scope": "machine",
+      "default": 24,
+      "description": "Maximum hours for an autonomous session (0 = unlimited)",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.autonomous.maxMemoryEntries",
+      "type": "number",
+      "scope": "window",
+      "default": 500,
+      "description": "Maximum number of memory entries to store",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.autonomous.blockPatterns",
+      "type": "array",
+      "scope": "machine",
+      "default": [],
+      "description": "Additional regex patterns to block in autonomous mode (e.g. dangerous commands)",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.autonomous.allowFileCreation",
+      "type": "boolean",
+      "scope": "machine",
+      "default": true,
+      "description": "Allow autonomous mode to create new files",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.autonomous.allowFileEdit",
+      "type": "boolean",
+      "scope": "machine",
+      "default": true,
+      "description": "Allow autonomous mode to edit existing files",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.autonomous.allowBashCommands",
+      "type": "boolean",
+      "scope": "machine",
+      "default": true,
+      "description": "Allow autonomous mode to run bash commands (destructive commands always blocked)",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/integration/autonomousContinuationGate.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.autonomous.continuationMode",
+      "type": "string",
+      "scope": "machine",
+      "default": "goal",
+      "enum": [
+        "goal",
+        "task-queue"
+      ],
+      "description": "How autonomous mode handles task continuation",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.commitSignature.enabled",
+      "type": "boolean",
+      "scope": "window",
+      "default": true,
+      "description": "Track when Mysti creates git commits for the Trail Blazer badge",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.fileDecorations.enabled",
+      "type": "boolean",
+      "scope": "window",
+      "default": true,
+      "description": "Show sparkle 'M' badge on files modified by Mysti in the VS Code Explorer",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.fileDecorations.duration",
+      "type": "number",
+      "scope": "window",
+      "default": 24,
+      "description": "How long (in hours) to show file decoration badges after a file is modified by Mysti",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.projectContext.enabled",
+      "type": "boolean",
+      "scope": "window",
+      "default": true,
+      "description": "Read mysti.md and .mysti/rules/ for project-specific instructions (like CLAUDE.md)",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.autoMemory.enabled",
+      "type": "boolean",
+      "scope": "window",
+      "default": true,
+      "description": "Automatically learn and remember project patterns across sessions (like Claude Code's auto-memory)",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.visualTest.enabled",
+      "type": "boolean",
+      "scope": "machine",
+      "default": true,
+      "description": "Enable visual testing. When off, neither you nor the AI can open a browser from Mysti.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/utils/settingsClamp.test.ts",
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.visualTest.devServerCommand",
+      "type": "string",
+      "scope": "machine",
+      "default": "",
+      "description": "Dev server command (e.g. 'npm run dev'). Auto-detected from your package.json scripts (dev/start/serve) if empty. Starting it always asks for your approval first.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.visualTest.url",
+      "type": "string",
+      "scope": "window",
+      "default": "http://localhost:3000",
+      "description": "URL to test after dev server starts",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.visualTest.maxIterations",
+      "type": "number",
+      "scope": "window",
+      "default": 5,
+      "description": "Maximum screenshot→analyze→fix iterations before stopping",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.visualTest.browser",
+      "type": "string",
+      "scope": "window",
+      "default": "chromium",
+      "enum": [
+        "chromium",
+        "firefox",
+        "webkit"
+      ],
+      "description": "Browser engine for screenshots and interactions",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.visualTest.headless",
+      "type": "boolean",
+      "scope": "window",
+      "default": true,
+      "description": "Run browser in headless mode (no visible window)",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.visualTest.viewportWidth",
+      "type": "number",
+      "scope": "window",
+      "default": 1280,
+      "description": "Browser viewport width in pixels",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.visualTest.viewportHeight",
+      "type": "number",
+      "scope": "window",
+      "default": 720,
+      "description": "Browser viewport height in pixels",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.visualTest.serverReadyPattern",
+      "type": "string",
+      "scope": "machine",
+      "default": "localhost:\\d+|ready in|compiled successfully|VITE|started server on",
+      "description": "Regex pattern to detect when the dev server is ready (matched against stdout). Machine-scoped and length-capped so a cloned repo cannot inject a catastrophically-backtracking pattern.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.visualTest.allowedOrigins",
+      "type": "array",
+      "scope": "machine",
+      "default": [
+        "http://localhost",
+        "http://127.0.0.1",
+        "http://[::1]"
+      ],
+      "description": "Origins the visual-testing browser may reach. Loopback-only by default: a browser that can fetch arbitrary URLs and screenshot them back to a model is an exfiltration channel. An entry without a port allows any port on that host. Cloud metadata addresses are blocked even if listed.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/utils/settingsScopeHardening.test.ts",
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.visualTest.allowModelDevServerCommand",
+      "type": "boolean",
+      "scope": "machine",
+      "default": false,
+      "description": "Allow the AI to supply the dev-server shell command. Off by default — the command comes from mysti.visualTest.devServerCommand or your package.json, so a prompt-injected model has no command to name. Turning this on re-introduces a model-to-shell path, gated by a modal confirmation.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.visualTest.agentInteractions",
+      "type": "string",
+      "scope": "machine",
+      "default": "off",
+      "enum": [
+        "off",
+        "safe"
+      ],
+      "description": "How much the AI may interact with your running app during a visual look.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.visualTest.interactions",
+      "type": "string",
+      "scope": "machine",
+      "default": "safe",
+      "enum": [
+        "off",
+        "safe",
+        "full"
+      ],
+      "description": "How much the Visual Test dashboard (your own clicks) may interact with the page.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/utils/settingsClamp.test.ts",
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.desk.enabled",
+      "type": "boolean",
+      "scope": "machine",
+      "default": false,
+      "description": "**Desk — cross-machine teamwork (off by default).** Lets the Mysti agent knock on a paired teammate's Desk: ask where something lives, or consult their agent about their codebase. Every call shows you exactly what will leave this machine before it goes. Machine-scoped: a cloned repository can never turn this on.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/utils/settingsScopeHardening.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.desk.serve",
+      "type": "boolean",
+      "scope": "machine",
+      "default": false,
+      "description": "**Answer teammates' requests.** When off, Desk works one-way: you can ask paired teammates, but nothing on your machine ever answers. Turning it on binds a loopback-only listener; peers still need a pinned key and an explicit grant.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/utils/settingsScopeHardening.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.desk.servingBudgetUsdPerDay",
+      "type": "number",
+      "scope": "machine",
+      "default": 0.5,
+      "description": "Hard daily ceiling on what answering ONE teammate may cost you. Checked before a request is served and enforced mid-answer, so a runaway peer stops rather than accumulating.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.desk.minRetentionClass",
+      "type": "string",
+      "scope": "machine",
+      "default": "zero-retention",
+      "enum": [
+        "zero-retention",
+        "logged",
+        "training-permitted"
+      ],
+      "description": "The weakest model-retention class you will let a teammate's question be processed by. If their Desk cannot meet it, your request is refused **before it leaves this machine**.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/utils/settingsScopeHardening.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.mysti.visualTools",
+      "type": "string",
+      "scope": "machine",
+      "default": "off",
+      "enum": [
+        "off",
+        "on"
+      ],
+      "description": "Let the Mysti agent SEE your running app: render it in a real browser and read back console errors, failed requests, layout/contrast problems, the accessibility tree and a screenshot. Requires a trusted workspace and Playwright browsers (npx playwright install chromium). Off by default — it starts a dev server and a browser.",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/integration/refusalSpeaks.test.ts",
+        "tests/utils/settingsScopeHardening.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.mysti.maxVisualLooks",
+      "type": "number",
+      "scope": "machine",
+      "default": 6,
+      "description": "Maximum times the Mysti agent may look at the running app in a single run (doubled on high effort).",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.canvas.imageGenerationProvider",
+      "type": "string",
+      "scope": "window",
+      "default": "none",
+      "enum": [
+        "gpt-image-1.5",
+        "gpt-image-1",
+        "gpt-image-1-mini",
+        "nano-banana",
+        "nano-banana-pro",
+        "none"
+      ],
+      "description": "Image generation provider for Canvas reimagination and draft features",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/services/CanvasGenerationServices.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.canvas.videoGenerationProvider",
+      "type": "string",
+      "scope": "window",
+      "default": "none",
+      "enum": [
+        "sora",
+        "veo",
+        "none"
+      ],
+      "description": "Video generation provider for Canvas /video command",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/services/CanvasGenerationServices.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.canvas.openaiApiKey",
+      "type": "string",
+      "scope": "machine",
+      "default": "",
+      "description": "OpenAI API key for GPT Image and Sora video generation",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/services/CanvasSecrets.test.ts",
+        "tests/services/CanvasGenerationServices.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.canvas.geminiApiKey",
+      "type": "string",
+      "scope": "machine",
+      "default": "",
+      "description": "Google Gemini API key for image and Veo video generation",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/services/CanvasSecrets.test.ts",
+        "tests/services/CanvasGenerationServices.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.canvas.stitchApiKey",
+      "type": "string",
+      "scope": "machine",
+      "default": "",
+      "description": "Google Stitch API key for UI screen generation (get from stitch.withgoogle.com → Settings → API Keys)",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/services/CanvasSecrets.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.canvas.stitchModel",
+      "type": "string",
+      "scope": "window",
+      "default": "GEMINI_3_PRO",
+      "enum": [
+        "GEMINI_3_PRO",
+        "GEMINI_3_FLASH"
+      ],
+      "description": "Stitch model: GEMINI_3_PRO (higher quality) or GEMINI_3_FLASH (faster)",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [
+        "tests/utils/settingsScopeParity.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "key": "mysti.canvas.stitchCreativeRange",
+      "type": "string",
+      "scope": "window",
+      "default": "EXPLORE",
+      "enum": [
+        "REFINE",
+        "EXPLORE",
+        "REIMAGINE"
+      ],
+      "description": "Creative range for Stitch variants: REFINE (conservative), EXPLORE (balanced), REIMAGINE (radical)",
+      "validation": "Schema inventoried; per-setting persistence/runtime effect needs the settings journey.",
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    }
+  ],
+  "keybindings": [
+    {
+      "command": "mysti.openChat",
+      "key": "ctrl+shift+m",
+      "mac": "cmd+shift+m"
+    },
+    {
+      "command": "mysti.openInNewTab",
+      "key": "ctrl+shift+n",
+      "mac": "cmd+shift+n"
+    },
+    {
+      "command": "mysti.toggleAutonomous",
+      "key": "ctrl+shift+a",
+      "mac": "cmd+shift+a"
+    },
+    {
+      "command": "mysti.openCanvas",
+      "key": "ctrl+shift+d",
+      "mac": "cmd+shift+d"
+    }
+  ],
+  "menus": {
+    "explorer/context": [
+      {
+        "command": "mysti.addToContext",
+        "group": "mysti"
+      }
+    ],
+    "editor/context": [
+      {
+        "command": "mysti.addToContext",
+        "group": "mysti"
+      }
+    ],
+    "view/title": [
+      {
+        "command": "mysti.openConnections",
+        "when": "view == mysti.chatView",
+        "group": "navigation@0"
+      },
+      {
+        "command": "mysti.openInNewTab",
+        "when": "view == mysti.chatView",
+        "group": "navigation@1"
+      }
+    ],
+    "editor/title": [
+      {
+        "command": "mysti.openInNewTab",
+        "group": "navigation"
+      }
+    ]
+  },
+  "walkthroughs": [
+    {
+      "id": "mysti.gettingStarted",
+      "title": "Get Started with Mysti",
+      "description": "Connect an agent, then learn the five things that make Mysti different.",
+      "steps": [
+        {
+          "id": "mysti.walkthrough.openChat",
+          "title": "Open the Mysti panel",
+          "description": "Click the Mysti icon in the Activity Bar, or press ``Cmd+Shift+M`` (``Ctrl+Shift+M`` on Windows and Linux).\n[Open Mysti](command:mysti.openChat)",
+          "media": {
+            "svg": "media/walkthrough/open.svg",
+            "altText": "The keys Cmd, Shift and M"
+          },
+          "completionEvents": [
+            "onCommand:mysti.openChat",
+            "onView:mysti.chatView"
+          ]
+        },
+        {
+          "id": "mysti.walkthrough.connect",
+          "title": "Connect an agent",
+          "description": "Mysti drives the AI coding tools you already use — Claude Code, Codex, Gemini and 12 more — or runs its own agent on a free DeepMyst account with nothing to install.\n[Connect an agent](command:mysti.getStarted)",
+          "media": {
+            "svg": "media/walkthrough/connect.svg",
+            "altText": "A list of agents: Claude Code ready, Codex waiting for sign-in, and the Mysti agent"
+          },
+          "completionEvents": [
+            "onContext:mysti.agentReady"
+          ]
+        },
+        {
+          "id": "mysti.walkthrough.mode",
+          "title": "Choose how much it may do",
+          "description": "**Plan** only reads. **Ask** checks with you before each edit. **Auto** edits inside the workspace. **Full** does everything. Every turn is checkpointed either way.\n[Choose a mode](command:mysti.getStarted?%5B%22mode%22%5D)",
+          "media": {
+            "svg": "media/walkthrough/mode.svg",
+            "altText": "The four modes, with Ask selected"
+          },
+          "completionEvents": [
+            "onSettingChanged:mysti.accessLevel",
+            "onSettingChanged:mysti.defaultMode"
+          ]
+        },
+        {
+          "id": "mysti.walkthrough.mention",
+          "title": "Talk to a second agent",
+          "description": "Start a message with ``@codex`` or ``@gemini`` to send just that message to another agent. ``@file.ts`` attaches a file instead.\n[Try it in chat](command:mysti.openChat)",
+          "media": {
+            "svg": "media/walkthrough/mention.svg",
+            "altText": "A message addressed to @codex"
+          }
+        },
+        {
+          "id": "mysti.walkthrough.brainstorm",
+          "title": "Brainstorm with two agents",
+          "description": "Two agents answer, challenge each other, and agree on one answer. Pick **Brainstorm** from the agent menu, or type ``/brainstorm``. Five ways to run it: quick, debate, red team, perspectives and Delphi.\n[Open Mysti](command:mysti.openChat)",
+          "media": {
+            "svg": "media/walkthrough/brainstorm.svg",
+            "altText": "Two agent answers merging into one"
+          }
+        },
+        {
+          "id": "mysti.walkthrough.rewind",
+          "title": "Rewind a turn",
+          "description": "Click the ↺ on any message you sent and choose **Rewind code to here**. Mysti keeps its own snapshots — your git history is untouched.\n[Open Mysti](command:mysti.openChat)",
+          "media": {
+            "svg": "media/walkthrough/rewind.svg",
+            "altText": "The message menu with Rewind code to here highlighted"
+          }
+        }
+      ]
+    }
+  ],
+  "chatActions": [
+    {
+      "action": "sendMessage",
+      "line": 1651,
+      "testReferenceFiles": [
+        "tests/chat/settingsHub.test.ts",
+        "tests/chat/subAgentQuestions.test.ts",
+        "tests/integration/settingsHubTab.test.ts",
+        "tests/webview/chatComposerBrowser.test.ts",
+        "tests/webview/onboardingBrowser.test.ts",
+        "tests/webview/settingsHubBrowser.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "startSession",
+      "line": 1664,
+      "testReferenceFiles": [
+        "tests/integration/slashCommandsAllLive.test.ts",
+        "tests/integration/chatPlanIsolation.test.ts",
+        "tests/webview/sessionPicker.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "stopSessionLane",
+      "line": 1678,
+      "testReferenceFiles": [
+        "tests/integration/slashCommandsAllLive.test.ts",
+        "tests/webview/sessionPicker.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "quickActionWithConfig",
+      "line": 1686,
+      "testReferenceFiles": [
+        "tests/webview/onboardingBrowser.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "cancelRequest",
+      "line": 1728,
+      "testReferenceFiles": [
+        "tests/chat/settingsHub.test.ts",
+        "tests/integration/permissionManager.test.ts",
+        "tests/integration/chatPlanIsolation.test.ts",
+        "tests/integration/chatViewSettingKeys.test.ts",
+        "tests/integration/settingsHubTab.test.ts",
+        "tests/integration/chatPermissionLifecycle.test.ts",
+        "tests/webview/chatComposerBrowser.test.ts",
+        "tests/webview/agentMap.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "cancelJob",
+      "line": 1763,
+      "testReferenceFiles": [
+        "tests/integration/chatJobOwnership.test.ts",
+        "tests/webview/agentMap.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "openSettingKey",
+      "line": 1779,
+      "testReferenceFiles": [
+        "tests/chat/settingsHub.test.ts",
+        "tests/integration/refusalSpeaks.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "signInDeepMyst",
+      "line": 1788,
+      "testReferenceFiles": [
+        "tests/webview/wizardZeroInstallPath.test.ts",
+        "tests/webview/trustLadderConformance.test.ts",
+        "tests/webview/mystiActionCard.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "signInDeepMystAgain",
+      "line": 1793,
+      "testReferenceFiles": [
+        "tests/webview/mystiActionCard.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "openDeepMystSignup",
+      "line": 1803,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "openDeepMystBilling",
+      "line": 1807,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "openOpenRouterSettings",
+      "line": 1811,
+      "testReferenceFiles": [
+        "tests/webview/mystiActionCard.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "switchAgentAndRetry",
+      "line": 1815,
+      "testReferenceFiles": [
+        "tests/integration/mystiDefaultAgent.test.ts",
+        "tests/webview/mystiActionCard.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "requestJobs",
+      "line": 1822,
+      "testReferenceFiles": [
+        "tests/integration/chatJobOwnership.test.ts",
+        "tests/webview/settingsHubBrowser.test.ts",
+        "tests/webview/agentMap.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "retrySubAgent",
+      "line": 1842,
+      "testReferenceFiles": [
+        "tests/webview/subAgentCards.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "sendBrainstormMessage",
+      "line": 1934,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "updateSettings",
+      "line": 1945,
+      "testReferenceFiles": [
+        "tests/chat/settingsHub.test.ts",
+        "tests/integration/settingsHubTab.test.ts",
+        "tests/webview/chatComposerBrowser.test.ts",
+        "tests/webview/onboardingBrowser.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "addToContext",
+      "line": 1949,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "requestFileAttachment",
+      "line": 1956,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "addContextPaths",
+      "line": 1960,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "addContextFile",
+      "line": 1979,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "removeFromContext",
+      "line": 2003,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "setContextItemEnabled",
+      "line": 2016,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "clearContext",
+      "line": 2034,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "requestSlashCommands",
+      "line": 2047,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "requestModels",
+      "line": 2079,
+      "testReferenceFiles": [
+        "tests/chat/settingsHub.test.ts",
+        "tests/integration/modelAutoRefresh.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "requestSessionChanges",
+      "line": 2098,
+      "testReferenceFiles": [
+        "tests/webview/chatComposerBrowser.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "requestUpdateStatus",
+      "line": 2136,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "selectAnnouncedModel",
+      "line": 2150,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "dismissModelAnnouncement",
+      "line": 2159,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "runCliUpdate",
+      "line": 2169,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "requestAgentLists",
+      "line": 2187,
+      "testReferenceFiles": [
+        "tests/chat/settingsHub.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "executeSlashCommand",
+      "line": 2198,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "openExternal",
+      "line": 2206,
+      "testReferenceFiles": [
+        "tests/chat/settingsHub.test.ts",
+        "tests/integration/settingsHubTab.test.ts",
+        "tests/managers/deepMystAuthManager.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "executeQuickAction",
+      "line": 2222,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "executeSuggestion",
+      "line": 2226,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "enhancePrompt",
+      "line": 2233,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "deskRequestRoster",
+      "line": 2237,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "deskCreateInvite",
+      "line": 2238,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "deskPairBegin",
+      "line": 2239,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "deskPairVerify",
+      "line": 2240,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "deskPairFinish",
+      "line": 2241,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "deskPairCancel",
+      "line": 2242,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "deskRevoke",
+      "line": 2243,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "newConversation",
+      "line": 2247,
+      "testReferenceFiles": [
+        "tests/chat/settingsHub.test.ts",
+        "tests/chat/subAgentQuestions.test.ts",
+        "tests/integration/chatPlanIsolation.test.ts",
+        "tests/integration/chatViewSettingKeys.test.ts",
+        "tests/integration/settingsHubTab.test.ts",
+        "tests/integration/chatPermissionLifecycle.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "clearSession",
+      "line": 2299,
+      "testReferenceFiles": [
+        "tests/integration/chatPlanIsolation.test.ts",
+        "tests/integration/chatViewSettingKeys.test.ts",
+        "tests/integration/chatPermissionLifecycle.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "shutdownAgent",
+      "line": 2323,
+      "testReferenceFiles": [
+        "tests/integration/chatViewDebranding.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "manualCompact",
+      "line": 2352,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "requestPermission",
+      "line": 2356,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "permissionResponse",
+      "line": 2363,
+      "testReferenceFiles": [
+        "tests/chat/settingsHub.test.ts",
+        "tests/integration/settingsHubTab.test.ts",
+        "tests/integration/chatPermissionLifecycle.test.ts",
+        "tests/webview/chatComposerBrowser.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "inAppMessageAction",
+      "line": 2370,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "permissionCustomInstruction",
+      "line": 2376,
+      "testReferenceFiles": [
+        "tests/integration/chatViewSettingKeys.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "planOptionSelected",
+      "line": 2401,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "questionAnswered",
+      "line": 2411,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "openFile",
+      "line": 2421,
+      "testReferenceFiles": [
+        "tests/webview/chatComposerBrowser.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "applyEdit",
+      "line": 2425,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "getWorkspaceFiles",
+      "line": 2437,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "copyToClipboard",
+      "line": 2441,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "revertFileEdit",
+      "line": 2445,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "getFileLineNumber",
+      "line": 2452,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "openInNewTab",
+      "line": 2466,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "openConnections",
+      "line": 2470,
+      "testReferenceFiles": [
+        "tests/chat/settingsHub.test.ts",
+        "tests/webview/settingsHubBrowser.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "openSettingsHub",
+      "line": 2474,
+      "testReferenceFiles": [
+        "tests/chat/settingsHub.test.ts",
+        "tests/integration/settingsHubTab.test.ts",
+        "tests/webview/chatComposerBrowser.test.ts",
+        "tests/webview/settingsHubBrowser.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "setCoordinatorModel",
+      "line": 2481,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "connectService",
+      "line": 2486,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "checkSetup",
+      "line": 2490,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "retrySetup",
+      "line": 2494,
+      "testReferenceFiles": [
+        "tests/webview/inlineHandlerCsp.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "authConfirm",
+      "line": 2501,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "authSkip",
+      "line": 2508,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "skipSetup",
+      "line": 2515,
+      "testReferenceFiles": [
+        "tests/webview/inlineHandlerCsp.test.ts",
+        "tests/webview/chatComposerBrowser.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "requestWizardStatus",
+      "line": 2519,
+      "testReferenceFiles": [
+        "tests/integration/chatViewWizardRouting.test.ts",
+        "tests/webview/onboardingBrowser.test.ts",
+        "tests/webview/wizardPanelId.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "startProviderSetup",
+      "line": 2523,
+      "testReferenceFiles": [
+        "tests/webview/trustLadderConformance.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "selectAuthMethod",
+      "line": 2546,
+      "testReferenceFiles": [
+        "tests/webview/trustLadderConformance.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "selectProvider",
+      "line": 2553,
+      "testReferenceFiles": [
+        "tests/webview/onboardingBrowser.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "tipSeen",
+      "line": 2560,
+      "testReferenceFiles": [
+        "tests/integration/chatViewWizardRouting.test.ts",
+        "tests/webview/onboardingBrowser.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "tipsOff",
+      "line": 2566,
+      "testReferenceFiles": [
+        "tests/integration/chatViewWizardRouting.test.ts",
+        "tests/webview/onboardingBrowser.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "hideGettingStarted",
+      "line": 2570,
+      "testReferenceFiles": [
+        "tests/integration/chatViewWizardRouting.test.ts",
+        "tests/webview/onboardingBrowser.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "openWalkthrough",
+      "line": 2574,
+      "testReferenceFiles": [
+        "tests/webview/onboardingBrowser.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "requestOnboarding",
+      "line": 2578,
+      "testReferenceFiles": [
+        "tests/integration/chatViewWizardRouting.test.ts",
+        "tests/webview/onboardingBrowser.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "dismissWizard",
+      "line": 2584,
+      "testReferenceFiles": [
+        "tests/integration/chatViewTrustAndGate.test.ts",
+        "tests/webview/inlineHandlerCsp.test.ts",
+        "tests/webview/chatComposerBrowser.test.ts",
+        "tests/webview/onboardingBrowser.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "refreshProviderDetection",
+      "line": 2591,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "runDiagnostics",
+      "line": 2595,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "openTerminal",
+      "line": 2599,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "requestProviderInstallInfo",
+      "line": 2615,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "getConversationHistory",
+      "line": 2622,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "forkConversation",
+      "line": 2638,
+      "testReferenceFiles": [
+        "tests/integration/chatPlanIsolation.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "rewindToCheckpoint",
+      "line": 2645,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "forkAndRewind",
+      "line": 2652,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "switchConversation",
+      "line": 2663,
+      "testReferenceFiles": [
+        "tests/integration/chatPlanIsolation.test.ts",
+        "tests/integration/chatViewSettingKeys.test.ts",
+        "tests/integration/chatPermissionLifecycle.test.ts",
+        "tests/integration/chatViewTrustAndGate.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "updateAgentConfig",
+      "line": 2691,
+      "testReferenceFiles": [
+        "tests/chat/settingsHub.test.ts",
+        "tests/integration/settingsHubTab.test.ts",
+        "tests/webview/settingsHubBrowser.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "deleteConversation",
+      "line": 2720,
+      "testReferenceFiles": [
+        "tests/integration/chatPlanIsolation.test.ts",
+        "tests/integration/chatPermissionLifecycle.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "getAgentRecommendations",
+      "line": 2755,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "createAgent",
+      "line": 2788,
+      "testReferenceFiles": [
+        "tests/chat/settingsHub.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "importSkills",
+      "line": 2800,
+      "testReferenceFiles": [
+        "tests/chat/settingsHub.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "reloadAgents",
+      "line": 2807,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "getAgentDetails",
+      "line": 2814,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "askUserQuestionResponse",
+      "line": 2839,
+      "testReferenceFiles": [
+        "tests/chat/settingsHub.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "askUserQuestionSkipped",
+      "line": 2860,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "subAgentQuestionResponse",
+      "line": 2884,
+      "testReferenceFiles": [
+        "tests/chat/subAgentQuestions.test.ts",
+        "tests/webview/subAgentCards.test.ts",
+        "tests/webview/chatComposerBrowser.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "subAgentQuestionSkipped",
+      "line": 2885,
+      "testReferenceFiles": [
+        "tests/webview/subAgentCards.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "planOptionsSkipped",
+      "line": 2894,
+      "testReferenceFiles": [
+        "tests/integration/chatPlanIsolation.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "toggleAutonomous",
+      "line": 2906,
+      "testReferenceFiles": [
+        "tests/chat/settingsHub.test.ts",
+        "tests/integration/settingsHubTab.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "confirmAutonomousActivation",
+      "line": 2910,
+      "testReferenceFiles": [
+        "tests/chat/settingsHub.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "cancelAutonomousActivation",
+      "line": 2917,
+      "testReferenceFiles": [
+        "tests/webview/chatComposerBrowser.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "deactivateAutonomous",
+      "line": 2924,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "autonomyLevelChanged",
+      "line": 2934,
+      "testReferenceFiles": [
+        "tests/chat/settingsHub.test.ts",
+        "tests/integration/settingsHubTab.test.ts",
+        "tests/webview/chatComposerBrowser.test.ts",
+        "tests/webview/onboardingBrowser.test.ts",
+        "tests/webview/settingsHubBrowser.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "getAuditLog",
+      "line": 2943,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "getAutonomousStats",
+      "line": 2950,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "connectChannel",
+      "line": 2959,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "disconnectChannel",
+      "line": 2972,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "toggleIntegration",
+      "line": 2979,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "refreshActiveMode",
+      "line": 2986,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "startDaemon",
+      "line": 3001,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "requestBadges",
+      "line": 3013,
+      "testReferenceFiles": [
+        "tests/chat/settingsHub.test.ts",
+        "tests/integration/settingsHubTab.test.ts",
+        "tests/webview/settingsHubBrowser.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "getBadgeShareText",
+      "line": 3024,
+      "testReferenceFiles": [
+        "tests/chat/settingsHub.test.ts",
+        "tests/webview/settingsHubBrowser.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "exportConversation",
+      "line": 3040,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "copyMessageMarkdown",
+      "line": 3067,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "exportToFile",
+      "line": 3097,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "importFromFile",
+      "line": 3129,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "triggerShareLink",
+      "line": 3161,
+      "testReferenceFiles": [
+        "tests/integration/slashCommandsAllLive.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "triggerInitTeam",
+      "line": 3186,
+      "testReferenceFiles": [
+        "tests/integration/slashCommandsAllLive.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "triggerOpenMemory",
+      "line": 3192,
+      "testReferenceFiles": [
+        "tests/integration/slashCommandsAllLive.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "triggerOpenRules",
+      "line": 3198,
+      "testReferenceFiles": [
+        "tests/integration/slashCommandsAllLive.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "startVisualTest",
+      "line": 3204,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "openVisualTestDashboard",
+      "line": 3218,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "openCanvas",
+      "line": 3225,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "cancelVisualTest",
+      "line": 3232,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "getVisualTestReport",
+      "line": 3246,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "stopVisualTestServer",
+      "line": 3259,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "uiReady",
+      "line": 3274,
+      "testReferenceFiles": [
+        "tests/chat/settingsHub.test.ts",
+        "tests/integration/settingsHubTab.test.ts",
+        "tests/webview/perfInstrumentation.test.ts",
+        "tests/webview/settingsHubBrowser.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "perfMark",
+      "line": 3284,
+      "testReferenceFiles": [
+        "tests/webview/perfInstrumentation.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "perfReport",
+      "line": 3298,
+      "testReferenceFiles": [
+        "tests/webview/perfInstrumentation.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "dashboardStartVisualTest",
+      "line": 8389,
+      "testReferenceFiles": [
+        "tests/integration/dashboardMessageBoundary.test.ts",
+        "tests/webview/vtDashboardContent.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "dashboardCancelVisualTest",
+      "line": 8414,
+      "testReferenceFiles": [
+        "tests/integration/dashboardMessageBoundary.test.ts",
+        "tests/webview/vtDashboardContent.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "dashboardStopServer",
+      "line": 8418,
+      "testReferenceFiles": [
+        "tests/integration/dashboardMessageBoundary.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "deskRequestRoster",
+      "line": 2237,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "deskCreateInvite",
+      "line": 2238,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "deskPairBegin",
+      "line": 2239,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "deskPairVerify",
+      "line": 2240,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "deskPairFinish",
+      "line": 2241,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "deskPairCancel",
+      "line": 2242,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "deskRevoke",
+      "line": 2243,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    }
+  ],
+  "slashActions": [
+    {
+      "action": "context:attach",
+      "line": 581,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "context:mention",
+      "line": 599,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "context:show",
+      "line": 604,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "context:clear",
+      "line": 611,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "model:switch",
+      "line": 617,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "provider:switch",
+      "line": 631,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "cmd:clear",
+      "line": 648,
+      "testReferenceFiles": [
+        "tests/providers/nativeCommands.test.ts",
+        "tests/managers/nativeCommandMenu.test.ts",
+        "tests/webview/sessionPicker.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "cmd:help",
+      "line": 657,
+      "testReferenceFiles": [
+        "tests/managers/slashCommandModeHelp.test.ts",
+        "tests/managers/slashCommandCollaboration.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "cmd:compact",
+      "line": 662,
+      "testReferenceFiles": [
+        "tests/integration/chatViewDebranding.test.ts",
+        "tests/providers/nativeCommands.test.ts",
+        "tests/managers/nativeCommandMenu.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "cmd:brainstorm",
+      "line": 668,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "cmd:exit-plan",
+      "line": 695,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "cmd:visual-test",
+      "line": 712,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "cmd:canvas",
+      "line": 723,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "cmd:export",
+      "line": 736,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "cmd:import",
+      "line": 742,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "cmd:share",
+      "line": 748,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "cmd:init-team",
+      "line": 754,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "cmd:memory",
+      "line": 760,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "cmd:update-clis",
+      "line": 766,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "cmd:rules",
+      "line": 774,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "cmd:consult",
+      "line": 792,
+      "testReferenceFiles": [
+        "tests/integration/slashCommandsAllLive.test.ts",
+        "tests/managers/slashCommandCollaboration.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "cmd:review",
+      "line": 794,
+      "testReferenceFiles": [
+        "tests/integration/slashCommandsAllLive.test.ts",
+        "tests/managers/slashCommandCollaboration.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "cmd:critique",
+      "line": 796,
+      "testReferenceFiles": [
+        "tests/integration/slashCommandsAllLive.test.ts",
+        "tests/managers/slashCommandCollaboration.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "cmd:panel",
+      "line": 798,
+      "testReferenceFiles": [
+        "tests/integration/slashCommandsAllLive.test.ts",
+        "tests/managers/slashCommandCollaboration.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "settings:mode",
+      "line": 802,
+      "testReferenceFiles": [
+        "tests/providers/nativeCommands.test.ts",
+        "tests/managers/slashCommandModeHelp.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "settings:thinking",
+      "line": 836,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "settings:access",
+      "line": 853,
+      "testReferenceFiles": [
+        "tests/managers/slashCommandModeHelp.test.ts"
+      ],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "settings:open",
+      "line": 872,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "support:help",
+      "line": 877,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "support:report",
+      "line": 881,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "support:version",
+      "line": 885,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "claude:thinking",
+      "line": 899,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "codex:profile",
+      "line": 918,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    },
+    {
+      "action": "cline:plan-act",
+      "line": 930,
+      "testReferenceFiles": [],
+      "testReferenceMeaning": "Literal reference only; inspect assertions. Live status is in the feature-review matrix."
+    }
+  ]
+}

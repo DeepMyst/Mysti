@@ -17,6 +17,10 @@ describe('Cline permission flag mapping', () => {
   beforeEach(() => {
     clearMockConfig();
     provider = new TestableClineProvider();
+    // These assert the Cline 1.x flag names; 2.0 renamed them (see
+    // modernCliCompat.test.ts). Pin the major so the mapping under test is the
+    // one these expectations were written for.
+    (provider as unknown as { _cachedCliVersion: string | null })._cachedCliVersion = '1.0.8';
   });
 
   it.each([

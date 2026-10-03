@@ -1,0 +1,53 @@
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { chromium, type Browser } from 'playwright';
+import { readFileSync } from 'fs';
+import { CHROMIUM_UNAVAILABLE } from './chromiumAvailability';
+
+describe('Proactive inbox browser', () => {
+  let browser: Browser;
+  beforeAll(async () => { if (CHROMIUM_UNAVAILABLE) { return; } browser = await chromium.launch(); }, 30_000);
+  afterAll(async () => { await browser?.close(); });
+  it.skipIf(CHROMIUM_UNAVAILABLE)('routes controls, preserves forms, renders untrusted evidence as text, and fits a narrow screen', async () => {
+    const page = await browser.newPage({ viewport: { width: 390, height: 850 } });
+    const errors: string[] = []; page.on('pageerror', e => errors.push(e.message));
+    await page.addInitScript(() => { (window as any).__posted = []; (window as any).acquireVsCodeApi = () => ({ postMessage: (m: any) => (window as any).__posted.push(m) }); });
+    await page.goto('about:blank');
+    let html = readFileSync('media/proactive/index.html', 'utf8').replace(/<meta http-equiv="Content-Security-Policy"[^>]*>/, '').replace(/<link[^>]+>/, '').replace(/<script[^>]*><\/script>/, '');
+    await page.setContent(html);
+    await page.addStyleTag({ content: readFileSync('media/proactive/proactive.css', 'utf8') });
+    await page.addScriptTag({ content: readFileSync('media/proactive/proactive.js', 'utf8') });
+    const state: any = { type: 'state', signedIn: true, busy: false, local: { watches: [], notifications: false }, cloud: { available: true, read_only: false, connections: [{ id: 'conn', name: 'Work', source: 'github', supported: true }], responsibilities: [{ id: 'r', title: 'Checkout', state: 'active', source: 'github', resource: 'org/repo', health: 'Checked', last_checked_at: null }], insights: [{ id: 'i', responsibility_id: 'r', title: '<img src=x onerror=alert(1)>', summary: 'Related work', state: 'unread', created_at: new Date().toISOString(), evidence: { excerpt: '<script>steal()</script>', source: 'github', resource: 'org/repo' } }] } };
+    const fire = () => page.evaluate(s => window.dispatchEvent(new MessageEvent('message', { data: s })), state);
+    await fire();
+    expect(await page.locator('#inbox img').count()).toBe(0);
+    await page.fill('#title', 'My responsibility'); await page.fill('#resource', 'org/repo'); await page.fill('#keywords', 'checkout');
+    await fire(); expect(await page.inputValue('#title')).toBe('My responsibility');
+    await page.getByRole('button', { name: 'Enable this watch' }).click();
+    await page.getByRole('button', { name: 'Pause', exact: true }).click();
+    await page.getByRole('button', { name: 'Open source' }).click();
+    await page.getByRole('button', { name: 'Mark read' }).click();
+    await page.getByRole('button', { name: 'Dismiss' }).click();
+    await page.check('#notifications');
+    const messages = await page.evaluate(() => (window as any).__posted);
+    expect(messages).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'addCloud', connectionId: 'conn' }), { type: 'cloudState', id: 'r', state: 'paused' }, { type: 'evidence', id: 'i' }, expect.objectContaining({ type: 'markCloud', state: 'read' }), { type: 'notifications', enabled: true }]));
+    await page.fill('#task-summary', 'private checkout task');
+    await page.getByRole('button', { name: 'Check task context' }).click();
+    const task = await page.evaluate(() => (window as any).__posted.filter((m: any) => m.type === 'taskBriefing').at(-1));
+    expect(task.summary).toBe('private checkout task');
+    state.briefing = { requestId: task.requestId, responsibilityId: 'r', title: 'Checkout context', checkedAt: new Date().toISOString(), notices: ['Related terms do not prove ownership'], insights: state.cloud.insights };
+    await fire();
+    expect(await page.locator('#task-briefing').textContent()).toContain('Checkout context');
+    expect(await page.locator('#task-briefing img').count()).toBe(0);
+    await page.fill('#task-summary', 'another task');
+    await fire(); // a late result for the previous summary must stay hidden
+    expect(await page.locator('#task-briefing').textContent()).toBe('');
+    state.briefing = undefined;
+    state.cloud = undefined; state.signedIn = false; await fire();
+    expect(await page.locator('#inbox').textContent()).not.toContain('Related work');
+    expect(await page.locator('#cloud-form').isVisible()).toBe(false);
+    expect(await page.inputValue('#task-summary')).toBe('');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    expect(errors).toEqual([]);
+    await page.close();
+  }, 30_000);
+});
