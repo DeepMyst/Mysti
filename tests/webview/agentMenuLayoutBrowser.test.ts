@@ -29,6 +29,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { CHROMIUM_UNAVAILABLE } from './chromiumAvailability';
+import { PROVIDER_DISPLAY_META } from '../../src/providers/base/ProviderManifest';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { Browser, Page } from 'playwright';
@@ -105,9 +106,13 @@ afterAll(async () => { await browser?.close(); });
 describe('agent menu layout (real browser)', () => {
   it.skipIf(CHROMIUM_UNAVAILABLE)('renders every agent that the manifest ships', async () => {
     const m = await measure(900);
-    // Mysti + 15 backends + Brainstorm. If a provider is added without this
-    // number moving, the static bootstrap markup was missed.
-    expect(m.itemCount).toBe(17);
+    // Compare identities against the shared catalog rather than freezing an
+    // old count that could pass while a newly registered provider is absent.
+    const expected = [...Object.keys(PROVIDER_DISPLAY_META), 'mysti', 'brainstorm'].sort();
+    const rendered = await page!.$$eval('#agent-menu .agent-menu-item', items =>
+      items.map(item => item.getAttribute('data-agent')).sort());
+    expect(rendered).toEqual(expected);
+    expect(m.itemCount).toBe(expected.length);
   });
 
   it.skipIf(CHROMIUM_UNAVAILABLE)('never places its top edge off the top of the panel', async () => {
