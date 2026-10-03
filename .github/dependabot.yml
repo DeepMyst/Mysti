@@ -59,12 +59,13 @@ updates:
       # development toolchain. Raise them with engines.vscode and the host matrix.
       - dependency-name: "@types/vscode"
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      # Releases after 1.58 require Node 20; the VS Code 1.86 host is Node 18.17.1.
       # `playwright` is a webpack external and its browser binaries are NOT
       # shipped; the user installs them separately with `npx playwright install
       # chromium`. A major bump can change the driver protocol out from under an
       # already-installed browser, so majors are taken deliberately, not by bot.
       - dependency-name: playwright
-        update-types: ["version-update:semver-major"]
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
 
   - package-ecosystem: github-actions
     directory: /
