@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import type { ChildProcess } from 'node:child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TestableClaudeProvider } from '../../helpers/providerFactory';
 import type { NativeApprovalRequest } from '../../../src/providers/base/IProvider';
@@ -23,6 +24,20 @@ function harness() {
     value: [{ uri: vscode.Uri.file(directory), name: 'fixture', index: 0 }], configurable: true,
   });
   const provider = new TestableClaudeProvider();
+  // dispose() signals children synchronously; their final stdout/close callbacks
+  // are asynchronous. Await actual process closure before Vitest tears down RPC.
+  const closed: Promise<void>[] = [];
+  const seen = new WeakSet<ChildProcess>();
+  const processOwner = provider as unknown as { _getOrSpawnPersistentProcess(...args: unknown[]): Promise<ChildProcess | null> };
+  const spawn = processOwner._getOrSpawnPersistentProcess.bind(provider);
+  vi.spyOn(processOwner, '_getOrSpawnPersistentProcess').mockImplementation(async (...args) => {
+    const child = await spawn(...args);
+    if (child && !seen.has(child)) {
+      seen.add(child);
+      closed.push(new Promise(resolve => child.once('close', () => resolve())));
+    }
+    return child;
+  });
   const build = provider.buildPersistentCliArgs.bind(provider);
   vi.spyOn(provider, 'getCliPath').mockReturnValue(process.execPath);
   vi.spyOn(provider, 'buildPersistentCliArgs').mockImplementation((s, session) => {
@@ -33,7 +48,9 @@ function harness() {
   });
   vi.spyOn(provider as unknown as { buildPromptAsync(): Promise<string> }, 'buildPromptAsync').mockResolvedValue('fixture');
   cleanups.push(async () => {
-    provider.dispose(); Object.defineProperty(vscode.workspace, 'workspaceFolders', { value: folders });
+    provider.dispose();
+    await Promise.all(closed);
+    Object.defineProperty(vscode.workspace, 'workspaceFolders', { value: folders });
     await fs.promises.rm(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   });
   return { provider, marker: (panel: string) => path.join(directory, panel),

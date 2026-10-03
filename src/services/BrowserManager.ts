@@ -58,6 +58,7 @@ export class BrowserManager {
       // Dynamic require — Playwright is a webpack external, resolved at runtime
       // from node_modules (which `.vscodeignore` explicitly un-ignores for the
       // playwright packages so a packaged VSIX can still find it).
+      // eslint-disable-next-line @typescript-eslint/no-require-imports -- Keep this external dependency lazy and catchable.
       this._playwright = require('playwright');
       return this._playwright!;
     } catch {

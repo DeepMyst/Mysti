@@ -404,7 +404,7 @@ export class SpeculativeStream {
       this._emit(patch);
       return patch;
     }
-    let ops: CanvasOp[] = [];
+    let ops: CanvasOp[];
     try {
       ops = diffDocs(this._doc, authoritative, { pageId: this._pageId }).ops;
     } catch {

@@ -108,7 +108,7 @@ export class CodeGenerationService {
     const systemPrompt = this._buildCodeGenSystemPrompt(framework, hasTypeScript);
     const userPrompt = this._buildCodeGenUserPrompt(opts);
 
-    let fullResponse = '';
+    let fullResponse: string;
     try {
       console.log(`[Mysti] CodeGen: Sending to vision API (imageSize=${(opts.imageBase64 || '').length}, svgSize=${(opts.svgMarkup || '').length})`);
       fullResponse = await opts.imageService.analyzeImage(
@@ -189,7 +189,7 @@ Use \`\`\`component and \`\`\`story code fences.`;
 
     const systemPrompt = this._buildCodeGenSystemPrompt(opts.framework, hasTypeScript);
 
-    let fullResponse = '';
+    let fullResponse: string;
     try {
       fullResponse = await opts.imageService.analyzeImage('', systemPrompt + '\n\n' + prompt);
     } catch (err: unknown) {

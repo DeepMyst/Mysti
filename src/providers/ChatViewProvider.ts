@@ -12031,7 +12031,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Returns undefined ⇒ use the backend's own default (never forces a bad id).
    */
   private _resolveTierModel(agentId: AgentType, tier: 'fast' | 'strong'): string | undefined {
-    let models: { id: string; contextWindow?: number }[] = [];
+    let models: { id: string; contextWindow?: number }[];
     try { models = this._providerManager.getModels(agentId) ?? []; } catch { return undefined; }
     if (models.length === 0) { return undefined; }
     const FAST = /(haiku|flash|mini|small|lite|nano|8b|7b|turbo|fast|highspeed|high-speed)/i;
@@ -12068,7 +12068,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (!entry) { notes.push(`model "${d.model}" is not in the OpenRouter catalog; used the default`); }
         else { model = d.model; }
       } else {
-        let known = false;
+        let known: boolean;
         try { known = (this._providerManager.getModels(target) ?? []).some(m => m.id === d.model); } catch { known = false; }
         if (known) { model = d.model; } else { notes.push(`model "${d.model}" is not available on ${target}; used its default`); }
       }
@@ -14020,7 +14020,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const store = this._canvasStore;
     const executor = this._canvasExecutor;
     if (!store || !executor || this._canvasPanelId !== panelId) { return; }
-    let next: CanvasArtifact | null = null;
+    let next: CanvasArtifact | null;
     if (artifactId) {
       next = await store.load(artifactId).catch(() => null);
     } else {
@@ -15554,7 +15554,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this._postToPanel(panelId, { type: 'deskRosterUpdated', payload: { enabled: false, peers: [] } } as WebviewMessage);
       return;
     }
-    let identity: { peerId: string } | null = null;
+    let identity: { peerId: string } | null;
     try {
       identity = await this._desk.identity.ensure();
     } catch (err) {

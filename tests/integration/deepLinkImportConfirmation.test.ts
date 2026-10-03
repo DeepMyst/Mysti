@@ -25,7 +25,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { window } from '../helpers/mockVscode';
 
 vi.mock('@vscode/extension-telemetry', () => ({
-  default: class { sendTelemetryEvent() {} sendTelemetryErrorEvent() {} dispose() {} },
+  TelemetryReporter: class { sendTelemetryEvent() {} sendTelemetryErrorEvent() {} dispose() {} },
 }));
 
 import { handleShareableImportLink, SHAREABLE_IMPORT_CONFIRM } from '../../src/extension';

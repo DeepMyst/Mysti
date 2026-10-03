@@ -123,7 +123,7 @@ export class AgentContextManager {
       if (!agentType) {continue;}
 
       const matchedTriggers: string[] = [];
-      let confidence: RecommendationConfidence = 'low';
+      let confidence: RecommendationConfidence;
 
       // Check activation triggers
       if (agent.activationTriggers) {

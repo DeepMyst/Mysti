@@ -106,16 +106,23 @@ Mocha loads it in its optional parallel worker pool. Our editor tests explicitly
 run serially, and none of these packages ships in the VSIX. The release maintainer
 owns this exception: keep parallel execution disabled and remove the exception
 when a compatible patched serializer is available or the runner is replaced.
+Mocha's optional watch path also brings in `chokidar 3 → braces 3.0.3`
+([deep-pattern stack exhaustion](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm)).
+There is no compatible upstream fix yet. Our editor runner does not enable watch
+or accept user-provided globs, and this development graph is excluded from the
+VSIX. The release maintainer owns removing this exception when patched.
 Serializer 7.0.5 requires Node 20, so overriding it into the minimum editor would
 violate its declared runtime support.
 
-The estree-only `minimatch` override updates its pinned vulnerable 9.0.3 to a
-patched 9.0.x release without downgrading typescript-eslint. Remove that override
-when an upgraded parser resolves a patched version itself.
+ESLint 10 uses `eslint.config.cjs`; typescript-eslint 8 replaces the older parser
+and removes the estree-only minimatch override. New recommended rules remain
+errors. TypeScript stays on 5.9.x because ts-loader and typescript-eslint consume
+the JavaScript compiler API absent from TypeScript 7. Review the compiler and
+both consumers together before lifting the Dependabot exclusion.
 
-Source Node declarations still target Node 20. The old 18.17 declarations conflict
+Source Node declarations target the development Node 22 major. The old 18.17 declarations conflict
 with current TypeScript Buffer definitions and omit the fetch globals used here;
-a direct downgrade is not sufficient. They can therefore admit APIs missing in
+a direct downgrade is not sufficient. Vitest 5 also requires Node 22 or newer declarations. They can therefore admit APIs missing in
 the minimum editor. Minimum-runtime and real-editor checks remain required; a
 separate compatible type-check project is follow-up work.
 
@@ -194,3 +201,8 @@ transport behavior, persistence and UI state simultaneously.
 The 2.0.0 candidate uses `npm run package:pre-release`, including the CI artifact tested by the packaged-editor jobs. Keep the numeric package version and lockfile synchronized; the pre-release marker lives in VSIX metadata, not a semver suffix. The README badge reports the published Marketplace version, which may differ from a candidate checkout.
 
 Inspect PNG/GIF/video assets and relative links before publication. Assets under `docs/` stay out of the VSIX but must exist at the repository URLs used by its README. Preserve sample-data labels on deterministic captures; record live-provider validation separately. Do not promote a package to stable by merely removing the word BETA: require a reviewed newer version and a deliberate channel change.
+
+Playwright remains pinned to 1.58.2: later releases require Node 20 and terminate
+VS Code 1.86's Node 18.17.1 host on import. Because it is an external runtime
+dependency, upgrading it requires a deliberate editor-support decision and real
+minimum-editor validation, even when newer development Node passes every test.

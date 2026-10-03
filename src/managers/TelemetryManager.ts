@@ -31,7 +31,7 @@ import * as vscode from 'vscode';
  * - TELEMETRY_KEY is empty
  */
 
-import TelemetryReporter from '@vscode/extension-telemetry';
+import { TelemetryReporter } from '@vscode/extension-telemetry';
 
 // Azure Application Insights instrumentation key
 const TELEMETRY_KEY = 'b9310dd2-b563-42f7-8fd9-796874f66a94';
