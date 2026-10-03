@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import type { ProviderManager } from '../../managers/ProviderManager';
 import { remoteConnection } from './OpenCodeRemote';
 
-export function registerOpenCodeRemoteSetup(context: vscode.ExtensionContext, manager: ProviderManager): void {
+export function registerOpenCodeRemoteSetup(context: vscode.ExtensionContext, manager: ProviderManager, refresh: () => Promise<void> = async () => {}): void {
   const test = async () => {
     if (!vscode.workspace.getConfiguration('mysti').get<string>('opencodeEndpoint', '').trim()) {
       await vscode.window.showInformationMessage('Configure an OpenCode remote endpoint first.'); return;
@@ -17,6 +17,11 @@ export function registerOpenCodeRemoteSetup(context: vscode.ExtensionContext, ma
     try { await action(); } catch (error) { await vscode.window.showErrorMessage(`OpenCode setup: ${error instanceof Error ? error.message : String(error)}`); }
   };
   context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration(event => {
+      if (['opencodeEndpoint', 'opencodeRemoteDirectory', 'opencodeRemoteUsername'].some(key => event.affectsConfiguration('mysti.' + key))) {
+        void refresh().catch(error => console.warn('[Mysti] OpenCode connection refresh failed:', error));
+      }
+    }),
     vscode.commands.registerCommand('mysti.testOpenCodeConnection', wrap(test)),
     vscode.commands.registerCommand('mysti.configureOpenCodeRemote', wrap(async () => {
       const config = vscode.workspace.getConfiguration('mysti');
@@ -34,6 +39,7 @@ export function registerOpenCodeRemoteSetup(context: vscode.ExtensionContext, ma
       const provider = manager.getProviderInstance('opencode');
       if (!provider?.configureAuthentication) { throw new Error('OpenCode provider is not ready. Retry setup after activation.'); }
       const status = await provider.configureAuthentication();
+      await refresh();
       if (status.authenticated) { await vscode.window.showInformationMessage(`Connected: ${status.user}`); }
       else { await vscode.window.showErrorMessage(status.error ?? 'OpenCode connection failed.'); }
     })),

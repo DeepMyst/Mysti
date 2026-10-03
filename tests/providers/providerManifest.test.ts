@@ -285,7 +285,7 @@ describe('buildProviderManifest', () => {
 
   it('reports the manifest-affecting setting keys for change listeners', () => {
     const keys = getManifestAffectingSettingKeys();
-    for (const expected of ['codexProfile', 'ollamaEndpoint', 'localaiEndpoint', 'openclawGatewayUrl', 'cursorApiKey']) {
+    for (const expected of ['codexProfile', 'ollamaEndpoint', 'localaiEndpoint', 'openclawGatewayUrl', 'cursorApiKey', 'opencodeEndpoint']) {
       expect(keys).toContain(expected);
     }
   });

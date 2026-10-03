@@ -165,7 +165,6 @@ export async function activate(context: vscode.ExtensionContext) {
   contextManager = new ContextManager(context);
   conversationManager = new ConversationManager(context);
   providerManager = new ProviderManager(context);
-  registerOpenCodeRemoteSetup(context, providerManager);
 
   // Plan 03 Phase 3a: cached CLI discovery. Constructed BEFORE the
   // background provider init below so it seeds from every onProviderReady
@@ -251,6 +250,10 @@ export async function activate(context: vscode.ExtensionContext) {
   // Initialize setup manager for CLI auto-setup (reads CLI/auth status
   // through the discovery cache — Plan 03 Phase 3a)
   setupManager = new SetupManager(context, providerManager, cliDiscoveryService);
+  registerOpenCodeRemoteSetup(context, providerManager, async () => {
+    await setupManager.refreshProviderStatus('opencode');
+    await modelRegistryService.refresh('opencode');
+  });
 
   // Update surfacing: "what's new" (models) and "what's stale" (CLIs). Both are
   // detect-and-report only — neither writes a setting nor installs anything.

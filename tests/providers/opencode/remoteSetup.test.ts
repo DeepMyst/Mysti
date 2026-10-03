@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as vscode from 'vscode';
+import { registerOpenCodeRemoteSetup } from '../../../src/providers/opencode/setup';
+import { fireConfigurationChange } from '../../helpers/mockVscode';
+import type { ProviderManager } from '../../../src/managers/ProviderManager';
 import { OpenCodeProvider } from '../../../src/providers/opencode/OpenCodeProvider';
 import { remoteConnection, remoteSecretKey } from '../../../src/providers/opencode/OpenCodeRemote';
 import { clearMockConfig, setMockConfig, createMockSecretStorage, window } from '../../helpers/mockVscode';
@@ -12,6 +15,18 @@ beforeEach(() => {
 });
 afterEach(() => { provider.dispose(); clearMockConfig(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 describe('OpenCode remote setup', () => {
+  it('refreshes provider status and models after direct endpoint settings changes', async () => {
+    const refresh = vi.fn(async () => {});
+    const subscriptions: Array<{ dispose(): void }> = [];
+    registerOpenCodeRemoteSetup({ subscriptions } as unknown as vscode.ExtensionContext, {} as ProviderManager, refresh);
+    try {
+      fireConfigurationChange('mysti.opencodeEndpoint');
+      expect(refresh).toHaveBeenCalledOnce();
+      fireConfigurationChange('mysti.defaultModel');
+      expect(refresh).toHaveBeenCalledOnce();
+    } finally { subscriptions.forEach(s => s.dispose()); }
+  });
+
   it('keeps local CLI behavior until an endpoint is configured', () => {
     expect(provider.configureAuthentication).toBeUndefined();
     expect(provider.capabilities.supportsAutoInstall).toBe(true);
