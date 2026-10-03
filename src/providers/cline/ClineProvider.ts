@@ -585,7 +585,7 @@ export class ClineProvider extends BaseCliProvider {
 				const active = session.activeToolCalls.get(id);
 				session.activeToolCalls.delete(id);
 				const output = typeof event.output === "string" ? event.output : JSON.stringify(event.output ?? "");
-				let input: Record<string, unknown> = {};
+				let input: Record<string, unknown>;
 				try {
 					input = active ? JSON.parse(active.inputJson) as Record<string, unknown> : {};
 				} catch {

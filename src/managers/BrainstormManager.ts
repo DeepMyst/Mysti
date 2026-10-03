@@ -1205,11 +1205,11 @@ export class BrainstormManager {
               synthesis += chunk.content;
               yield { type: 'synthesis_text', content: chunk.content };
             } else if (chunk.type === 'error') {
-              throw new Error(chunk.content || `Fallback synthesis agent ${fallbackAgent.id} reported an error`);
+              throw new Error(chunk.content || `Fallback synthesis agent ${fallbackAgent.id} reported an error`, { cause: error });
             }
           }
           if (!synthesis.trim()) {
-            throw new Error(`Fallback synthesis agent ${fallbackAgent.id} returned an empty synthesis`);
+            throw new Error(`Fallback synthesis agent ${fallbackAgent.id} returned an empty synthesis`, { cause: error });
           }
           session.unifiedSolution = synthesis;
           return;

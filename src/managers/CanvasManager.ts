@@ -1986,7 +1986,7 @@ ${prompt ? `8. Additional instructions: ${prompt}` : ''}
 
 Return ONLY the SVG markup wrapped in <svg>...</svg> tags. No explanation.`;
 
-    let fullResponse = '';
+    let fullResponse: string;
     try {
       yield { type: 'canvas_svg_progress', canvasId, content: 'Converting to SVG...', progress: 30 };
       fullResponse = await imageService.analyzeImage(imageBase64, svgPrompt);

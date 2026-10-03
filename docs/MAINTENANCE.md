@@ -109,13 +109,15 @@ when a compatible patched serializer is available or the runner is replaced.
 Serializer 7.0.5 requires Node 20, so overriding it into the minimum editor would
 violate its declared runtime support.
 
-The estree-only `minimatch` override updates its pinned vulnerable 9.0.3 to a
-patched 9.0.x release without downgrading typescript-eslint. Remove that override
-when an upgraded parser resolves a patched version itself.
+ESLint 10 uses `eslint.config.cjs`; typescript-eslint 8 replaces the older parser
+and removes the estree-only minimatch override. New recommended rules remain
+errors. TypeScript stays on 5.9.x because ts-loader and typescript-eslint consume
+the JavaScript compiler API absent from TypeScript 7. Review the compiler and
+both consumers together before lifting the Dependabot exclusion.
 
-Source Node declarations still target Node 20. The old 18.17 declarations conflict
+Source Node declarations target the development Node 22 major. The old 18.17 declarations conflict
 with current TypeScript Buffer definitions and omit the fetch globals used here;
-a direct downgrade is not sufficient. They can therefore admit APIs missing in
+a direct downgrade is not sufficient. Vitest 5 also requires Node 22 or newer declarations. They can therefore admit APIs missing in
 the minimum editor. Minimum-runtime and real-editor checks remain required; a
 separate compatible type-check project is follow-up work.
 

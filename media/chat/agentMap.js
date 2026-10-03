@@ -1305,7 +1305,7 @@
       const wrap = element('div', 'agent-map-ask');
       wrap.appendChild(row);
       const menu = element('div', 'agent-map-ask-menu');
-      let agents = [];
+      let agents;
       try { agents = typeof ports.listAgents === 'function' ? ports.listAgents() : []; } catch (_error) { agents = []; }
       for (const agent of Array.isArray(agents) ? agents : []) {
         if (!isRecord(agent) || !isId(agent.id) || agent.id === node.backend) { continue; }
@@ -1490,7 +1490,7 @@
     return {
       observe(message) {
         if (disposed) { return; }
-        let changed = false;
+        let changed;
         try { changed = model.ingest(message); }
         catch (error) { console.warn('[Mysti] Agent map skipped a message:', error); return; }
         if (changed) { refresh(); }

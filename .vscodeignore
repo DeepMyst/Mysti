@@ -7,7 +7,7 @@ plans/**
 tests/**
 *.vsix
 .gitignore
-.eslintrc.json
+eslint.config.cjs
 **/*.map
 **/*.ts
 tsconfig.json
