@@ -340,7 +340,8 @@
             "hermes",
             "continue",
             "openrouter",
-            "kimi-code"
+            "kimi-code",
+            "minimax"
           ],
           "enumDescriptions": [
             "%config.mysti.defaultProvider.enumDescriptions.0%",
@@ -357,7 +358,8 @@
             "Hermes - NousResearch's self-improving agent with skills, memory, and 300+ models via Nous Portal, OpenRouter, or custom endpoints",
             "Continue - continuedev's open-source coding agent (cn CLI) with hub assistants, rules, and any-model configs",
             "OpenRouter - Unified API gateway routing to 300+ models across providers (free by default, OpenAI-compatible)",
-            "Kimi Code - Moonshot AI's terminal coding agent (kimi CLI) with Kimi K2.7 Code / K3 models over the Agent Client Protocol"
+            "Kimi Code - Moonshot AI's terminal coding agent (kimi CLI) with Kimi K2.7 Code / K3 models over the Agent Client Protocol",
+            "MiniMax \u2014 text and reasoning through the MiniMax API (API key required)"
           ],
           "description": "%config.mysti.defaultProvider.description%"
         },
@@ -381,7 +383,8 @@
             "hermes",
             "continue",
             "openrouter",
-            "kimi-code"
+            "kimi-code",
+            "minimax"
           ],
           "enumDescriptions": [
             "Mysti - the coordinator agent. Runs on your DeepMyst account, answers directly and delegates to installed CLI agents when useful",
@@ -400,7 +403,8 @@
             "Hermes",
             "Continue",
             "OpenRouter",
-            "Kimi Code"
+            "Kimi Code",
+            "MiniMax \u2014 text and reasoning through the MiniMax API (API key required)"
           ],
           "markdownDescription": "The agent selected when a chat panel opens. Unlike `#mysti.defaultProvider#` this may be a pseudo-agent (`mysti`, `brainstorm`) that has no CLI of its own. `mysti.defaultProvider` remains the CLI backend used for delegation, brainstorm, `@agent` mentions and prompt enhancement."
         },
@@ -2058,6 +2062,36 @@
             "REIMAGINE"
           ],
           "description": "Creative range for Stitch variants: REFINE (conservative), EXPLORE (balanced), REIMAGINE (radical)"
+        },
+        "mysti.minimaxBaseUrl": {
+          "type": "string",
+          "default": "https://api.minimax.io/v1",
+          "description": "MiniMax API base URL (OpenAI-compatible endpoint).",
+          "scope": "machine"
+        },
+        "mysti.minimaxModel": {
+          "type": "string",
+          "default": "",
+          "description": "Model to use with MiniMax. Leave empty to use MiniMax-M2.7 (default). Options: MiniMax-M2.7, MiniMax-M2.7-highspeed."
+        },
+        "mysti.minimaxTemperature": {
+          "type": "number",
+          "default": 1.0,
+          "minimum": 0.01,
+          "maximum": 1.0,
+          "description": "Sampling temperature for MiniMax (0.01-1.0). MiniMax does not accept 0; default is 1.0."
+        },
+        "mysti.minimaxMaxTokens": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Maximum tokens to generate with MiniMax (0 = no limit)."
+        },
+        "mysti.minimaxRequestTimeout": {
+          "type": "number",
+          "default": 120000,
+          "minimum": 5000,
+          "description": "Request timeout in milliseconds for MiniMax."
         }
       }
     },

@@ -5483,6 +5483,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               type: 'authError',
               payload: {
                 error: chunk.content,
+                providerId: settings.provider,
+                apiKeySetup: !!this._providerManager.getProviderInstance(settings.provider)?.configureAuthentication,
                 authCommand: chunk.authCommand,
                 providerName: chunk.providerName
               }

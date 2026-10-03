@@ -739,6 +739,8 @@ export class SetupManager {
       };
     }
 
+    if (provider.configureAuthentication) { return provider.configureAuthentication(); }
+
     if (providerId === 'openrouter' || providerId === 'localai') {
       await vscode.commands.executeCommand('workbench.action.openSettings', providerId === 'openrouter' ? 'mysti.openrouter.apiKey' : 'mysti.localaiEndpoint');
       return { authenticated: false, error: 'Configure the provider connection in Settings, then refresh detection.' };

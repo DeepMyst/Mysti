@@ -13807,12 +13807,12 @@
           '</div>' +
           '<p style="margin: 8px 0;">' + escapeHtml(data.providerName) + ' is not authenticated.</p>' +
           '<div style="margin: 12px 0; padding: 8px; background: var(--vscode-textCodeBlock-background); border-radius: 4px; font-family: monospace;">' +
-            '<strong>To authenticate, run:</strong><br>' +
+            '<strong>' + (data.apiKeySetup ? 'Configure provider:' : 'To authenticate, run:') + '</strong><br>' +
             '<code style="color: var(--vscode-textPreformat-foreground);">' + escapeHtml(data.authCommand) + '</code>' +
           '</div>' +
           '<button id="auth-terminal-btn" ' +
             'style="padding: 6px 12px; cursor: pointer; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 4px;">' +
-            'Open Terminal & Authenticate' +
+            (data.apiKeySetup ? 'Configure API key' : 'Authenticate') +
           '</button>' +
         '</div>';
         messagesEl.appendChild(div);
@@ -13821,7 +13821,9 @@
         var authBtn = div.querySelector('#auth-terminal-btn');
         if (authBtn) {
           authBtn.addEventListener('click', function() {
-            vscode.postMessage({ type: 'openTerminal', payload: data.authCommand });
+            vscode.postMessage(data.providerId
+              ? { type: 'authConfirm', payload: { providerId: data.providerId } }
+              : { type: 'openTerminal', payload: data.authCommand });
           });
         }
 

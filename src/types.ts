@@ -24,7 +24,7 @@ export type ThinkingLevel = 'none' | 'low' | 'medium' | 'high';
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export type AccessLevel = 'read-only' | 'ask-permission' | 'full-access';
 export type ContextMode = 'auto' | 'manual';
-export type ProviderType = 'claude-code' | 'openai-codex' | 'google-gemini' | 'cline' | 'github-copilot' | 'cursor' | 'openclaw' | 'opencode' | 'ollama' | 'localai' | 'qwen-code' | 'hermes' | 'continue' | 'openrouter' | 'kimi-code';
+export type ProviderType = 'claude-code' | 'openai-codex' | 'google-gemini' | 'cline' | 'github-copilot' | 'cursor' | 'openclaw' | 'opencode' | 'ollama' | 'localai' | 'qwen-code' | 'hermes' | 'continue' | 'openrouter' | 'kimi-code' | 'minimax';
 
 /**
  * Pseudo-agents: selectable in the agent menu, but NOT registered providers —
@@ -45,7 +45,7 @@ export type AgentSelection = ProviderType | PseudoAgentType;
 export type AutocompleteType = 'sentence' | 'paragraph' | 'message';
 
 // Agent and Brainstorm types
-export type AgentType = 'claude-code' | 'openai-codex' | 'google-gemini' | 'cline' | 'github-copilot' | 'cursor' | 'openclaw' | 'opencode' | 'ollama' | 'localai' | 'qwen-code' | 'hermes' | 'continue' | 'openrouter' | 'kimi-code';
+export type AgentType = 'claude-code' | 'openai-codex' | 'google-gemini' | 'cline' | 'github-copilot' | 'cursor' | 'openclaw' | 'opencode' | 'ollama' | 'localai' | 'qwen-code' | 'hermes' | 'continue' | 'openrouter' | 'kimi-code' | 'minimax';
 export type PersonaType = 'neutral' | 'architect' | 'pragmatist' | 'engineer' | 'reviewer' | 'designer' | 'custom';
 export type BrainstormPhase = 'initial' | 'individual' | 'discussion' | 'synthesis' | 'complete';
 export type CollaborationStrategy = 'quick' | 'debate' | 'red-team' | 'perspectives' | 'delphi';

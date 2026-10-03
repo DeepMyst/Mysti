@@ -86,8 +86,12 @@ for (const key of criticalRuRuntime) {
 }
 
 // Every %nls.key% reference in package.json must exist in every manifest catalog.
-const manifestText = JSON.stringify(manifest);
-const nlsRefs = [...manifestText.matchAll(/%([^%]+)%/g)].map((m) => m[1]);
+function strings(value) {
+  if (typeof value === 'string') return [value];
+  if (value && typeof value === 'object') return Object.values(value).flatMap(strings);
+  return [];
+}
+const nlsRefs = strings(manifest).flatMap(value => /^%([a-zA-Z0-9_.-]+)%$/.exec(value)?.slice(1) ?? []);
 for (const key of new Set(nlsRefs)) {
   if (!(key in manifestEn)) errors.push(`package.json references missing EN NLS key: ${key}`);
   for (const locale of locales) {

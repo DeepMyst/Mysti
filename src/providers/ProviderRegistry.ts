@@ -28,6 +28,7 @@ import { QwenCodeProvider } from './qwen/QwenCodeProvider';
 import { HermesProvider } from './hermes/HermesProvider';
 import { ContinueProvider } from './continue/ContinueProvider';
 import { OpenRouterProvider } from './openrouter/OpenRouterProvider';
+import { MiniMaxProvider } from './minimax/MiniMaxProvider';
 import { KimiCodeProvider } from './kimi/KimiCodeProvider';
 
 /**
@@ -139,6 +140,9 @@ export class ProviderRegistry {
     console.log(`[Mysti] Registered provider: ${openrouter.displayName}`);
 
     // Register Kimi Code (MoonshotAI/kimi-code `kimi` CLI, ACP transport)
+    const minimax = new MiniMaxProvider(this._extensionContext);
+    this._providers.set(minimax.id, minimax);
+
     const kimi = new KimiCodeProvider(this._extensionContext);
     this._providers.set(kimi.id, kimi);
     console.log(`[Mysti] Registered provider: ${kimi.displayName}`);
