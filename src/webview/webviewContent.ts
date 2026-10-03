@@ -23,6 +23,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import { getWebviewLocalizationScript } from '../localization';
 import { PROVIDER_MANIFEST_SCHEMA_VERSION } from '../providers/base/ProviderManifest';
 
 /** Module-level template cache — read once per extension-host process. */
@@ -161,6 +162,8 @@ export function getWebviewContent(
   if (opts.view === 'hub') {
     html = html.replace('<body>', '<body class="view-hub">');
   }
+  const localization = getWebviewLocalizationScript();
+  if (localization) { html = html.replace('</body>', `<script nonce="${nonce}">${localization}</script></body>`); }
   return html;
 }
 

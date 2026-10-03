@@ -249,7 +249,12 @@ export enum ProgressLocation {
   Notification = 15,
 }
 
+export const l10n = {
+  t: (message: string, ...args: unknown[]) => message.replace(/\{(\d+)\}/g, (match, index) => index < args.length ? String(args[index]) : match),
+};
+
 export const env = {
+  language: 'en',
   uriScheme: 'vscode',
   openExternal: () => Promise.resolve(true),
   asExternalUri: (uri: unknown) => Promise.resolve(uri),

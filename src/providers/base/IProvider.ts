@@ -528,6 +528,8 @@ export interface ICliProvider {
   // Authentication & Setup
   getAuthConfig(): Promise<AuthConfig>;
   checkAuthentication(): Promise<AuthStatus>;
+  /** Interactive host-owned API setup; credentials never pass through the webview. */
+  configureAuthentication?(): Promise<AuthStatus>;
   getAuthCommand(): string;
   getInstallCommand(): string;
 

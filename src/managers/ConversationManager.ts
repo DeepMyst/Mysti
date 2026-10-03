@@ -155,7 +155,7 @@ export class ConversationManager {
 
     const conversation: Conversation = {
       id: this._generateId(),
-      title: 'New Conversation',
+      title: vscode.l10n.t('New Conversation'),
       messages: [],
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -784,7 +784,7 @@ export class ConversationManager {
 
     const conversation: Conversation = {
       id: this._generateId(),
-      title: 'Imported Conversation',
+      title: vscode.l10n.t('Imported Conversation'),
       messages,
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -913,7 +913,7 @@ export class ConversationManager {
 
     const conversation: Conversation = {
       id: this._generateId(),
-      title: 'Imported Conversation',
+      title: vscode.l10n.t('Imported Conversation'),
       messages,
       createdAt: Date.now(),
       updatedAt: Date.now(),

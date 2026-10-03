@@ -66,7 +66,7 @@ function providerSources(): Array<{ file: string; src: string }> {
 
 /** Menu entries: `id: 'cmd:x', label: '…'`. */
 function menuEntries(src: string): Array<{ id: string; label: string }> {
-  return [...src.matchAll(/id:\s*'(cmd:[\w-]+)',\s*\n\s*label:\s*'([^']+)'/g)]
+  return [...src.matchAll(/id:\s*'(cmd:[\w-]+)',\s*\n\s*label:\s*(?:vscode\.l10n\.t\()?['"]([^'"]+)['"]/g)]
     .map((m) => ({ id: m[1], label: m[2] }));
 }
 

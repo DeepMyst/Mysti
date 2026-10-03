@@ -78,6 +78,7 @@ export const PROVIDER_DISPLAY_META: Record<ProviderType, ProviderDisplayMeta> = 
   'qwen-code': { displayName: 'Qwen', shortId: 'qwen', color: '#6C5CE7', icon: 'icons/qwen.png' },
   'hermes': { displayName: 'Hermes', shortId: 'hermes', color: '#D97706', icon: 'icons/hermes.png' },
   'continue': { displayName: 'Continue', shortId: 'continue', color: '#14B8A6', icon: 'icons/continue.png' },
+  'minimax': { displayName: 'MiniMax', shortId: 'minimax', color: '#F97316', icon: 'icons/minimax.svg' },
   'openrouter': { displayName: 'OpenRouter', shortId: 'openrouter', color: '#64748B', icon: 'icons/openrouter.png' },
   'kimi-code': { displayName: 'Kimi Code', shortId: 'kimi', color: '#93C5FD', icon: 'icons/kimi.png' }
 };
@@ -101,6 +102,7 @@ export const PROVIDER_CUSTOM_MODEL_SETTING_KEYS: Record<ProviderType, string> = 
   'qwen-code': 'qwenCodeModel',
   'hermes': 'hermesModel',
   'continue': 'continueModel',
+  'minimax': 'minimaxModel',
   'openrouter': 'openrouterModel',
   'kimi-code': 'kimiCodeModel'
 };
@@ -137,6 +139,7 @@ export const PROVIDER_NPM_PACKAGES: Record<ProviderType, string | null> = {
   'qwen-code': '@qwen-code/qwen-code',
   'hermes': null,        // curl | bash installer (hermes-agent.nousresearch.com)
   'continue': '@continuedev/cli',
+  'minimax': null,       // API-only, no CLI to update
   'openrouter': null,    // API-only, no CLI to update
   'kimi-code': null      // curl | bash installer (code.kimi.com)
 };
