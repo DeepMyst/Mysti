@@ -1,2 +1,7 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Vendor provenance hashes exact bytes; preserve them on Windows checkouts.
+scripts/build-vendor.js text eol=lf
+resources/mermaid.min.js text eol=lf
+resources/mermaid.min.js.LICENSE.txt text eol=lf

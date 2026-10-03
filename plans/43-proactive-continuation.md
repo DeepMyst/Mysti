@@ -19,7 +19,16 @@ This continuation adds saved cloud scan progress and an explicit task-context vi
 
 ## Validation and release evidence
 
-Validation results and merged PR links will be recorded here after release checks.
+Release PRs: [Mysti #55](https://github.com/DeepMyst/Mysti/pull/55) and [DeepMyst #1014](https://github.com/DeepMyst/DeepMyst-2.0/pull/1014). Merge/deployment results will be appended after hosted checks.
+
+Local validation:
+
+- Mysti: **13,725 tests passed across 438 files**, including Chromium task-context flows and stale-result rejection. A browser setup convention was corrected; the settings harness now awaits background initialization to prevent a teardown race. An earlier concurrent-build run hit a canvas timeout; the final run completed without failures or unhandled errors.
+- Native VS Code 1.140.0: **10 passed**, covering the Proactive panel, dictation bridge and canvas host.
+- TypeScript, release build and vendored integrity checks pass. ESLint has no errors and 455 existing warnings.
+- DeepMyst: **11 Proactive tests passed** against isolated PostgreSQL 17, including migration upgrade/downgrade, persisted checkpoint/evidence, replay, authorization, concurrency and provider retry delay. Ruff passes.
+- Hosted Windows checks exposed CRLF conversion of exact-byte vendor hash inputs. Explicit LF checkout attributes preserve those inputs without weakening the integrity verification.
+- Existing backend full-suite/security failures remain separate operational debt; the new Proactive tests are required in CI.
 
 ## Next unfinished gates
 
