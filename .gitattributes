@@ -5,3 +5,4 @@
 scripts/build-vendor.js text eol=lf
 resources/mermaid.min.js text eol=lf
 resources/mermaid.min.js.LICENSE.txt text eol=lf
+src/generated/coreAgentManifest.ts text eol=lf

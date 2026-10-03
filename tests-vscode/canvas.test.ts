@@ -36,6 +36,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { chromium, type Browser, type Frame, type Page } from 'playwright';
+import { legacyCdp } from './legacyCdp';
 
 const EXTENSION_ID = 'DeepMyst.mysti';
 
@@ -76,6 +77,7 @@ function workspaceRoot(): string {
 describe('Mysti Canvas — real VS Code host', function () {
   this.timeout(120_000);
   let browser: Browser | undefined;
+  let legacy: Awaited<ReturnType<typeof legacyCdp>> | undefined;
 
   before(async () => {
     const ext = vscode.extensions.getExtension(EXTENSION_ID);
@@ -88,7 +90,9 @@ describe('Mysti Canvas — real VS Code host', function () {
     const endpoint = fs.readFileSync(path.join(profile, 'DevToolsActivePort'), 'utf8').trim().split(/\r?\n/);
     assert.match(endpoint[0], /^\d+$/, 'the editor did not publish a CDP port');
     assert.ok(endpoint[1]?.startsWith('/devtools/browser/'), 'the editor did not publish a CDP endpoint');
-    browser = await chromium.connectOverCDP(`ws://127.0.0.1:${endpoint[0]}${endpoint[1]}`);
+    const inspection = `ws://127.0.0.1:${endpoint[0]}${endpoint[1]}`;
+    if (vscode.version.startsWith('1.86.')) { legacy = await legacyCdp(inspection); }
+    browser = await chromium.connectOverCDP(legacy?.endpoint || inspection);
     for (const context of browser.contexts()) {
       for (const page of context.pages()) {
         page.on('console', message => {
@@ -104,6 +108,7 @@ describe('Mysti Canvas — real VS Code host', function () {
     // For connectOverCDP this disconnects our client; the test runner owns the
     // editor process and must still receive the Mocha result before it exits.
     await browser?.close();
+    await legacy?.close();
   });
 
   async function canvasFrame(): Promise<{ page: Page; frame: Frame }> {

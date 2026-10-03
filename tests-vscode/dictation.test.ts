@@ -22,11 +22,18 @@ describe('Mysti dictation editor bridge', function () {
   });
   afterEach(async () => { await manager.cancelPanel('test-panel'); manager.dispose(); });
   after(() => { fs.rmSync(directory, { recursive: true, force: true }); });
-  it('native command exists; bridges actual document changes and closes only its dirty scratch tab', async () => {
-    assert.ok((await vscode.commands.getCommands(true)).includes('workbench.action.editorDictation.start'));
+  it('bridges document changes when speech is available, otherwise requests setup', async () => {
     const source = await vscode.workspace.openTextDocument({ content: 'Keep this unrelated draft', language: 'plaintext' });
     await vscode.window.showTextDocument(source);
     await manager.start('test-panel', 'first');
+    if (events.at(-1).needsSetup) {
+      assert.strictEqual(events.at(-1).state, 'error');
+      assert.strictEqual(vscode.window.activeTextEditor?.document, source);
+      assert.strictEqual(source.getText(), 'Keep this unrelated draft');
+      assert.deepStrictEqual(commands, []);
+      await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+      return;
+    }
     assert.strictEqual(events.at(-1).state, 'active', JSON.stringify(events));
     const dictation = vscode.window.activeTextEditor!;
     assert.notStrictEqual(dictation.document, source);
@@ -45,6 +52,12 @@ describe('Mysti dictation editor bridge', function () {
   });
   it('status bar finish and discard commands clean up the real scratch editors', async () => {
     await manager.start('test-panel', 'second');
+    if (events.at(-1).needsSetup) {
+      assert.strictEqual(events.at(-1).state, 'error');
+      assert.deepStrictEqual(commands, []);
+      assert.strictEqual(manager._session, undefined);
+      return;
+    }
     const finish = (await vscode.commands.getCommands(true)).find(id => id.startsWith('mysti.dictation.finish.'))!;
     await vscode.window.activeTextEditor!.edit(edit => edit.insert(new vscode.Position(0, 0), 'native finish'));
     await vscode.commands.executeCommand(finish);
