@@ -29,6 +29,38 @@ describe('BrainstormManager', () => {
     vi.restoreAllMocks();
   });
 
+  it('bounds parallel readiness checks and ends the analyzing state (#50)', async () => {
+    const { manager, mockPM: pm } = createTestBrainstormManager(mockPM);
+    configureBrainstorm({ agents: ['claude-code', 'google-gemini'], strategy: 'quick', synthesisAgent: 'google-gemini' });
+    const probe = vi.spyOn(pm, 'getProviderStatus').mockImplementation(() => new Promise(() => {}));
+    vi.useFakeTimers();
+    const pending = collectChunks(manager.startBrainstormSession('Test', [], createMockSettings(), 'readiness'));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(probe).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(30_000);
+    const chunks = await pending;
+    expect(chunks.find(c => c.type === 'agent_error')?.content).toContain('timed out');
+    expect(chunks.at(-1)?.type).toBe('done');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('allows deliberation beyond the old 90-second cutoff (#31)', async () => {
+    const { manager, mockPM: pm } = createTestBrainstormManager(mockPM);
+    configureBrainstorm({ agents: ['claude-code', 'google-gemini'], strategy: 'quick', synthesisAgent: 'google-gemini' });
+    pm.setProviderAvailable('claude-code', 'Claude'); pm.setProviderAvailable('google-gemini', 'Gemini');
+    pm.streamFactories.set('claude-code', async function* () {
+      await new Promise(resolve => setTimeout(resolve, 120_000));
+      yield { type: 'text', content: 'Completed after deliberation.' };
+    });
+    pm.setProviderChunks('google-gemini', makeTextChunks(['Gemini answer']));
+    vi.useFakeTimers();
+    const pending = collectChunks(manager.startBrainstormSession('Test', [], createMockSettings(), 'deliberation'));
+    await vi.advanceTimersByTimeAsync(121_000);
+    const chunks = await pending;
+    expect(chunks.filter(c => c.type === 'agent_error')).toEqual([]);
+    expect(chunks.some(c => c.type === 'agent_complete' && c.agentId === 'claude-code')).toBe(true);
+  });
+
   // =========================================================================
   // 1. Happy path — quick strategy with Claude + Gemini
   // =========================================================================

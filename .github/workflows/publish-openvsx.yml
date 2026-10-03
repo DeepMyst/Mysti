@@ -1,0 +1,69 @@
+name: Publish reviewed VSIX to Open VSX
+on:
+  workflow_dispatch:
+    inputs:
+      ci_run_id:
+        description: Successful CI run on main containing the reviewed mysti-vsix artifact
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: publish-openvsx
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Verify source run and editor integration
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ inputs.ci_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]]
+          gh api "repos/$GH_REPO/actions/runs/$RUN_ID" > run.json
+          jq -e '.conclusion == "success" and .event == "push" and .head_branch == "main" and .path == ".github/workflows/ci.yml"' run.json
+          SOURCE_SHA=$(jq -r .head_sha run.json)
+          gh api "repos/$GH_REPO/actions/workflows/integration.yml/runs?head_sha=$SOURCE_SHA&status=success" > integration.json
+          jq -e '[.workflow_runs[] | select(.head_branch == "main" and .event == "push")] | length > 0' integration.json
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v8
+        with:
+          name: mysti-vsix
+          path: release
+          run-id: ${{ steps.source.outputs.run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify package identity and beta channel
+        run: |
+          python3 - <<'PY'
+          import json, zipfile, xml.etree.ElementTree as ET, hashlib
+          path = 'release/mysti-ci.vsix'
+          with zipfile.ZipFile(path) as archive:
+              package = json.loads(archive.read('extension/package.json'))
+              assert package['publisher'] == 'DeepMyst' and package['name'] == 'mysti'
+              manifest = ET.fromstring(archive.read('extension.vsixmanifest'))
+              assert any(e.get('Id') == 'Microsoft.VisualStudio.Code.PreRelease' and e.get('Value') == 'true' for e in manifest.iter())
+          print('Publishing', package['publisher'], package['name'], package['version'], 'pre-release')
+          print('SHA256', hashlib.sha256(open(path, 'rb').read()).hexdigest())
+          PY
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22.23.3'
+      - name: Publish the exact tested artifact
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: |
+          set -euo pipefail
+          if [ -z "$OVSX_PAT" ]; then
+            echo 'Configure OVSX_PAT after accepting the publisher agreement and claiming the DeepMyst namespace.' >&2
+            exit 1
+          fi
+          npm exec --yes --package=ovsx@1.2.0 -- ovsx publish release/mysti-ci.vsix --pre-release

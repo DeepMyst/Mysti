@@ -17,7 +17,7 @@
  * must not re-focus an artboard. Today's canvas does all three, which is what
  * makes co-editing with an agent feel like fighting it.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   BOARD_OVERLAY_ID, BOARD_VIEWPORT_ID, BOARD_ZOOM_FIT_ID, BOARD_ZOOM_IN_ID,
   BOARD_ZOOM_LEVEL_ID, BOARD_ZOOM_OUT_ID, BoardController,
@@ -223,6 +223,24 @@ describe('one transformed world', () => {
     const after = screenToWorld(anchor, controller.transform);
     expect(after.x).toBeCloseTo(before.x, 6);
     expect(after.y).toBeCloseTo(before.y, 6);
+  });
+
+  it('pans without reading layout and releases overview layers on zoom-in', () => {
+    const h = makeHarness(); const controller = board(h);
+    controller.setArtifact(artifact([page('p1')]), initialViewState());
+    controller.setZoom(0.15);
+    expect(h.world.attrs.get('data-overview')).toBe('true');
+    const read = vi.spyOn(h.viewport, 'getBoundingClientRect');
+    h.viewport.fire('pointerdown', { button: 1, clientX: 100, clientY: 100 });
+    const before = controller.transform.pan;
+    read.mockClear();
+    h.fire('pointermove', { clientX: 160, clientY: 130 });
+    expect(controller.transform.pan).toEqual({ x: before.x + 60, y: before.y + 30 });
+    expect(read).not.toHaveBeenCalled();
+    h.fire('pointerup');
+    controller.setZoom(1);
+    expect(h.world.attrs.get('data-overview')).toBe('false');
+    controller.dispose();
   });
 
   it('space-drag pans; a plain drag does not', () => {

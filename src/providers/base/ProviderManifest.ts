@@ -261,7 +261,8 @@ export function getCustomModelSettingKey(providerId: string): string | undefined
  * manifest to open webviews — the keys backing declared settings sections.
  */
 export function getManifestAffectingSettingKeys(): string[] {
-  const keys = new Set<string>();
+  // Switching OpenCode transports changes attachment, approval and model capabilities.
+  const keys = new Set<string>(['opencodeEndpoint', 'opencodeRemoteDirectory', 'opencodeRemoteUsername']);
   for (const sections of Object.values(PROVIDER_SETTINGS_SECTIONS)) {
     for (const section of sections ?? []) {
       if (section.settingKey) {

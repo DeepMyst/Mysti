@@ -482,7 +482,7 @@ describe('Plan 31 — what crosses between the tab and its chat', () => {
 
   it('tells the other side only what the host applied, never a value it refused', async () => {
     const t = await bound({
-      _providerManager: { getAllProviderIds: () => ['claude-code', 'openai-codex'] },
+      _providerManager: { getAllProviderIds: () => ['claude-code', 'openai-codex'], getProvider: (id: string) => ({ name: id }) },
       _permissionManager: { refreshConfig: vi.fn() },
       postMessage: vi.fn(),
     });
