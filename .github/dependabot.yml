@@ -45,6 +45,16 @@ updates:
           - "@vscode/test-*"
           - mocha
     ignore:
+      # ts-loader and typescript-eslint still consume the JavaScript compiler API.
+      # Revisit when both support the TypeScript 7 programmatic API.
+      - dependency-name: typescript
+        versions: [">=6"]
+      # Mocha executes INSIDE VS Code 1.86 (Node 18.17.1), not development Node.
+      - dependency-name: mocha
+        versions: [">=11"]
+      # Declarations follow development Node 22, not the newest Node runtime.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
       # These declarations describe the oldest supported editor, not the newest
       # development toolchain. Raise them with engines.vscode and the host matrix.
       - dependency-name: "@types/vscode"

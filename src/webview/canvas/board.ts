@@ -2096,7 +2096,7 @@ export class BoardController {
   private _capturePreviewRect(pageId: string, mid: Mid, node: AttrNodeLike | null): void {
     const page = this._page(pageId);
     if (!page || !node || typeof node.getBoundingClientRect !== 'function') { return; }
-    let box: { left: number; top: number; width: number; height: number } | null = null;
+    let box: { left: number; top: number; width: number; height: number } | null;
     try { box = node.getBoundingClientRect(); } catch { return; }
     if (!box || typeof box.left !== 'number' || typeof box.top !== 'number') { return; }
     const host = this._viewportHost as MeasurableLike | null;

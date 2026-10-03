@@ -268,7 +268,7 @@ export class CliUpdateService implements vscode.Disposable {
    * Fire-and-forget friendly: never throws, and callers do not await it.
    */
   public async checkAll(opts?: { force?: boolean }): Promise<CliUpdateInfo[]> {
-    let statuses: Array<{ providerId: string; found: boolean; version?: string }> = [];
+    let statuses: Array<{ providerId: string; found: boolean; version?: string }>;
     try {
       statuses = await this._versions.getAllStatuses();
     } catch (err) {

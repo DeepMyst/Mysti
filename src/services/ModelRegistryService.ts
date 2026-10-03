@@ -336,7 +336,7 @@ export class ModelRegistryService {
       return;
     }
 
-    let discovered: ModelInfo[] | null = null;
+    let discovered: ModelInfo[] | null;
     try {
       discovered = await this._raceTimeout(
         instance.discoverModels(MODEL_DISCOVERY_TIMEOUT_MS),
