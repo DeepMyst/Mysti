@@ -29,8 +29,8 @@ describe.each([
   ['Hermes', () => new TestableHermesProvider()],
   ['Kimi', () => new TestableKimiProvider()],
 ] as const)('%s real ACP fixture approvals', (_name, createProvider) => {
-  const cleanups: Array<() => void> = [];
-  afterEach(() => { vi.useRealTimers(); for (const cleanup of cleanups.splice(0)) { cleanup(); } vi.restoreAllMocks(); });
+  const cleanups: Array<() => Promise<void>> = [];
+  afterEach(async () => { vi.useRealTimers(); for (const cleanup of cleanups.splice(0)) { await cleanup(); } vi.restoreAllMocks(); });
 
   function harness(closeAfter = '') {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-acp-test-'));
@@ -47,16 +47,18 @@ describe.each([
     });
     vi.spyOn(provider as unknown as { buildPromptAsync(): Promise<string> }, 'buildPromptAsync').mockResolvedValue('fixture');
     const suspend = vi.spyOn(provider, 'suspendProcess');
-    cleanups.push(() => {
+    cleanups.push(async () => {
       provider.dispose();
       Object.defineProperty(vscode.workspace, 'workspaceFolders', { value: originalFolders });
-      fs.rmSync(directory, { recursive: true, force: true });
+      await fs.promises.rm(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
     });
     const send = (panelId: string) => collect(provider.sendMessage('fixture', [], settings, null, undefined, panelId));
     return { provider, suspend, send, marker: (panel: string) => path.join(directory, panel) };
   }
 
-  it.each(['initialize', 'session/new'])('a closed ACP pipe after %s ends the turn with an error', async method => {
+  // Closing POSIX fd 0 does not close the Windows libuv pipe. Other native
+  // approval and mocked transport-error cases still run on Windows.
+  it.skipIf(process.platform === 'win32').each(['initialize', 'session/new'])('a closed ACP pipe after %s ends the turn with an error', async method => {
     const h = harness(method);
     const handler = vi.fn(async () => true);
     h.provider.setNativeApprovalHost({ handlerForPanel: () => handler });

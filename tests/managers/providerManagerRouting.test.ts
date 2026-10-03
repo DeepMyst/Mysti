@@ -200,7 +200,7 @@ describe('ProviderManager panel -> provider routing (B12)', () => {
     // Live process: killProcessTree should send a signal to it.
     const kill = vi.fn(() => true);
     const live = {
-      pid: 9999,
+      pid: undefined, // Mock handle: never dispatch taskkill against a real Windows PID.
       exitCode: null,
       signalCode: null,
       kill,

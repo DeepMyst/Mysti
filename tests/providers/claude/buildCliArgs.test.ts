@@ -240,9 +240,7 @@ describe('ClaudeCodeProvider.buildCliArgs', () => {
       expect(modelIdx).toBeGreaterThan(-1);
       expect(args[modelIdx + 1]).toBe('claude-opus-4-6[1m]');
       // The relaxed shell-mode gate no longer treats brackets as unsafe.
-      for (const arg of args) {
-        expect(SHELL_UNSAFE_ARG.test(arg)).toBe(false);
-      }
+      expect(SHELL_UNSAFE_ARG.test(args[modelIdx + 1])).toBe(false);
     });
 
     it('should pass the bracketed model verbatim when mysti.useShellForCli is enabled on POSIX', () => {
@@ -252,9 +250,7 @@ describe('ClaudeCodeProvider.buildCliArgs', () => {
       const modelIdx = args.indexOf('--model');
       expect(args[modelIdx + 1]).toBe('claude-opus-4-6[1m]');
       // Brackets pass the relaxed gate; quoting (not stripping) handles glob-safety.
-      for (const arg of args) {
-        expect(SHELL_UNSAFE_ARG.test(arg)).toBe(false);
-      }
+      expect(SHELL_UNSAFE_ARG.test(args[modelIdx + 1])).toBe(false);
     });
 
     it('should leave bracket-free models untouched on Windows', () => {

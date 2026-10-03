@@ -24,8 +24,9 @@ describe('attachment transport reaches actual CLI prompts', () => {
         expect(prompt).toContain('Review carefully.');
         for (const attachment of attachments as any[]) {
           expect(fs.readFileSync(attachment.filePath).toString('base64')).toBe(attachment.base64Data);
-          expect(prompt).toContain(attachment.filePath);
-          expect(prompt.split(attachment.filePath)).toHaveLength(2);
+          const transportedPath = prompt.includes(attachment.filePath) ? attachment.filePath : JSON.stringify(attachment.filePath).slice(1, -1);
+          expect(prompt).toContain(transportedPath);
+          expect(prompt.split(transportedPath)).toHaveLength(2);
         }
         const repeat = attachments.map(a => ({ ...a }));
         const repeatCleanup = await p.prepareAttachments(repeat, []);

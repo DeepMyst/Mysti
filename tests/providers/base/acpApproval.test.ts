@@ -64,7 +64,8 @@ describe('ACP permission choices', () => {
     h.requests.dispose();
   });
 
-  it('handles an asynchronous EPIPE and ends only the child whose stdin closed', async () => {
+  // This fixture closes POSIX fd 0; Windows named-pipe behavior differs.
+  it.skipIf(process.platform === 'win32')('handles an asynchronous EPIPE and ends only the child whose stdin closed', async () => {
     const child = spawn(process.execPath, ['-e',
       "require('node:fs').closeSync(0); process.stdout.write('ready'); setTimeout(() => {}, 30000);",
     ], { stdio: ['pipe', 'pipe', 'ignore'] });

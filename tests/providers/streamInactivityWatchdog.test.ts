@@ -35,7 +35,7 @@ describe('processStream inactivity watchdog (Plan 18 4.2)', () => {
         autonomousMode: false,
         suspended: false,
         process: {
-          pid: 4242,
+          pid: undefined, // Mock handle: never dispatch taskkill against a real Windows PID.
           exitCode: null,
           signalCode: null,
           kill,

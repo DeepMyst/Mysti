@@ -28,9 +28,10 @@ const HOME = '/home/dev';
 const WORKSPACE = '/repo';
 
 function fakeFs(files: Record<string, string>): NativeCommandFs {
+  const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '');
   return {
     readdirSync(dir) {
-      const base = dir.replace(/\/+$/, '') + '/';
+      const base = norm(dir) + '/';
       const seen = new Map<string, boolean>();
       for (const full of Object.keys(files)) {
         if (!full.startsWith(base)) { continue; }
@@ -47,12 +48,12 @@ function fakeFs(files: Record<string, string>): NativeCommandFs {
       }));
     },
     readFileSync(file) {
-      const content = files[file];
+      const content = files[norm(file)];
       if (content === undefined) { throw new Error(`ENOENT: ${file}`); }
       return content;
     },
     statSize(file) {
-      const content = files[file];
+      const content = files[norm(file)];
       if (content === undefined) { throw new Error(`ENOENT: ${file}`); }
       return Buffer.byteLength(content);
     },

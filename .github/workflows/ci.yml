@@ -128,3 +128,36 @@ jobs:
           name: mysti-vsix
           path: mysti-ci.vsix
           if-no-files-found: error
+
+
+  packaged-vscode:
+    name: packaged VS Code (${{ matrix.version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: package-shape
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['1.86.0', stable]
+    env:
+      MYSTI_TEST_VSCODE_VERSION: ${{ matrix.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: mysti-vsix
+          path: ${{ runner.temp }}/mysti-package
+      - name: Extract the verified release payload
+        run: unzip -q "$RUNNER_TEMP/mysti-package/mysti-ci.vsix" -d "$RUNNER_TEMP/mysti-packaged"
+      - name: Test the packaged extension in the real editor
+        env:
+          MYSTI_TEST_EXTENSION_PATH: ${{ runner.temp }}/mysti-packaged/extension
+        run: |
+          npm exec --no -- tsc -p tsconfig.vscode-test.json
+          node scripts/prepare-vscode-fixture.js
+          xvfb-run -a npm exec --no -- vscode-test

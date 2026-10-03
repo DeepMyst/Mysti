@@ -43,7 +43,7 @@ Mobile push, SMS/phone alerts, email/calendar adapters, automatic chat preflight
 
 Backend code lives in the adjacent `DeepMyst 2.0` repository:
 
-Production deployment on 2026-10-03 is tracked in [rollout and next steps](../plans/42-proactive-rollout-and-next-steps.md) and [DeepMyst PR #1013](https://github.com/DeepMyst/DeepMyst-2.0/pull/1013). The API and worker run commit `d0b96be08ce159811727acfb7b8ef26f1a0b9ff2`.
+Production deployment on 2026-10-03 is tracked in [rollout and next steps](../plans/42-proactive-rollout-and-next-steps.md) and [continuation plan 43](../plans/43-proactive-continuation.md). The API and worker run commit `d352950df4245f636d30dfb5e03e1c18d6f758eb` through [DeepMyst PR #1014](https://github.com/DeepMyst/DeepMyst-2.0/pull/1014).
 
 For subsequent environments:
 

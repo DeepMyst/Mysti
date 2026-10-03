@@ -14,8 +14,8 @@ function deferred<T>() {
   const promise = new Promise<T>(r => { resolve = r; });
   return { promise, resolve };
 }
-const cleanups: Array<() => void> = [];
-afterEach(() => { for (const cleanup of cleanups.splice(0)) { cleanup(); } vi.restoreAllMocks(); });
+const cleanups: Array<() => Promise<void>> = [];
+afterEach(async () => { for (const cleanup of cleanups.splice(0)) { await cleanup(); } vi.restoreAllMocks(); });
 function harness() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-claude-native-'));
   const folders = vscode.workspace.workspaceFolders;
@@ -32,9 +32,9 @@ function harness() {
     return [path.resolve(__dirname, '../../fixtures/claudePermissionAgent.cjs'), directory, session.panelId];
   });
   vi.spyOn(provider as unknown as { buildPromptAsync(): Promise<string> }, 'buildPromptAsync').mockResolvedValue('fixture');
-  cleanups.push(() => {
+  cleanups.push(async () => {
     provider.dispose(); Object.defineProperty(vscode.workspace, 'workspaceFolders', { value: folders });
-    fs.rmSync(directory, { recursive: true, force: true });
+    await fs.promises.rm(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   });
   return { provider, marker: (panel: string) => path.join(directory, panel),
     send: async (panel = 'panel', overrides: Partial<Settings> = {}) => {

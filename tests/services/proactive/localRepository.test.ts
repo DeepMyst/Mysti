@@ -35,9 +35,10 @@ describe('read-only repository monitoring', () => {
     git(root, 'init', '-b', 'main'); git(root, 'config', 'user.email', 'test@example.invalid'); git(root, 'config', 'user.name', 'Test');
     await expect(observeRepository(root)).rejects.toThrow();
     await writeFile(join(root, 'old file'), 'content'); git(root, 'add', '.'); git(root, 'commit', '-m', 'initial');
-    git(root, 'mv', 'old file', 'new\nfile');
+    const renamed = process.platform === 'win32' ? 'new file' : 'new\nfile'; // Windows forbids control characters in filenames.
+    git(root, 'mv', 'old file', renamed);
     const s = await observeRepository(root);
-    expect(s.dirty).toEqual(expect.arrayContaining(['new\nfile', 'old file']));
+    expect(s.dirty).toEqual(expect.arrayContaining([renamed, 'old file']));
     expect(s.upstream).toBeUndefined();
     git(root, 'checkout', '--detach');
     expect((await observeRepository(root)).branch).toBe('HEAD');
