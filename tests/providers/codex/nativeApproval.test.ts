@@ -42,7 +42,7 @@ function harness() {
     }));
     provider.dispose();
     await Promise.all(closed); Object.defineProperty(vscode.workspace, 'workspaceFolders', { value: folders });
-    fs.rmSync(directory, { recursive: true, force: true });
+    await fs.promises.rm(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   });
   return { provider, marker: (panel: string) => path.join(directory, panel),
     send: async (panel = 'panel', overrides: Partial<Settings> = {}) => {
