@@ -76,6 +76,7 @@ describe('composer model and action menus', () => {
     await slider.focus();
     await page.keyboard.press('ArrowRight');
     expect(await slider.getAttribute('aria-valuetext')).toBe('Extra High');
+    expect(await page.locator('#model-menu-btn #model-menu-effort').textContent()).toBe('Extra High');
     expect(await slider.evaluate(el => el === document.activeElement)).toBe(true);
     expect(await posted()).toContainEqual(expect.objectContaining({ type: 'updateSettings', payload: { effortLevel: 'xhigh' } }));
     await page.keyboard.press('Escape');
@@ -89,11 +90,13 @@ describe('composer model and action menus', () => {
     await page.click('#model-menu [data-ultracode-toggle]');
     expect(await posted()).toContainEqual(expect.objectContaining({ type: 'updateSettings', payload: { ultracode: true } }));
     expect(await page.locator('[data-ultracode-toggle][aria-checked="true"]').count()).toBe(3);
+    expect(await page.locator('#model-menu-btn #model-menu-effort').textContent()).toBe('High · Ultracode');
     expect(await page.locator('#model-menu input[type="range"]').getAttribute('aria-valuetext')).toBe('High');
     await page.keyboard.press('Escape');
     await page.click('#tools-menu-btn');
     await page.click('#tools-menu [data-ultracode-toggle]');
     expect(await page.locator('[data-ultracode-toggle][aria-checked="false"]').count()).toBe(3);
+    expect(await page.locator('#model-menu-btn #model-menu-effort').textContent()).toBe('High');
     await fire({ type: 'settingsSync', payload: { ultracode: true, effortLevel: 'max' } });
     expect(await page.locator('[data-ultracode-toggle][aria-checked="true"]').count()).toBe(3);
     await fire({ type: 'settingsSync', payload: { provider: 'openai-codex', model: 'codex' } });

@@ -1,141 +1,94 @@
-# @-Mention System
+# Agent assignments and context mentions
 
-Mysti's @-mention system lets you reference files and route tasks to specific AI agents directly from the chat input.
+In Mysti 2.0 BETA, **an explicit agent tag is an assignment**, including when that agent is already selected. Mysti does not ask a model to decide whether to honor the tag.
 
-## File Mentions
+## Independent opinions
 
-Use `@filename` to add a file as transient context for your current message.
-
-### How It Works
-
-```
-@utils.ts Can you explain what the helper functions do?
+```text
+@claude @codex What are your opinions on adding a cache to this API?
 ```
 
-- Mysti resolves the filename to a file in your workspace
-- The file content is added as **transient context** (only for this message, not persisted)
-- The AI receives the file content alongside your question
+Both providers receive the question independently. Their read-only runs overlap, up to `mysti.collab.maxConcurrent` (default 3). Each has a separate live card. The final response stores both attributed answers without a third model pass rewriting them.
 
-### Examples
+The same behavior applies with Cline, Mysti, or another base provider selected, or with an explicit Mysti prefix and other tagged providers. The base provider is not an extra participant unless tagged. A request without provider tags continues to use the selected agent's normal behavior.
 
-```
-@package.json What version are we on?
-@src/auth.ts Is there a security vulnerability in the login flow?
-@styles.css @layout.css Can you unify these two stylesheets?
+## Assign different work
+
+```text
+@claude review the authentication design; @codex assess performance
 ```
 
-You can mention multiple files in a single message.
+Each agent receives its own segment of the request. Independent advisory segments may run together. Adjacent tags share the following task; repeated identical aliases in a shared assignment are deduplicated.
 
-## Agent Mentions
+Potentially mutating work is serialized, even if you ask several agents to do it. Mysti does not assume concurrent writers are safe in the same checkout. Access settings and native approval gates still apply; tagging an agent does not grant it additional authority.
 
-Use `@agent-name` to route tasks to specific AI providers.
+## Order a handoff
 
-### Available Agents
+```text
+@claude Write the parser, then @codex review it
+```
 
-| Mention | Routes to |
-|---------|-----------|
+Claude completes its assignment before Codex starts. Codex receives the prior response in a fenced reference block. A failed or empty prerequisite prevents its dependent assignment from starting. Use **then**, **afterwards**, **after that**, or **next** immediately before the next tag to express this order.
+
+You can combine sequential and parallel steps in one request:
+
+```text
+@claude explain the design, then @codex @gemini review it, then @claude summarize their feedback
+```
+
+Claude explains first. Codex and Gemini then review independently in parallel. The final Claude assignment waits for both reviews and receives both results. If either prerequisite fails or returns no answer, the dependent summary is blocked instead of pretending the workflow completed. The transcript shows the current step and the agents waiting in the next step.
+
+Scheduling uses conservative text rules, not a full natural-language dependency solver. Make boundaries explicit. This is an in-session workflow: it is not a saved, resumable workflow editor, and it does not support arbitrary branching or conditional rules. Potential file writers remain serial and permission-gated.
+
+## Roles
+
+```text
+@claude:critic @codex:reviewer Assess this proposal
+```
+
+Roles come from the agent catalog. Advisory roles restrict tool access to read-only operations; trusted write-capable roles still use permission gates and run serially. Unknown/unverified definitions do not gain authority. Repeated use of one provider in different roles has distinct run/card identities.
+
+Built-in roles include advisor, critic, reviewer, second-opinion, coworker, and collaborator. [Personas, skills and roles](PERSONAS-AND-SKILLS.md).
+
+## Provider tags
+
+| Short tag | Provider |
+| --- | --- |
 | `@claude` | Claude Code |
 | `@codex` | OpenAI Codex |
-| `@gemini` | Google Gemini |
-| `@cline` | Cline |
-| `@copilot` | GitHub Copilot |
-| `@cursor` | Cursor |
-| `@openclaw` | OpenClaw |
+| `@gemini` | Google Gemini CLI |
+| `@copilot` | GitHub Copilot CLI |
+| `@cline`, `@cursor` | Cline, Cursor |
+| `@openclaw`, `@opencode`, `@qwen` | OpenClaw, OpenCode, Qwen Code |
+| `@hermes`, `@continue`, `@kimi` | Hermes, Continue, Kimi Code |
+| `@ollama`, `@localai`, `@openrouter` | Ollama, LocalAI, OpenRouter |
+| `@mysti` | Mysti coordinator; other explicitly tagged providers still receive their assignments |
 
-### How It Works
+The autocomplete menu follows the registered provider catalog. Naming a provider in ordinary prose is not equivalent to tagging it. Each named provider must be installed/configured and authenticated as appropriate.
 
-When you mention an agent, Mysti:
+`Switch to @codex` changes the provider for the current panel. `@codex Explain this function` assigns this message without changing the saved default.
 
-1. **Parses** the message for all @-mentions
-2. **Generates a task list** — determines what each mentioned agent should do
-3. **Executes tasks sequentially** — each agent runs its task in order
-4. **Builds context** — prior agent responses are provided as context to later agents
-5. **Returns results** — all sub-agent responses are combined into the final response
+## File and state context
 
-### Examples
-
-#### Ask a specific agent
-
-```
-@gemini What's the fastest way to parse this JSON in Python?
+```text
+@src/api.ts @claude @codex Review this API
+@problems @claude Explain these diagnostics
+@git @codex Review the current changes
 ```
 
-Routes the question directly to Gemini, regardless of your default provider.
+Files are resolved once before the assignment group runs and supplied to all participants. They are transient context for this message. Unreadable files produce a warning. `@problems` and `@git` add bounded, read-only workspace summaries.
 
-#### Multi-agent collaboration
+Composer attachments are currently not forwarded by collaborator dispatch. Mysti warns rather than silently implying the attachment was delivered. Use Context or a workspace file mention for these runs. Ordinary provider chat retains its provider-specific attachment support.
 
-```
-@claude Write a sorting algorithm, then @codex optimize it for performance
-```
+## Failures, cancellation and limits
 
-1. Claude writes the initial algorithm
-2. Codex receives Claude's response as context and optimizes it
+- Missing or unauthenticated providers appear as unavailable; another agent never supplies their opinion.
+- Available independent participants can finish even if another fails. Failed dependencies block subsequent dependent work.
+- Each active card shows elapsed time. After 30 seconds without an assignment event, a provider-specific notice explains that no response or new activity has arrived. Another participant's output does not reset that clock. A quiet provider may still be working; the notice does not cancel or retry it, and a completed sibling answer stays visible.
+- Stop cancels the current request, including all active assignments and pending steps; it is not a per-participant stop control.
+- Each child uses the shared pool's timeout and safe retry policy. Approved side effects are not blindly retried.
+- Stop, panel disposal, and a superseding send cancel the relevant work. Late events must not appear in the new turn.
+- Agent count and concurrency are bounded. Too many explicit tags produce a visible error before dispatch instead of silently dropping assignments.
+- Model selection is resolved per provider. The selected agent's model must not leak into a different provider's child request.
 
-#### Switch providers
-
-```
-Switch to @cursor
-```
-
-Changes your active provider to Cursor.
-
-## Task Generation
-
-Mysti uses a smart task generation system to determine what each agent should do.
-
-### Heuristic Mode (Fast)
-
-For common patterns, Mysti uses heuristics:
-
-- **Switch patterns**: "switch to @agent" → changes the active provider
-- **Informational questions**: Direct question → routes to the mentioned agent
-- **Directive verbs**: "write", "fix", "refactor" → creates an execution task
-
-### AI Fallback
-
-For complex messages with multiple agents and ambiguous intent, Mysti falls back to AI-powered task generation that analyzes the full message context.
-
-## Execution Details
-
-### Sequential Processing
-
-Sub-agent tasks run in order, not in parallel. This allows:
-- Later agents to see earlier agents' responses
-- Dependency chains (e.g., "write with @claude, then review with @gemini")
-- Consistent, predictable behavior
-
-### Error Handling
-
-- **Auto-retry**: Failed tasks retry once automatically
-- **Timeout**: Each sub-agent task has a 2-minute timeout
-- **Partial results**: If one agent fails, others continue with available context
-- **Error reporting**: Failures are reported in the response without halting the pipeline
-
-### Streaming
-
-During execution, the chat shows real-time progress:
-- Which agent is currently working
-- Task list with completion status
-- Streaming text from the active agent
-- Tool use notifications
-
-## Combining Mentions
-
-You can combine file and agent mentions:
-
-```
-@src/api.ts @claude Review this API for security issues, then @gemini suggest performance improvements
-```
-
-This:
-1. Adds `src/api.ts` as context
-2. Routes the security review to Claude
-3. Passes Claude's review to Gemini for performance suggestions
-
-## Tips
-
-1. **Use file mentions** instead of manually adding context — they're faster and don't persist
-2. **Chain agents** for multi-perspective reviews
-3. **Switch providers** quickly with "switch to @agent"
-4. **Be specific** about what each agent should do for best results
-5. **Order matters** — later agents receive earlier agents' responses as context
+For a routing bug, include a redacted exact prompt, selected agent, tags, access mode, expected order, actual cards/results, and provider versions. [Contributing](../CONTRIBUTING.md).

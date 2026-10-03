@@ -183,3 +183,11 @@ During extraction, preserve public messages, saved formats and lifecycle
 behavior. Add tests for cross-panel isolation, aborts, malformed inputs and
 resource cleanup at the seam. Source-text assertions can check registration or
 packaging, but application behavior should be tested by executing it.
+
+## Explicit assignment routing (2.0 BETA)
+
+`ChatViewProvider` routes explicit provider mentions before the selected provider or Mysti coordinator. `ExplicitMentionPlan` produces deterministic phases from the user's tags; no model can drop a participant or reassign its task. `ExplicitMentionRunner` executes phases through `CollaborationManager` and the existing bounded `CollaboratorPool`.
+
+Independent read-only assignments fan out. Any write-capable role serializes its frontier; explicit dependencies pass previous results as nonce-fenced reference data. Failed prerequisites block their dependent phase. Each dispatch has run/participant identity, native permission gates, deadlines, safe retry and cancellation. Role display metadata is scoped to each run rather than shared between simultaneous panels.
+
+The webview receives `collaborationStarted`, `collaborator`, `collaborationError`, and `collaborationComplete`. Cards render each provider's own output; closed runs reject late events. The final message persists attributed results without an additional synthesizer model call. The legacy MentionRouter remains for file/state resolution, switch-only messages, and older retry handling.

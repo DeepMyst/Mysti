@@ -99,7 +99,8 @@ describe('canvas cold-open journey (real store, temp workspace)', () => {
     // In memory.
     expect(artifact.pages, 'the scaffold produced no page').toHaveLength(1);
     // And on disk — this is the half that "not loading designs" would break.
-    await store.save(artifact);
+    expect(pending, 'the template click did not schedule persistence').toHaveLength(1);
+    await Promise.all(pending);
     expect(fs.existsSync(canvasDir()), `.mysti/canvas was never created under ${root}`).toBe(true);
     const onDisk = path.join(canvasDir(), artifact.id, 'artifact.json');
     expect(fs.existsSync(onDisk), `no artifact.json at ${onDisk}`).toBe(true);
@@ -107,7 +108,8 @@ describe('canvas cold-open journey (real store, temp workspace)', () => {
 
   it('lists and reloads that design the way a second open does', async () => {
     await bridge.handle({ t: 'canvas/addScaffold', scaffold: listScaffolds()[0].id, viewToken: TOKEN });
-    await store.save(artifact);
+    expect(pending, 'the template click did not schedule persistence').toHaveLength(1);
+    await Promise.all(pending);
 
     // openCanvas: list() → load(summaries[0].id)
     const summaries = await store.list();

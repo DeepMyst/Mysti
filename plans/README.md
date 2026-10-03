@@ -110,3 +110,5 @@ Resolves overlaps identified by the completeness critic:
 | HIGH | Streaming re-parses full markdown + re-highlights whole document per token, unthrottled | `src/webview/webviewContent.ts:15631` |
 
 Full list (38 confirmed, 71 needing confirmation): Plan 00.
+
+- [44 — Mysti 2.0 BETA](44-mysti-2-beta.md): deterministic agent assignments, parallel opinions, attributed results, and release documentation/media.

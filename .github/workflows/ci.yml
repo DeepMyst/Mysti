@@ -119,7 +119,8 @@ jobs:
         run: npm ci
       # Use the lockfile-pinned packager and dependency flag from package.json.
       - name: Package
-        run: npm run package -- --out mysti-ci.vsix
+        # Mysti 2.0 BETA artifacts must carry the Marketplace pre-release flag.
+        run: npm run package:pre-release -- --out mysti-ci.vsix
       - name: Check package shape
         run: npm run check:package -- mysti-ci.vsix
       - name: Upload verified VSIX

@@ -3029,7 +3029,7 @@
             levels.forEach(function() { dots.appendChild(document.createElement('i')); });
           }
           var slider = row.querySelector('input');
-          slider.id = row.closest('.composer-menu').id + '-effort';
+          slider.id = row.closest('.composer-menu').id + '-effort-slider';
           row.querySelector('label').htmlFor = slider.id;
           var index = Math.max(0, effortSelectInline.selectedIndex);
           slider.max = String(levels.length - 1);
@@ -4809,6 +4809,7 @@
             break;
           case 'responseStarted':
             subAgentCards.stop();
+            stopCollaborations();
             // Who is answering this turn, as the extension resolved it — the
             // agent it routed to and the model that agent will really run
             // (a per-provider custom-model override outranks the picker, so
@@ -4849,6 +4850,11 @@
             // Payload is { message, usage } - extract message for finalization
             var responsePayload = message.payload || {};
             var completedMessage = responsePayload.message || responsePayload;
+            if (Array.isArray(completedMessage.participants)) {
+              collaborationRuns.forEach(function(run) {
+                if (run.closed) { run.cards.forEach(function(card) { card.el.open = false; }); }
+              });
+            }
             var finalizedEl = finalizeStreamingMessage(completedMessage);
             // Plan 02 Phase 3.4: unified footer (also auto-resolves running
             // tool cards for providers that never stream tool_result)
@@ -4935,6 +4941,7 @@
             break;
           case 'requestCancelled':
             subAgentCards.stop();
+            stopCollaborations();
             hideLoading();
             // Resolve any still-running tool cards in the active streaming
             // message so Stop never leaves an eternal spinner (review [5]).
@@ -4957,6 +4964,12 @@
             }
             break;
           // Sub-agent response events (from @-mentions)
+          case 'collaborationStarted':
+          case 'collaborator':
+          case 'collaborationComplete':
+          case 'collaborationError':
+            handleCollaboration(message.type, message.payload || {});
+            break;
           case 'subAgentStarted':
             subAgentCards.started(message.payload);
             break;
@@ -8297,6 +8310,163 @@
         }
       }
 
+      var collaborationRuns = new Map();
+
+      function collaborationDuration(ms) {
+        var seconds = Math.max(0, Math.floor(ms / 1000));
+        return Math.floor(seconds / 60) + ':' + String(seconds % 60).padStart(2, '0');
+      }
+
+      // Each participant has its own clock. Activity from Codex must not hide
+      // a quiet Claude, or blame the unrelated provider selected in the footer.
+      function updateCollaborationWaits() {
+        var active = false;
+        if (!collaborationRuns) { return active; }
+        var awaitingHuman = runsIn('needs').length > 0;
+        collaborationRuns.forEach(function(run) {
+          if (run.closed) { return; }
+          active = true;
+          run.cards.forEach(function(card) {
+            if (card.status.dataset.state !== 'running') { return; }
+            card.elapsed.textContent = collaborationDuration(Date.now() - card.startedAt);
+            var quiet = Date.now() - card.lastActivityAt;
+            card.wait.textContent = !awaitingHuman && !card.waitingForUser && quiet >= 30000
+              ? (card.hasActivity ? 'No new activity from ' : 'Waiting for a response from ') + card.name +
+                ' for ' + collaborationDuration(quiet) + '. It may still be working; no failure has been reported. You can keep waiting or use Stop to cancel the request.'
+              : '';
+          });
+        });
+        return active;
+      }
+
+      function stopCollaborations() {
+        if (!collaborationRuns) { return; }
+        collaborationRuns.forEach(function(run) {
+          if (run.closed) { return; }
+          run.closed = true;
+          run.title.textContent = 'Agent assignments · stopped';
+          run.nextStep.remove();
+          run.cards.forEach(function(card) {
+            if (card.status.dataset.state === 'running') {
+              card.status.textContent = 'Stopped';
+              card.status.dataset.state = 'stopped';
+              card.wait.textContent = '';
+            }
+          });
+        });
+      }
+
+      function handleCollaboration(type, p) {
+        if (!p.runId) { return; }
+        var run = collaborationRuns.get(p.runId);
+        if (type === 'collaborationStarted') {
+          if (run) { return; }
+          // Bound retained DOM references; completed transcript DOM stays intact.
+          if (collaborationRuns.size >= 100) {
+            collaborationRuns.forEach(function(old, key) { if (old.closed) { collaborationRuns.delete(key); } });
+          }
+          var group = document.createElement('section');
+          group.className = 'collaboration-group';
+          group.setAttribute('aria-label', 'Agent assignments');
+          var title = document.createElement('h3');
+          var step = p.phaseCount > 1 ? 'step ' + (p.phaseIndex + 1) + ' of ' + p.phaseCount : '';
+          var heading = 'Agent assignments' + (step ? ' · ' + step : '');
+          title.textContent = heading + (p.dependsOnPrevious ? ' · following previous results' : '');
+          group.appendChild(title);
+          var nextStep = document.createElement('p');
+          nextStep.className = 'collaboration-next';
+          if (Array.isArray(p.nextAgents) && p.nextAgents.length) {
+            nextStep.textContent = 'Next step: ' + p.nextAgents.join(' + ') + '. ' +
+              (p.nextDependsOnPrevious ? 'Waits for this step to succeed.' : 'Waits for this step to finish.');
+            group.appendChild(nextStep);
+          }
+          messagesEl.appendChild(group);
+          run = { group: group, title: title, heading: heading, nextStep: nextStep, cards: new Map(), closed: false };
+          collaborationRuns.set(p.runId, run);
+          setProcessing(true);
+          scrollToBottom();
+          return;
+        }
+        if (!run || run.closed) { return; }
+        if (type === 'collaborationError') {
+          run.failed = true;
+          var error = document.createElement('p');
+          error.className = 'collaboration-error';
+          error.textContent = p.message || 'Assignment failed';
+          run.group.appendChild(error);
+          return;
+        }
+        if (type === 'collaborationComplete') {
+          run.closed = true;
+          run.cards.forEach(function(card) {
+            card.wait.textContent = '';
+            if (card.status.dataset.state === 'error') { run.failed = true; }
+          });
+          run.nextStep.remove();
+          run.title.textContent = run.heading + (run.failed ? ' · finished with errors' : ' · finished');
+          return;
+        }
+        if (!p.collaboratorId) { return; }
+        var card = run.cards.get(p.collaboratorId);
+        if (!card) {
+          var el = document.createElement('details');
+          el.className = 'collaboration-card';
+          el.open = true;
+          var summary = document.createElement('summary');
+          var name = document.createElement('span');
+          var display = getAgentDisplay(p.agentId);
+          name.textContent = p.label || display.name || p.agentId;
+          el.style.setProperty('--agent-color', display.color || 'var(--vscode-focusBorder)');
+          var status = document.createElement('span');
+          status.className = 'collaboration-status';
+          status.setAttribute('role', 'status');
+          var elapsed = document.createElement('span');
+          elapsed.className = 'collaboration-elapsed'; elapsed.title = 'Elapsed time';
+          var progress = document.createElement('span'); progress.className = 'collaboration-progress';
+          progress.appendChild(status); progress.appendChild(elapsed);
+          summary.appendChild(name); summary.appendChild(progress); el.appendChild(summary);
+          var activity = document.createElement('div'); activity.className = 'mysti-node-activity';
+          var output = document.createElement('div'); output.className = 'collaboration-output';
+          var wait = document.createElement('p'); wait.className = 'collaboration-wait';
+          el.appendChild(activity); el.appendChild(output); el.appendChild(wait); run.group.appendChild(el);
+          card = { el: el, status: status, output: output, text: '', name: name.textContent,
+            elapsed: elapsed, wait: wait, startedAt: Date.now(), lastActivityAt: Date.now(), hasActivity: false, waitingForUser: false };
+          run.cards.set(p.collaboratorId, card);
+        }
+        card.lastActivityAt = Date.now();
+        card.wait.textContent = '';
+        card.elapsed.textContent = collaborationDuration(Date.now() - card.startedAt);
+        card.waitingForUser = p.type === 'collab_ask_user_question';
+        if (['collab_text', 'collab_thinking', 'collab_tool_use', 'collab_tool_result'].includes(p.type)) { card.hasActivity = true; }
+        if (p.type === 'collab_started' || p.type === 'collab_thinking') {
+          card.status.textContent = p.type === 'collab_thinking' ? 'Thinking' : 'Waiting for response';
+          card.status.dataset.state = 'running';
+        } else if (p.type === 'collab_text') {
+          card.text += p.content || '';
+          card.output.innerHTML = formatContent(card.text);
+          card.status.textContent = 'Responding'; card.status.dataset.state = 'running';
+        } else if (p.type === 'collab_retry') {
+          card.text = ''; card.output.textContent = '';
+          card.hasActivity = false;
+          card.status.textContent = 'Retrying'; card.status.dataset.state = 'running';
+        } else if (p.type === 'collab_tool_use') {
+          mystiNodeToolUse(card.el, p.toolCall);
+        } else if (p.type === 'collab_tool_result') {
+          mystiNodeToolResult(card.el, p.toolCall);
+        } else if (p.type === 'collab_tool_denied') {
+          card.status.textContent = 'Tool denied';
+        } else if (p.type === 'collab_ask_user_question') {
+          card.status.textContent = 'Waiting for your answer';
+        } else if (p.type === 'collab_complete' || p.type === 'collab_error' || p.type === 'collab_skipped') {
+          var failed = p.hasError || p.type !== 'collab_complete';
+          card.status.textContent = failed ? 'Unavailable · ' + (p.failure || 'failed') : 'Complete';
+          card.status.dataset.state = failed ? 'error' : 'complete';
+          if (p.responseText) { card.text = p.responseText; card.output.innerHTML = formatContent(card.text); }
+          if (failed && !card.text) { card.output.textContent = p.hint || p.content || 'This agent did not provide a response. No opinion was substituted.'; }
+        }
+        scrollToBottom();
+      }
+
       function handleMystiCollab(evt) {
         var chunk = evt.collab || {};
         var el = mystiNodeEl(evt.nodeId);
@@ -10109,7 +10279,7 @@
        */
       /** Message types that are evidence the BACKEND is still producing. */
       var STREAM_ALIVE = {
-        responseChunk: 1, responseStarted: 1, toolUse: 1, toolResult: 1,
+        responseChunk: 1, responseStarted: 1, toolUse: 1, toolResult: 1, collaborator: 1,
         thinking: 1, subAgentChunk: 1, subAgentToolUse: 1, subAgentToolResult: 1,
         subAgentStatus: 1, jobProgress: 1, jobToolUse: 1, jobToolResult: 1,
         mystiEvent: 1, mystiDelegateTrace: 1, brainstormAgentChunk: 1,
@@ -10328,6 +10498,13 @@
 
       function stallTick() {
         if (!state.isLoading) { return; }
+        // Assignment-specific notices own this turn, even when the selected
+        // base provider (e.g. Cline) is not one of the requested participants.
+        if (updateCollaborationWaits()) {
+          var genericStall = document.getElementById('stall-card');
+          if (genericStall) { genericStall.remove(); }
+          return;
+        }
         // The backend is SUPPOSED to be quiet while it waits on a human. An
         // open permission card or an unanswered question is not a stall, and
         // saying "nothing for 90s" next to a card asking for a decision blames
@@ -11128,7 +11305,7 @@
           // mislabel this is here to end — so the chip shows the agent alone
           // until the stamp lands.
           var liveAttribution = currentTurnAttribution
-            ? { provider: currentTurnAttribution.provider, model: currentTurnAttribution.model || '' }
+            ? { provider: currentTurnAttribution.provider, model: currentTurnAttribution.model || '', participants: currentTurnAttribution.participants }
             : { provider: state.activeAgent, model: state.settings.model };
           streamingEl.innerHTML = '<div class="message-header"><div class="message-role-container"><span class="message-role assistant">Mysti</span><span class="message-model-info">' + escapeHtml(formatAttributionLabel(liveAttribution)) + '</span></div></div><div class="message-body"></div>';
           messagesEl.appendChild(streamingEl);
@@ -13304,6 +13481,9 @@
       // provider/model, then to the live settings (fixes stale model chips
       // after switching providers).
       function getMessageAttribution(msg) {
+        if (msg && Array.isArray(msg.participants) && msg.participants.length) {
+          return { provider: null, model: '', participants: msg.participants.slice(0, 5) };
+        }
         var conv = state.conversation || {};
         return {
           provider: (msg && msg.provider) || conv.provider || (state.settings && state.settings.provider) || null,
@@ -13329,6 +13509,9 @@
        * here is the only per-message statement of who actually answered.
        */
       function formatAttributionLabel(attribution) {
+        if (Array.isArray(attribution.participants) && attribution.participants.length) {
+          return attribution.participants.map(function(id) { return getAgentDisplayName(id) || id; }).join(' + ') + ' · assigned responses';
+        }
         var model = getModelDisplayName(attribution.model);
         var agent = getAgentDisplayName(attribution.provider);
         if (!agent) return model;

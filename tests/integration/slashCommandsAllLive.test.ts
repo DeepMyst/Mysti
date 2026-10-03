@@ -271,7 +271,8 @@ describe('user-feedback messages reach the user (Plan 27 Phase 4)', () => {
 
   it('the silent-truncation path warns rather than dropping quietly', () => {
     // The producer must still explain WHAT was dropped, not just that something was.
-    const idx = provider.indexOf("type: 'mentionWarning'");
-    expect(provider.slice(idx, idx + 300)).toMatch(/Only the first/);
+    const idx = provider.indexOf("Only the first");
+    expect(idx).toBeGreaterThan(-1);
+    expect(provider).toContain("No assignments were started.");
   });
 });

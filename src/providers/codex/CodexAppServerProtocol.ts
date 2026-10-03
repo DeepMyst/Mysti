@@ -5,6 +5,7 @@ import type { NativeApprovalRequests } from '../base/NativeApprovalRequests';
 import { allowsUnrestrictedNativeTools, nativeToolDecision } from '../base/NativeApprovalPolicy';
 import { isRecord } from '../../utils/valueGuards';
 import { toolKind } from '../../utils/toolNames';
+import { version as extensionVersion } from '../../../package.json';
 
 export interface CodexAppServerState {
   settings: Settings;
@@ -63,7 +64,7 @@ function turn(state: CodexAppServerState, prompt: string): string {
 export function codexAppServerInput(state: CodexAppServerState, prompt: string): string {
   if (state.initialized && state.threadId) { return turn(state, prompt); }
   state.pendingPrompt = prompt;
-  return request(state, 'initialize', { clientInfo: { name: 'mysti', title: 'Mysti', version: '0.5.1' } });
+  return request(state, 'initialize', { clientInfo: { name: 'mysti', title: 'Mysti', version: extensionVersion } });
 }
 
 export function isCodexAppServerBoundary(data: Record<string, unknown>, state?: CodexAppServerState): boolean {

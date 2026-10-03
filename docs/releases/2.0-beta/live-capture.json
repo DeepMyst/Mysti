@@ -1,0 +1,17 @@
+{
+  "version": "2.0.0",
+  "channel": "pre-release",
+  "platform": "macOS",
+  "editor": "VS Code 1.140.0",
+  "claudeCode": "2.1.288",
+  "codexCLI": "0.153.4",
+  "source": "Actual authenticated provider responses through the extracted release VSIX in an isolated editor profile",
+  "access": "read-only; prompt requests no tools or delegation",
+  "assertions": [
+    "two provider-specific cards completed",
+    "both responses include the requested marker",
+    "final assistant response rendered"
+  ],
+  "vsixSha256": "c6c10b4e2b5523cb34ddf125c06397b6368bbb6c06598f9c102b7bcb67ad7365",
+  "capture": "30 screenshots sampled approximately every 750ms; video timing is illustrative, not a latency benchmark"
+}
