@@ -151,7 +151,6 @@ export function getWebviewContent(
     deskCssUri,
     deskJsUri,
     bootJson,
-    localizationScript: getWebviewLocalizationScript(),
     version
   };
 
@@ -163,6 +162,8 @@ export function getWebviewContent(
   if (opts.view === 'hub') {
     html = html.replace('<body>', '<body class="view-hub">');
   }
+  const localization = getWebviewLocalizationScript();
+  if (localization) { html = html.replace('</body>', `<script nonce="${nonce}">${localization}</script></body>`); }
   return html;
 }
 
