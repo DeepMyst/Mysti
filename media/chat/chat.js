@@ -8312,16 +8312,45 @@
 
       var collaborationRuns = new Map();
 
+      function collaborationDuration(ms) {
+        var seconds = Math.max(0, Math.floor(ms / 1000));
+        return Math.floor(seconds / 60) + ':' + String(seconds % 60).padStart(2, '0');
+      }
+
+      // Each participant has its own clock. Activity from Codex must not hide
+      // a quiet Claude, or blame the unrelated provider selected in the footer.
+      function updateCollaborationWaits() {
+        var active = false;
+        if (!collaborationRuns) { return active; }
+        var awaitingHuman = runsIn('needs').length > 0;
+        collaborationRuns.forEach(function(run) {
+          if (run.closed) { return; }
+          active = true;
+          run.cards.forEach(function(card) {
+            if (card.status.dataset.state !== 'running') { return; }
+            card.elapsed.textContent = collaborationDuration(Date.now() - card.startedAt);
+            var quiet = Date.now() - card.lastActivityAt;
+            card.wait.textContent = !awaitingHuman && !card.waitingForUser && quiet >= 30000
+              ? (card.hasActivity ? 'No new activity from ' : 'Waiting for a response from ') + card.name +
+                ' for ' + collaborationDuration(quiet) + '. It may still be working; no failure has been reported. You can keep waiting or use Stop to cancel the request.'
+              : '';
+          });
+        });
+        return active;
+      }
+
       function stopCollaborations() {
         if (!collaborationRuns) { return; }
         collaborationRuns.forEach(function(run) {
           if (run.closed) { return; }
           run.closed = true;
           run.title.textContent = 'Agent assignments · stopped';
+          run.nextStep.remove();
           run.cards.forEach(function(card) {
             if (card.status.dataset.state === 'running') {
               card.status.textContent = 'Stopped';
               card.status.dataset.state = 'stopped';
+              card.wait.textContent = '';
             }
           });
         });
@@ -8340,10 +8369,19 @@
           group.className = 'collaboration-group';
           group.setAttribute('aria-label', 'Agent assignments');
           var title = document.createElement('h3');
-          title.textContent = 'Agent assignments · ' + (p.dependsOnPrevious ? 'following previous results' : 'independent work');
+          var step = p.phaseCount > 1 ? 'step ' + (p.phaseIndex + 1) + ' of ' + p.phaseCount : '';
+          var heading = 'Agent assignments' + (step ? ' · ' + step : '');
+          title.textContent = heading + (p.dependsOnPrevious ? ' · following previous results' : '');
           group.appendChild(title);
+          var nextStep = document.createElement('p');
+          nextStep.className = 'collaboration-next';
+          if (Array.isArray(p.nextAgents) && p.nextAgents.length) {
+            nextStep.textContent = 'Next step: ' + p.nextAgents.join(' + ') + '. ' +
+              (p.nextDependsOnPrevious ? 'Waits for this step to succeed.' : 'Waits for this step to finish.');
+            group.appendChild(nextStep);
+          }
           messagesEl.appendChild(group);
-          run = { group: group, title: title, cards: new Map(), closed: false };
+          run = { group: group, title: title, heading: heading, nextStep: nextStep, cards: new Map(), closed: false };
           collaborationRuns.set(p.runId, run);
           setProcessing(true);
           scrollToBottom();
@@ -8351,6 +8389,7 @@
         }
         if (!run || run.closed) { return; }
         if (type === 'collaborationError') {
+          run.failed = true;
           var error = document.createElement('p');
           error.className = 'collaboration-error';
           error.textContent = p.message || 'Assignment failed';
@@ -8359,7 +8398,12 @@
         }
         if (type === 'collaborationComplete') {
           run.closed = true;
-          run.title.textContent = 'Agent assignments · finished';
+          run.cards.forEach(function(card) {
+            card.wait.textContent = '';
+            if (card.status.dataset.state === 'error') { run.failed = true; }
+          });
+          run.nextStep.remove();
+          run.title.textContent = run.heading + (run.failed ? ' · finished with errors' : ' · finished');
           return;
         }
         if (!p.collaboratorId) { return; }
@@ -8376,15 +8420,26 @@
           var status = document.createElement('span');
           status.className = 'collaboration-status';
           status.setAttribute('role', 'status');
-          summary.appendChild(name); summary.appendChild(status); el.appendChild(summary);
+          var elapsed = document.createElement('span');
+          elapsed.className = 'collaboration-elapsed'; elapsed.title = 'Elapsed time';
+          var progress = document.createElement('span'); progress.className = 'collaboration-progress';
+          progress.appendChild(status); progress.appendChild(elapsed);
+          summary.appendChild(name); summary.appendChild(progress); el.appendChild(summary);
           var activity = document.createElement('div'); activity.className = 'mysti-node-activity';
           var output = document.createElement('div'); output.className = 'collaboration-output';
-          el.appendChild(activity); el.appendChild(output); run.group.appendChild(el);
-          card = { el: el, status: status, output: output, text: '' };
+          var wait = document.createElement('p'); wait.className = 'collaboration-wait';
+          el.appendChild(activity); el.appendChild(output); el.appendChild(wait); run.group.appendChild(el);
+          card = { el: el, status: status, output: output, text: '', name: name.textContent,
+            elapsed: elapsed, wait: wait, startedAt: Date.now(), lastActivityAt: Date.now(), hasActivity: false, waitingForUser: false };
           run.cards.set(p.collaboratorId, card);
         }
+        card.lastActivityAt = Date.now();
+        card.wait.textContent = '';
+        card.elapsed.textContent = collaborationDuration(Date.now() - card.startedAt);
+        card.waitingForUser = p.type === 'collab_ask_user_question';
+        if (['collab_text', 'collab_thinking', 'collab_tool_use', 'collab_tool_result'].includes(p.type)) { card.hasActivity = true; }
         if (p.type === 'collab_started' || p.type === 'collab_thinking') {
-          card.status.textContent = p.type === 'collab_thinking' ? 'Thinking' : 'Running';
+          card.status.textContent = p.type === 'collab_thinking' ? 'Thinking' : 'Waiting for response';
           card.status.dataset.state = 'running';
         } else if (p.type === 'collab_text') {
           card.text += p.content || '';
@@ -8392,6 +8447,7 @@
           card.status.textContent = 'Responding'; card.status.dataset.state = 'running';
         } else if (p.type === 'collab_retry') {
           card.text = ''; card.output.textContent = '';
+          card.hasActivity = false;
           card.status.textContent = 'Retrying'; card.status.dataset.state = 'running';
         } else if (p.type === 'collab_tool_use') {
           mystiNodeToolUse(card.el, p.toolCall);
@@ -10442,6 +10498,13 @@
 
       function stallTick() {
         if (!state.isLoading) { return; }
+        // Assignment-specific notices own this turn, even when the selected
+        // base provider (e.g. Cline) is not one of the requested participants.
+        if (updateCollaborationWaits()) {
+          var genericStall = document.getElementById('stall-card');
+          if (genericStall) { genericStall.remove(); }
+          return;
+        }
         // The backend is SUPPOSED to be quiet while it waits on a human. An
         // open permission card or an unanswered question is not a stall, and
         // saying "nothing for 90s" next to a card asking for a decision blames

@@ -104,6 +104,21 @@ describe('explicit assignment execution through the real bounded pool', () => {
       expect(peak).toBe(1); expect(h.pm.sendCalls).toHaveLength(2);
     }
   });
+  it('forwards an empty thinking-start event before a slow provider produces text', async () => {
+    const h = harness();
+    let release!: () => void; const waiting = new Promise<void>(r => { release = r; });
+    h.pm.streamFactories.set('claude-code', () => (async function* () {
+      yield { type: 'thinking', content: '' };
+      await waiting;
+      yield* textStream('Claude answer');
+    })());
+    const result = runExplicitMentions(h.manager, plan('@claude explain it'), h.input, message => {
+      h.events.push(message);
+      if (message.payload.type === 'collab_thinking') { release(); }
+    });
+    expect(await result).toContain('Claude answer');
+    expect(h.events.some(e => e.payload.type === 'collab_thinking' && e.payload.content === '')).toBe(true);
+  });
   it('passes completed output only into dependent assignments, fenced as untrusted', async () => {
     const h = harness();
     h.pm.streamFactories.set('claude-code', () => textStream('PARSER_RESULT'));
@@ -113,6 +128,34 @@ describe('explicit assignment execution through the real bounded pool', () => {
     });
     await h.run('@claude write the parser, then @codex review it');
     expect(h.pm.sendCalls.map(c => c.providerId)).toEqual(['claude-code', 'openai-codex']);
+    const steps = h.events.filter(e => e.type === 'collaborationStarted').map(e => e.payload);
+    expect(steps[0]).toMatchObject({ phaseIndex: 0, phaseCount: 2, nextDependsOnPrevious: true });
+    expect(steps[0].nextAgents).toHaveLength(1);
+    expect(steps[1]).toMatchObject({ phaseIndex: 1, phaseCount: 2, dependsOnPrevious: true });
+  });
+  it('runs a sequential workflow with a parallel review step and joins both results before synthesis', async () => {
+    const h = harness(); h.pm.setProviderAvailable('google-gemini');
+    let claudeTurns = 0; const reviewers: string[] = [];
+    let release!: () => void; const bothStarted = new Promise<void>(r => { release = r; });
+    h.pm.streamFactories.set('claude-code', (_id, prompt) => {
+      if (++claudeTurns === 1) { return textStream('INITIAL_EXPLANATION'); }
+      expect(reviewers).toHaveLength(2);
+      expect(prompt).toContain('REVIEW_openai-codex');
+      expect(prompt).toContain('REVIEW_google-gemini');
+      return textStream('FINAL_SYNTHESIS');
+    });
+    for (const id of ['openai-codex', 'google-gemini']) {
+      h.pm.streamFactories.set(id, (_id, prompt) => (async function* () {
+        expect(prompt).toContain('INITIAL_EXPLANATION');
+        reviewers.push(id); if (reviewers.length === 2) { release(); }
+        await bothStarted;
+        yield* textStream(`REVIEW_${id}`);
+      })());
+    }
+    const result = await h.run('@claude explain the design, then @codex @gemini review it, then @claude summarize their feedback');
+    expect(h.pm.sendCalls.map(c => c.providerId)).toEqual(['claude-code', 'openai-codex', 'google-gemini', 'claude-code']);
+    expect(result).toContain('FINAL_SYNTHESIS');
+    expect(h.events.filter(e => e.type === 'collaborationStarted').map(e => e.payload.phaseIndex)).toEqual([0, 1, 2]);
   });
   it('reports an unavailable participant without substituting or running its dependent task', async () => {
     const h = harness(); h.pm.setProviderNotInstalled('claude-code');

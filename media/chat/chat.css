@@ -10631,6 +10631,10 @@
 .collaboration-card summary { padding: 12px; display: flex; gap: 10px; align-items: center; justify-content: space-between; cursor: pointer; font-weight: 600; }
 .collaboration-card summary:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 2px; }
 .collaboration-status { font-size: 11px; font-weight: 400; color: var(--vscode-descriptionForeground); }
+.collaboration-progress { display: flex; gap: 8px; align-items: center; }
+.collaboration-elapsed { font-size: 11px; font-weight: normal; font-variant-numeric: tabular-nums; color: var(--vscode-descriptionForeground); }
+.collaboration-wait, .collaboration-next { margin: 0; padding: 0 12px 12px; color: var(--vscode-descriptionForeground); font-size: 12px; line-height: 1.5; }
+.collaboration-wait:empty { display: none; }
 .collaboration-status[data-state="running"] { color: var(--vscode-textLink-foreground); }
 .collaboration-status[data-state="complete"] { color: var(--vscode-testing-iconPassed, #69c8a1); }
 .collaboration-status[data-state="error"], .collaboration-error { color: var(--vscode-errorForeground); }

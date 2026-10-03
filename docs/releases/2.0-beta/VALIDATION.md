@@ -4,7 +4,7 @@ This report describes the release candidate in this branch. It is not a claim th
 
 ## Automated behavior checks
 
-- **13,744 tests passed across 439 files**, excluding the separately scheduled frame-performance suite.
+- Initial full-suite baseline: **13,744 tests passed across 439 files**, excluding the separately scheduled frame-performance suite.
 - **3 performance tests passed** in that separate suite. Total: **13,747 passing tests across 440 files**.
 - TypeScript passes. ESLint reports **zero errors and 455 existing warnings**.
 - Regression coverage exercises both providers starting before either completes, selected-provider inclusion, host resolution when the webview catalog has not loaded, dependency handoffs, blocked prerequisites, partial failure, serialized writers, role access, model isolation, native approval, cancellation and final attribution.
@@ -23,6 +23,13 @@ That run caught a missing final-response render after collaborator-only output. 
 
 This is one platform/account combination, not certification of all providers or models. Native live checks are opt-in and are not silently run in public CI.
 
+## Slow-participant and workflow follow-up
+
+- **348 focused tests pass across twelve suites**, covering the Cline base-provider route, independent participant waiting clocks, preserved completed answers, cancellation, menu/composer behavior, and a three-step workflow with parallel reviews followed by a dependent summary.
+- Browser tests advance time without wall-clock sleeps: a quiet Claude gets its own notice while Codex is complete; the unrelated selected Cline provider is never blamed. Empty thinking-start events now survive the collaborator pool and clear the quiet notice; stopped cards stop updating.
+- Sequential transcripts show the step number and the next agents waiting on the result. Failed prerequisites remain blocked. This does not add a saved/resumable workflow editor or parallel file writers.
+- TypeScript passes; lint remains at zero errors and 455 existing warnings. The live check can select Cline with `MYSTI_LIVE_BASE_PROVIDER=cline` and Opus with `MYSTI_LIVE_CLAUDE_MODEL=claude-opus-5-5`, using an isolated editor profile.
+
 ## Packaging and release gates
 
 The release candidate is packaged as `mysti-2.0.0-beta.vsix` with the Marketplace pre-release flag. Required CI covers build/tests on Windows, macOS and Linux, minimum Node runtime, lint, package shape, native editor integration, and the verified VSIX in VS Code 1.86/stable. Final hosted check status is recorded on the release PR.
@@ -39,8 +46,8 @@ Marketing assets are excluded from the installed payload. The README uses PNG/GI
 
 ## Verified VSIX
 
-The extracted final pre-release VSIX passed the same **11 native editor tests**, including the authenticated two-provider assignment test. [Live capture](README.md#live-provider-evidence) records the actual packaged run.
+The extracted pre-release VSIX passed **11 native editor tests**, including the authenticated two-provider assignment test. [Live capture](README.md#live-provider-evidence) records the earlier packaged run with Codex selected; its metadata retains that artifact's hash. The follow-up package passed all 11 native tests with Cline visibly selected through the menu, Claude Opus 5.5, and Codex. Both participants returned their own marked response. The test now waits for the initialized webview and asserts the actual selection instead of assuming that a changed default changes an existing panel.
 
-SHA-256: `c6c10b4e2b5523cb34ddf125c06397b6368bbb6c06598f9c102b7bcb67ad7365`.
+SHA-256: `4951e6f4e0a32efc690b5f2f370754116110ce23cbb93f004cc83f4b49bdfd97`.
 
 Package shape passes: runtime dependencies and walkthrough assets are present, development source maps/types are excluded, and the new release media is not installed with the extension. The existing walkthrough screenshots remain intentionally bundled.

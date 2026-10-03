@@ -11,6 +11,8 @@ All notable changes to the Mysti extension will be documented in this file.
 - Live collaboration cards now render separate identities, output, tools, retries and errors. Final attributed results persist in conversation history; late events cannot update a closed group.
 - Child routing clears an inherited routed-model override so a model selected for one provider does not leak into another.
 - The composer footer now reflects effort and Ultracode changes immediately; the effort slider no longer shares its HTML ID with the footer label.
+- Assignment cards now show elapsed time and provider-specific quiet-period notices instead of leaving a slow participant at an unexplained “Running” status. Sequential requests show step numbers and the next waiting agents; regression coverage includes Cline as the base provider and parallel reviews between sequential steps.
+- Empty thinking-start events now reach collaborator cards, so providers can report “Thinking” even when they do not expose reasoning text.
 
 ### Release presentation
 

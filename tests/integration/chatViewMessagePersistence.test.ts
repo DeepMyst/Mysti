@@ -1377,7 +1377,7 @@ describe('Mysti run governors (Plan 30 §4.6)', () => {
 });
 
 describe('explicit mentions outrank the selected agent', () => {
-  it.each(['openai-codex', 'mysti', 'loading-catalog'])('dispatches both requested agents with %s selected, and persists both opinions', async selected => {
+  it.each(['openai-codex', 'cline', 'mysti', 'loading-catalog'])('dispatches both requested agents with %s selected, and persists both opinions', async selected => {
     const { MockProviderManager } = await import('../helpers/mockProviderManager');
     const { MentionRouter } = await import('../../src/managers/MentionRouter');
     const { CollaboratorPool } = await import('../../src/services/CollaboratorPool');

@@ -16,6 +16,8 @@ Explicit `then` handoffs pass the completed result to the next agent. Potential 
 
 New live assignment cards render provider identity, progress, output, tool activity, retries and failures. Role-based collaboration events that previously had no chat renderer now appear. Cards are scoped by run and participant so repeated agents and late chunks do not overwrite another response.
 
+Each active participant now has an elapsed-time display and its own quiet-period notice. A slow Claude response is identified as Claude waiting even when Cline is selected; another agent's completed answer remains readable. Sequential requests display step numbers and the next waiting agents. [Workflow examples and limits](../../MENTIONS.md#order-a-handoff).
+
 The model/effort footer now stays synchronized when effort or Ultracode changes. Visual review found and corrected a duplicate HTML ID that left its displayed value stale.
 
 ## Included from the accumulated release

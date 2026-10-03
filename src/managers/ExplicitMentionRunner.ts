@@ -12,11 +12,14 @@ export async function runExplicitMentions(
 ): Promise<string> {
   const outcomes: CollaboratorOutcome[] = [];
   let previous: CollaboratorOutcome[] = [];
-  for (const phase of phases) {
+  for (const [phaseIndex, phase] of phases.entries()) {
     if (input.isCancelled?.()) { return ''; }
     const runId = randomUUID();
     post({ type: 'collaborationStarted', payload: {
       runId, dependsOnPrevious: phase.dependsOnPrevious,
+      phaseIndex, phaseCount: phases.length,
+      nextAgents: phases[phaseIndex + 1]?.assignments.map(a => getProviderDisplayName(a.agentId)),
+      nextDependsOnPrevious: phases[phaseIndex + 1]?.dependsOnPrevious,
       collaborators: phase.assignments.map(a => ({ agentId: a.agentId, roleId: a.roleId })),
     } });
     if (phase.dependsOnPrevious && previous.some(o => o.hasError || !o.text.trim())) {

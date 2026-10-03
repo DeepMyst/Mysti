@@ -7,6 +7,58 @@ describe('agent assignment cards in the shipped chat', () => {
   let browser: Browser;
   beforeAll(async () => { if (CHROMIUM_UNAVAILABLE) { return; } browser = await chromium.launch(); });
   afterAll(async () => { await browser?.close(); });
+  it.skipIf(CHROMIUM_UNAVAILABLE)('identifies a quiet participant with Cline selected and keeps the completed answer visible', async () => {
+    const page = await browser.newPage();
+    await page.clock.install();
+    await page.setContent(composeChatHtml());
+    const fire = (type: string, payload: any) => page.evaluate(m => window.dispatchEvent(new MessageEvent('message', { data: m })), { type, payload });
+    await fire('initialState', { ...INITIAL_STATE, settings: { ...(INITIAL_STATE.settings as object), provider: 'cline' } });
+    await fire('responseStarted', { provider: 'mysti', participants: ['claude-code', 'openai-codex'] });
+    await fire('collaborationStarted', { runId: 'slow' });
+    await fire('collaborator', { runId: 'slow', collaboratorId: 'c', agentId: 'claude-code', label: 'Claude', type: 'collab_started' });
+    await fire('collaborator', { runId: 'slow', collaboratorId: 'o', agentId: 'openai-codex', label: 'Codex', type: 'collab_started' });
+    await fire('collaborator', { runId: 'slow', collaboratorId: 'o', type: 'collab_complete', responseText: 'Codex answer' });
+    const claude = page.locator('.collaboration-card').nth(0);
+    const codex = page.locator('.collaboration-card').nth(1);
+    await page.clock.fastForward(35000);
+    expect(await claude.locator('.collaboration-wait').textContent()).toContain('Waiting for a response from Claude for 0:35');
+    expect(await claude.locator('.collaboration-elapsed').textContent()).toBe('0:35');
+    expect(await codex.textContent()).toContain('Codex answer');
+    expect(await codex.locator('.collaboration-wait').textContent()).toBe('');
+    expect(await codex.locator('.collaboration-elapsed').textContent()).toBe('0:00');
+    await page.clock.fastForward(65000);
+    expect(await page.locator('#stall-card').count()).toBe(0); // never blame Cline
+    await fire('collaborator', { runId: 'slow', collaboratorId: 'c', type: 'collab_thinking', content: '' });
+    expect(await claude.locator('.collaboration-wait').textContent()).toBe('');
+    expect(await claude.locator('.collaboration-status').textContent()).toBe('Thinking');
+    await page.clock.fastForward(35000);
+    expect(await claude.locator('.collaboration-wait').textContent()).toContain('No new activity from Claude');
+    await fire('requestCancelled', {});
+    expect(await claude.locator('.collaboration-wait').textContent()).toBe('');
+    const elapsed = await claude.locator('.collaboration-elapsed').textContent();
+    await page.clock.fastForward(35000);
+    expect(await claude.locator('.collaboration-elapsed').textContent()).toBe(elapsed);
+    await page.close();
+  });
+  it.skipIf(CHROMIUM_UNAVAILABLE)('shows a sequential step and its waiting successor, then a blocked step truthfully', async () => {
+    const page = await browser.newPage();
+    await page.setContent(composeChatHtml());
+    const fire = (type: string, payload: any) => page.evaluate(m => window.dispatchEvent(new MessageEvent('message', { data: m })), { type, payload });
+    await fire('initialState', INITIAL_STATE);
+    await fire('collaborationStarted', { runId: 'first', phaseIndex: 0, phaseCount: 2, nextAgents: ['Codex'], nextDependsOnPrevious: true });
+    expect(await page.locator('.collaboration-group h3').textContent()).toContain('step 1 of 2');
+    expect(await page.locator('.collaboration-next').textContent()).toContain('Next step: Codex. Waits for this step to succeed.');
+    await fire('collaborationError', { runId: 'first', message: 'Provider unavailable' });
+    await fire('collaborationComplete', { runId: 'first' });
+    expect(await page.locator('.collaboration-next').count()).toBe(0);
+    expect(await page.locator('.collaboration-group h3').textContent()).toContain('finished with errors');
+    await fire('collaborationStarted', { runId: 'second', phaseIndex: 1, phaseCount: 2, dependsOnPrevious: true });
+    await fire('collaborationError', { runId: 'second', message: 'Not run: the preceding assignment did not complete successfully.' });
+    await fire('collaborationComplete', { runId: 'second' });
+    expect(await page.locator('.collaboration-group').nth(1).textContent()).toContain('step 2 of 2');
+    expect(await page.locator('.collaboration-group').nth(1).textContent()).toContain('Not run');
+    await page.close();
+  });
   it.skipIf(CHROMIUM_UNAVAILABLE)('keeps concurrent agents and repeated roles separate; rejects stale output and unsafe markup', async () => {
     const page = await browser.newPage({ viewport: { width: 390, height: 850 } });
     const errors: string[] = []; page.on('pageerror', e => errors.push(e.message));

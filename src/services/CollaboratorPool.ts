@@ -497,7 +497,9 @@ export class CollaboratorPool {
         if (chunk.type === 'text' && chunk.content) {
           responseText += chunk.content;
           yield { ...base, type: 'collab_text', content: chunk.content };
-        } else if (chunk.type === 'thinking' && chunk.content) {
+        } else if (chunk.type === 'thinking') {
+          // Claude emits an empty thinking-start marker before any reasoning
+          // text (which may never be exposed). It is still real activity.
           yield { ...base, type: 'collab_thinking', content: chunk.content };
         } else if (chunk.type === 'tool_use' && chunk.toolCall) {
           // Native providers have already awaited the registered pre-execution

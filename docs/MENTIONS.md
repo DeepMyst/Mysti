@@ -10,7 +10,7 @@ In Mysti 2.0 BETA, **an explicit agent tag is an assignment**, including when th
 
 Both providers receive the question independently. Their read-only runs overlap, up to `mysti.collab.maxConcurrent` (default 3). Each has a separate live card. The final response stores both attributed answers without a third model pass rewriting them.
 
-The same behavior applies with Mysti selected, or with an explicit Mysti prefix and other tagged providers. A request without provider tags continues to use the selected agent's normal behavior.
+The same behavior applies with Cline, Mysti, or another base provider selected, or with an explicit Mysti prefix and other tagged providers. The base provider is not an extra participant unless tagged. A request without provider tags continues to use the selected agent's normal behavior.
 
 ## Assign different work
 
@@ -30,7 +30,15 @@ Potentially mutating work is serialized, even if you ask several agents to do it
 
 Claude completes its assignment before Codex starts. Codex receives the prior response in a fenced reference block. A failed or empty prerequisite prevents its dependent assignment from starting. Use **then**, **afterwards**, **after that**, or **next** immediately before the next tag to express this order.
 
-Scheduling uses conservative text rules, not a full natural-language dependency solver. Make boundaries explicit. Ambiguous work stays serial and permission-gated; for complex workflows, use Mysti's explicit orchestration flow and inspect the proposed work.
+You can combine sequential and parallel steps in one request:
+
+```text
+@claude explain the design, then @codex @gemini review it, then @claude summarize their feedback
+```
+
+Claude explains first. Codex and Gemini then review independently in parallel. The final Claude assignment waits for both reviews and receives both results. If either prerequisite fails or returns no answer, the dependent summary is blocked instead of pretending the workflow completed. The transcript shows the current step and the agents waiting in the next step.
+
+Scheduling uses conservative text rules, not a full natural-language dependency solver. Make boundaries explicit. This is an in-session workflow: it is not a saved, resumable workflow editor, and it does not support arbitrary branching or conditional rules. Potential file writers remain serial and permission-gated.
 
 ## Roles
 
@@ -76,6 +84,8 @@ Composer attachments are currently not forwarded by collaborator dispatch. Mysti
 
 - Missing or unauthenticated providers appear as unavailable; another agent never supplies their opinion.
 - Available independent participants can finish even if another fails. Failed dependencies block subsequent dependent work.
+- Each active card shows elapsed time. After 30 seconds without an assignment event, a provider-specific notice explains that no response or new activity has arrived. Another participant's output does not reset that clock. A quiet provider may still be working; the notice does not cancel or retry it, and a completed sibling answer stays visible.
+- Stop cancels the current request, including all active assignments and pending steps; it is not a per-participant stop control.
 - Each child uses the shared pool's timeout and safe retry policy. Approved side effects are not blindly retried.
 - Stop, panel disposal, and a superseding send cancel the relevant work. Late events must not appear in the new turn.
 - Agent count and concurrency are bounded. Too many explicit tags produce a visible error before dispatch instead of silently dropping assignments.

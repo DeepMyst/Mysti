@@ -12,11 +12,12 @@ if (process.env.MYSTI_LIVE_MENTIONS === '1') {
     after(async () => { await browser?.close(); });
     it('renders both actual provider responses without selected-provider substitution', async () => {
       const config = vscode.workspace.getConfiguration('mysti');
-      await config.update('defaultAgent', 'openai-codex', vscode.ConfigurationTarget.Global);
-      await config.update('defaultProvider', 'openai-codex', vscode.ConfigurationTarget.Global);
+      const baseProvider = process.env.MYSTI_LIVE_BASE_PROVIDER || 'openai-codex';
+      await config.update('defaultAgent', baseProvider, vscode.ConfigurationTarget.Global);
+      await config.update('defaultProvider', baseProvider, vscode.ConfigurationTarget.Global);
       await config.update('claudeCodePath', process.env.MYSTI_LIVE_CLAUDE_PATH || 'claude', vscode.ConfigurationTarget.Global);
       await config.update('codexPath', process.env.MYSTI_LIVE_CODEX_PATH || 'codex', vscode.ConfigurationTarget.Global);
-      await config.update('claudeCodeModel', 'sonnet', vscode.ConfigurationTarget.Global);
+      await config.update('claudeCodeModel', process.env.MYSTI_LIVE_CLAUDE_MODEL || 'sonnet', vscode.ConfigurationTarget.Global);
       await config.update('defaultMode', 'ask-before-edit', vscode.ConfigurationTarget.Global);
       await config.update('accessLevel', 'read-only', vscode.ConfigurationTarget.Global);
       await config.update('autoContext', false, vscode.ConfigurationTarget.Global);
@@ -34,7 +35,12 @@ if (process.env.MYSTI_LIVE_MENTIONS === '1') {
         for (const context of browser.contexts()) {
           for (const page of context.pages()) {
             for (const candidate of page.frames()) {
-              try { if (await candidate.locator('#message-input').count()) { frame = candidate; await page.bringToFront(); break; } }
+              try {
+                if (await candidate.locator('#message-input').isVisible() &&
+                    await candidate.locator('#init-loading-overlay').isHidden()) {
+                  frame = candidate; await page.bringToFront(); break;
+                }
+              }
               catch { /* webview is mounting */ }
             }
           }
@@ -43,6 +49,13 @@ if (process.env.MYSTI_LIVE_MENTIONS === '1') {
       }
       assert.ok(frame, 'Mysti chat must open');
       const skip = frame.locator('.wizard-skip-btn'); if (await skip.isVisible()) { await skip.click(); }
+      // The extension may already be active from another native test. Changing
+      // defaults does not replace that panel's selection; choose it through UI.
+      await frame.locator('#agent-select-btn').click();
+      await frame.locator(`#agent-menu .agent-menu-item[data-agent="${baseProvider}"]`).click();
+      const selected = await frame.locator('#agent-name').textContent();
+      assert.ok(baseProvider === 'cline' ? /cline/i.test(selected || '') : /codex/i.test(selected || ''),
+        `Expected ${baseProvider} selected, got ${selected}`);
       const prompt = '@claude @codex What is your opinion on adding a TTL cache to a read-heavy API? Do not use tools or delegate. Give your own independent opinion in two short sentences, prefixed OPINION_OK.';
       await frame.locator('#message-input').fill(prompt);
       await frame.locator('#send-btn').click();
