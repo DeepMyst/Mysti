@@ -21,11 +21,19 @@ Mysti connects the coding tools you choose—CLI agents, local model servers, an
 
 > **2.0 is a beta.** This checkout prepares the 2.0.0 pre-release package. The Marketplace badge shows the currently published version. See [release status and limitations](docs/releases/2.0-beta/RELEASE-NOTES.md) before adopting it for important work.
 
+**16 provider adapters + the Mysti coordinator · Parallel opinions · Cross-agent handoffs · Connected tools · Proactive context**
+
 ## See it work
 
 [**Watch the product tour →**](https://github.com/DeepMyst/Mysti/blob/main/docs/releases/2.0-beta/mysti-2-beta-tour.mp4)
 
 The recordings below use the **shipped webviews with deterministic sample responses**. They demonstrate interaction and presentation; they are not live provider runs or performance benchmarks. [Capture details and video downloads](docs/releases/2.0-beta/README.md).
+
+### Get a second opinion without rewriting the question
+
+An answer is a starting point. On answers with a usage or session receipt, click **Second opinion**, choose another configured agent, and Mysti sends it the original question. Compare separately attributed answers in the same conversation; use Brainstorm when you want a discussion and synthesis.
+
+![Getting a second opinion from Codex after Claude answers](docs/releases/2.0-beta/second-opinion.gif)
 
 ### Ask two agents. Hear from both.
 
@@ -39,11 +47,39 @@ Explicit tags determine who does the work. Independent read-only assignments run
 
 A failed participant stays visible. Mysti does not invent its answer or quietly ask the other agent to impersonate it.
 
+### Turn tags into a workflow
+
+```text
+@claude Design a retry policy, then @codex review it for edge cases
+```
+
+Use **then** to make the next assignment depend on the previous result. Claude designs the policy; Codex receives that result to review. Progress cards show the current step and who runs next. A failed dependency blocks its dependent step.
+
+![Claude completes a design before Codex reviews its result](docs/releases/2.0-beta/agent-workflow.gif)
+
+Add roles such as `@claude:critic` or `@codex:reviewer` to make the perspective explicit. Independent advisory work can run in parallel; work that may edit a shared workspace runs serially. [Assignment and workflow guide](docs/MENTIONS.md).
+
+### Switch agents without losing your draft
+
+Choose from **16 registered provider adapters**, plus the **Mysti coordinator**. Move between coding CLIs, local model servers, and API providers from the composer. Your draft stays in place, and model controls follow the selected provider's capabilities.
+
+![Switching between Codex, Ollama and Claude while retaining the draft](docs/releases/2.0-beta/provider-switching.gif)
+
+[See all providers and setup requirements](#bring-your-preferred-agents).
+
 ### Keep model choices close to your work
 
 Choose the model, adjust effort, and toggle Ultracode where the provider supports it. The model menu and action menu share the same settings. Dictation adds text to your draft for review before you send.
 
 ![Model, effort and Ultracode controls in Mysti](docs/releases/2.0-beta/composer-controls.gif)
+
+### Bring your tools into the conversation
+
+Connect apps and MCP servers through **DeepMyst's Composio and Smithery catalogs**. Bring code, team discussions, email, and calendar context within reach of your agents through the tools you authorize. Browse and authorize in DeepMyst, then manage connections from Mysti.
+
+![DeepMyst connections for GitHub, Slack, Gmail and Google Calendar](docs/releases/2.0-beta/connected-tools.gif)
+
+The recording shows sample authorized connections, not a live OAuth flow. Catalog availability and tool permissions depend on the service and your account; local CLI access is opt-in for supported adapters. A connected app is not automatically a Proactive monitoring source.
 
 ### Get context before you start
 
@@ -52,6 +88,24 @@ Proactive brings selected local Git changes and DeepMyst-connected GitHub/Slack 
 ![Proactive inbox and task-context controls](docs/releases/2.0-beta/proactive-inbox.gif)
 
 Cloud monitoring requires DeepMyst sign-in, a supported connection, and an explicitly configured responsibility. Coverage is bounded; evidence does not prove who owns a task. [Proactive setup and limits](docs/PROACTIVE.md).
+
+### Work through a decision with Brainstorm
+
+Choose two configured agents and a discussion strategy. **Quick** collects independent analyses and synthesizes a response; Debate, Red Team, Perspectives and Delphi provide other ways to examine a proposal. Keep the individual reasoning visible alongside the synthesis.
+
+![Two agents analyze a checkout caching decision before Brainstorm synthesizes a response](docs/releases/2.0-beta/brainstorm.gif)
+
+[Choose a Brainstorm strategy](docs/BRAINSTORM.md).
+
+## More ways to move the work forward
+
+| Feature | Why it matters | Explore |
+| --- | --- | --- |
+| **Brainstorm** | Let two agents analyze, debate or challenge a proposal, then synthesize a response. | [Discussion strategies](docs/BRAINSTORM.md) |
+| **Canvas + Visual Test** | Iterate on visual artifacts and inspect a running app alongside the code. | [Visual workflows](docs/FEATURES.md) |
+| **Personas, skills and roles** | Reuse project guidance and specialist perspectives instead of repeating instructions. | [Team practices](docs/PERSONAS-AND-SKILLS.md) |
+| **Checkpoints + visible approvals** | Inspect requested actions and recover supported local changes as you iterate. Checkpoints do not undo external actions. | [Access and lifecycle](docs/FEATURES.md#permission-system) |
+| **Dictation + context tools** | Speak a draft, mention files, or attach diagnostics and Git context before sending. | [Composer and context](docs/FEATURES.md#chat-interface) |
 
 ## One workspace, several ways to work
 

@@ -110,6 +110,8 @@ export function getWebviewContent(
   const openrouterLogoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'openrouter.png')).toString();
   const kimiLogoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'kimi.png')).toString();
 
+  const minimaxLogoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'minimax.svg')).toString();
+
   // Every value the embedded script used to receive via template-literal
   // interpolation now travels through ONE inline nonce'd bootstrap script
   // (window.__MYSTI_BOOT__) emitted before the external chat.js tag.
@@ -134,6 +136,7 @@ export function getWebviewContent(
     continueLogoUri,
     openrouterLogoUri,
     kimiLogoUri,
+    minimaxLogoUri,
     manifestSchemaVersion: PROVIDER_MANIFEST_SCHEMA_VERSION
   };
   // Defensive: keep '<' out of the inline <script> body (e.g. '</script>').

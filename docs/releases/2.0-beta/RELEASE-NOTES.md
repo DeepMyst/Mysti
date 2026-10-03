@@ -27,6 +27,16 @@ The model/effort footer now stays synchronized when effort or Ultracode changes.
 - Mysti's DeepMyst-backed coordinator and Proactive inbox: local Git watches, explicitly selected GitHub/Slack responsibilities, bounded scan progress, retry delays, and a source-backed Before you start view.
 - Cross-platform build, browser, native editor and verified-VSIX checks introduced with the preceding release.
 
+Second opinion now excludes the agent that actually answered, including answers routed through an `@` override. Previously the attribution label was correct but the picker could still offer that same agent.
+
+MiniMax now appears in the composer agent picker with its provider icon; it was registered but missing from that menu.
+
+Brainstorm completion and errors now reset the shared composer state, clearing the stale “Working” prompt and its inactivity timer.
+
+## Expanded feature tour
+
+The README and [media kit](README.md) now include eight reproducible animations and individual MP4 downloads: second opinion, parallel assignments, dependent workflows, provider switching, connected tools, Brainstorm, composer controls and Proactive context. Captures use the shipped webviews with clearly labeled sample data; live-provider evidence remains separately identified. The provider overview counts 16 registered adapters plus the Mysti coordinator.
+
 ## Upgrade and beta scope
 
 Install the reviewed 2.0.0 VSIX or select the Marketplace pre-release channel after publication, then reload VS Code. This release introduces no new conversation storage migration or backend migration. Existing agent credentials and provider setup remain separate from installing Mysti.

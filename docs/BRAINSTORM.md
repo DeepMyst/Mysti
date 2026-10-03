@@ -33,7 +33,7 @@ Your Request
 
 ## Selecting Your Team
 
-Choose any 2 of 12 available agents in the settings panel:
+Choose two configured, available agents in the settings panel. The picker follows the registered provider catalog; these are examples:
 
 | Agent | Provider | Color |
 |-------|----------|-------|
@@ -52,7 +52,7 @@ Configure via settings:
 }
 ```
 
-**Requirement:** Both selected agents must have their CLI tools installed and authenticated.
+**Requirement:** Both selected providers must be available and authenticated where required. CLI agents need their tools installed; local/API backends need a working endpoint and any required credentials. See [provider setup](PROVIDERS.md).
 
 ## Collaboration Strategies
 
