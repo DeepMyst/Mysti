@@ -124,7 +124,7 @@ jobs:
       - name: Check package shape
         run: npm run check:package -- mysti-ci.vsix
       - name: Upload verified VSIX
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mysti-vsix
           path: mysti-ci.vsix
