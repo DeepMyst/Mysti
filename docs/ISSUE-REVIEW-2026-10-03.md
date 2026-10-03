@@ -51,3 +51,9 @@ A live model request through OpenCode 1.18.29 reached its upstream provider but
 received HTTP 403: its free tier rejects external-client use. The adapter reported
 an error and cleaned up the session. A paid/authenticated upstream completion
 therefore remains unverified; no bypass of the free-tier restriction was attempted.
+
+The final issue PR also fixes Canvas overhead exposed by macOS CI: pan deltas no
+longer read viewport layout on each move, unchanged zoom labels are not rewritten,
+and overview previews receive temporary compositor hints. The hint is released
+above overview scale. Sixty-eight board tests and all three unchanged performance
+assertions pass locally; the hosted matrix remains the merge gate.
