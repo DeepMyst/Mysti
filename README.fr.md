@@ -1,3 +1,5 @@
+> **Mysti 2.0 BETA:** This community translation may describe an earlier release. See the [current English README](README.md) and [2.0 BETA release notes](docs/releases/2.0-beta/RELEASE-NOTES.md) for current behavior. Translation updates are welcome.
+
 <p align="center">
   <a href="README.md">English</a> | <a href="README.zh-CN.md">简体中文</a> | <a href="README.ja.md">日本語</a> | <a href="README.ko.md">한국어</a> | <a href="README.es.md">Español</a> | <a href="README.pt-BR.md">Português</a> | <a href="README.ar.md">العربية</a> | <a href="README.de.md">Deutsch</a> | Français | <a href="README.tr.md">Türkçe</a> | <a href="README.ru.md">Русский</a>
 </p>

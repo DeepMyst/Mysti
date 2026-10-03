@@ -86,6 +86,8 @@ import { AgentLoader, type AgentMetadata } from '../managers/AgentLoader';
 import { AgentContextManager } from '../managers/AgentContextManager';
 import { CollaboratorPool } from '../services/CollaboratorPool';
 import { CollaborationManager } from '../managers/CollaborationManager';
+import { runExplicitMentions } from '../managers/ExplicitMentionRunner';
+import { planExplicitMentions, resolveExplicitMentions } from '../services/ExplicitMentionPlan';
 import { SessionManager } from '../managers/SessionManager';
 import { getSessionShape } from '../managers/sessionShapes';
 import { MystiOrchestratorManager } from '../managers/MystiOrchestratorManager';
@@ -4235,7 +4237,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Bump the panel's send generation FIRST (review [4]/[11]): any Mysti run
     // still in flight for this panel is now superseded and self-terminates at
     // its next checkpoint, regardless of the 50ms cancel-flag window below.
-    this._mystiRunGen.set(panelId, (this._mystiRunGen.get(panelId) ?? 0) + 1);
+    const turnGeneration = (this._mystiRunGen.get(panelId) ?? 0) + 1;
+    this._mystiRunGen.set(panelId, turnGeneration);
     // Invalidate old classification before any await in the new send. A late
     // result must not offer or auto-select plans for a superseded turn.
     this._pendingPlanSelections.delete(panelId);
@@ -4303,6 +4306,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this._providerManager.cancelRequest(panelId);
       // Tear down an in-flight Mysti run (coordinator stream + gated delegation).
       this._abortMystiDirect(panelId);
+      this._collaborationManager.cancelPanel(panelId);
+      this._mentionRouter.cancelSubAgents(panelId, this._providerManager.getAllProviderIds());
       // Dismiss the SUPERSEDED foreground turn's pending gate(s) only (scoped by
       // panelId) — never a concurrent background job's, which owns its gate under
       // its jobId. _abortMystiDirect already dismissed the foreground Mysti gate;
@@ -4333,7 +4338,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Clear any pending interactive states — a new message implicitly dismisses them
     this._pendingAskUserQuestions.delete(panelId);
 
-    const { content, context, mentions, attachments } = payload;
+    const { content, context, attachments } = payload;
+    const mentions = resolveExplicitMentions(content, payload.mentions);
     let { settings } = payload;
     if (attachments?.length && isPseudoAgentId(settings.provider as unknown as string)) {
       this._postToPanel(panelId, { type: 'attachmentWarning', payload: { message: 'Attachments are not passed to this agent. Add files through Context instead.' } });
@@ -4406,6 +4412,65 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     // Stream response from provider
     try {
+      // Explicit assignments precede every selected provider, including Mysti.
+      // Preserve switch-only requests on the existing per-panel switch path.
+      const explicitAgents = (mentions || []).filter(m => m.type === 'agent' && m.value !== 'mysti');
+      const switchOnly = explicitAgents.length === 1 && /^(?:switch\s+to|use|change\s+to)\s*$/i.test(
+        this._mentionRouter.stripMentions(content, mentions || [])
+      );
+      if (explicitAgents.length && !switchOnly) {
+        const generation = turnGeneration;
+        const isCancelled = () => this._cancelledPanels.has(panelId) ||
+          this._mystiRunGen.get(panelId) !== generation || !this._panelStates.has(panelId);
+        if (isCancelled()) { return; }
+        this._runningPanels.add(panelId);
+        finishPreparation();
+        try {
+          const { MAX_MENTIONS_PER_MESSAGE } = await import('../constants');
+          if (explicitAgents.length > MAX_MENTIONS_PER_MESSAGE) {
+            throw new Error(`Use at most ${MAX_MENTIONS_PER_MESSAGE} agent mentions per message. No assignments were started.`);
+          }
+          this._postToPanel(panelId, { type: 'responseStarted', payload: {
+            provider: explicitAgents.length === 1 ? explicitAgents[0].value : 'mysti',
+            participants: [...new Set(explicitAgents.map(m => m.value))],
+          } });
+          if (attachments?.length) {
+            this._postToPanel(panelId, { type: 'attachmentWarning', payload: {
+              message: 'Agent assignments use Context files and @file mentions. Composer attachments are not forwarded to collaborators; add the file through Context.',
+            } });
+          }
+          const resolvedContext = [...context];
+          for await (const chunk of this._mentionRouter.processMentions(
+            content, (mentions || []).filter(m => m.type !== 'agent'), context,
+            settings, conversation, panelId
+          )) {
+            if (isCancelled()) { return; }
+            if (chunk.resolvedFiles) { resolvedContext.push(...chunk.resolvedFiles); }
+            if (chunk.type === 'file_resolution_warning') {
+              this._postToPanel(panelId, { type: 'mentionWarning', payload: { message: chunk.content } });
+            }
+          }
+          const answer = await runExplicitMentions(this._collaborationManager,
+            planExplicitMentions(content, mentions || []), {
+              context: resolvedContext, settings, conversation, panelId, isCancelled,
+              onQuestion: this._createSubAgentQuestionCallback(panelId),
+              onGate: (spec, tool, native) => this._requestCollaboratorPermission(spec, tool, panelId, panelId, native),
+            }, message => { if (!isCancelled()) { this._postToPanel(panelId, message); } });
+          if (isCancelled()) { return; }
+          const message = this._conversationManager.addMessageToConversation(conversationId, 'assistant', answer,
+            undefined, undefined, undefined, {
+              participants: [...new Set(explicitAgents.map(m => m.value as ProviderType))],
+            });
+          this._postToPanel(panelId, { type: 'responseChunk', payload: { type: 'text', content: answer } });
+          this._postToPanel(panelId, { type: 'responseComplete', payload: { message } });
+          return;
+        } finally {
+          if (this._mystiRunGen.get(panelId) === generation) {
+            this._runningPanels.delete(panelId);
+            this._lifecycleManager.markIdle(panelId);
+          }
+        }
+      }
       // Plan 16: the Mysti agent. By DEFAULT it answers like a normal streaming
       // agent — its own model, streamed token-by-token (fixes the "hi → whole
       // plan/execute/synthesize ceremony" problem). The multi-step orchestrator

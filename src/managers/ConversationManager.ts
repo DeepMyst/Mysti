@@ -84,6 +84,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 export interface MessagePersistExtras {
   provider?: ProviderType;
+  participants?: ProviderType[];
   model?: string;
   toolCalls?: ToolCall[];
   segments?: MessageSegment[];
@@ -358,6 +359,7 @@ export class ConversationManager {
 
     if (extras) {
       if (extras.provider) { message.provider = extras.provider; }
+      if (extras.participants) { message.participants = extras.participants; }
       if (extras.model) { message.model = extras.model; }
       if (extras.toolCalls && extras.toolCalls.length > 0) { message.toolCalls = extras.toolCalls; }
       if (extras.segments && extras.segments.length > 0) { message.segments = extras.segments; }
@@ -388,6 +390,11 @@ export class ConversationManager {
    */
   private _normalizeMessageForStorage(message: Message): Message {
     const normalized: Message = { ...message };
+    if (Array.isArray(message.participants)) {
+      normalized.participants = [...new Set(message.participants.filter(id =>
+        typeof id === 'string' && Object.prototype.hasOwnProperty.call(PROVIDER_DISPLAY_META, id)))].slice(0, 5);
+      if (!normalized.participants.length) { delete normalized.participants; }
+    } else { delete normalized.participants; }
 
     if (Array.isArray(message.attachments) && message.attachments.length > 0) {
       // Attachments are kept (name/type/size render the card); only the

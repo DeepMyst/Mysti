@@ -1,6 +1,8 @@
 # Mysti Features Guide
 
-Detailed documentation for all Mysti features.
+Feature reference for Mysti 2.0 BETA. Start with [Getting started](GETTING-STARTED.md); see [release notes](releases/2.0-beta/RELEASE-NOTES.md) for beta scope.
+
+Explicit agent assignments now honor every tagged provider. Independent advisory work can run in parallel; dependent handoffs and writers serialize. The [assignment guide](MENTIONS.md) is the authoritative syntax and behavior reference.
 
 ## Table of Contents
 
@@ -193,7 +195,7 @@ Adds the file as transient context (not persisted).
 @claude Write tests, then @gemini review them
 ```
 
-Routes tasks to specific agents. Later agents receive earlier agents' responses as context.
+Each tagged provider receives its assignment, including the selected provider. Independent advisory work can run concurrently. Use **then** for a dependent handoff; only dependent assignments receive previous results. File writers serialize. See [MENTIONS.md](MENTIONS.md).
 
 ### Switching Providers
 

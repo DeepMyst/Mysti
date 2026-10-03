@@ -102,6 +102,7 @@ function createHarness(): Harness {
     getProviderInstance: () => ({ capabilities: { supportsImages: true, thinkingStyle: 'streamed' } }),
     getModelContextWindow: () => 200000,
     setChannelSystemContext: () => undefined,
+    getAllProviderIds: () => ['claude-code', 'openai-codex'],
     cancelRequest: () => undefined,
     sendMessage: vi.fn(async function* () {
       for (const chunk of streamChunks) { yield chunk; }

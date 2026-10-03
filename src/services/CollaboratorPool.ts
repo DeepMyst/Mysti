@@ -408,7 +408,7 @@ export class CollaboratorPool {
         // `_getEffectiveModel` override; `routedModel` is checked FIRST there.
         // Only set it when a model was explicitly routed — undefined keeps the
         // child on its own normal precedence (config custom-model wins).
-        ...(spec.model ? { routedModel: spec.model } : {}),
+        routedModel: spec.model,
         // Plan 24: per-lane effort override (economy profile lowers fast-lane
         // effort). Undefined ⇒ inherit the parent's effort; providers without
         // effortLevels ignore it via clampEffort, and a stable per-(run,agent)

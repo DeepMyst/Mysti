@@ -156,6 +156,8 @@ export interface Message {
   toolCalls?: ToolCall[];
   /** Provider that produced this message (assistant messages, Plan 02 Phase 3). */
   provider?: ProviderType;
+  /** Explicit assignment participants; no single provider authored the whole result. */
+  participants?: ProviderType[];
   /** Model that produced this message (assistant messages, Plan 02 Phase 3). */
   model?: string;
   /** Ordered render segments for exact stream replay (see MessageSegment). */

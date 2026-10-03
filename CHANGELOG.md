@@ -2,6 +2,24 @@
 
 All notable changes to the Mysti extension will be documented in this file.
 
+## [2.0.0] — Mysti 2.0 BETA (pre-release candidate)
+
+### Fixed
+
+- Explicit agent tags now dispatch to every named provider, including the selected provider. The default model no longer decides which requested opinions to omit or substitutes its own answer for another agent.
+- Independent advisory assignments run concurrently through the bounded collaborator pool. Explicit handoffs retain order; file writers serialize, and failed prerequisites block dependent tasks.
+- Live collaboration cards now render separate identities, output, tools, retries and errors. Final attributed results persist in conversation history; late events cannot update a closed group.
+- Child routing clears an inherited routed-model override so a model selected for one provider does not leak into another.
+
+### Release presentation
+
+- Rebuilt README and getting-started guide for **Mysti 2.0 BETA**, with current assignment semantics, provider boundaries, honest beta limits and contribution paths.
+- Added reproducible UI GIFs, screenshots, an MP4 tour and a routing diagram. Captures use clearly labelled deterministic sample data.
+- Package version is `2.0.0`; beta distribution uses the Marketplace pre-release channel. Publication is a separate release step.
+
+See [2.0 BETA release notes](docs/releases/2.0-beta/RELEASE-NOTES.md) and [validation](docs/releases/2.0-beta/VALIDATION.md).
+
+
 ## [Unreleased]
 
 ## [0.5.1] - 2026-09-05

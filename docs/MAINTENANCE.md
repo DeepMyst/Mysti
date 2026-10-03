@@ -188,3 +188,9 @@ them in reviewable feature increments with these acceptance criteria:
 
 Keep these criteria current as work lands. Avoid broad rewrites that change
 transport behavior, persistence and UI state simultaneously.
+
+### Mysti 2.0 BETA distribution
+
+The 2.0.0 candidate uses `npm run package:pre-release`, including the CI artifact tested by the packaged-editor jobs. Keep the numeric package version and lockfile synchronized; the pre-release marker lives in VSIX metadata, not a semver suffix. The README badge reports the published Marketplace version, which may differ from a candidate checkout.
+
+Inspect PNG/GIF/video assets and relative links before publication. Assets under `docs/` stay out of the VSIX but must exist at the repository URLs used by its README. Preserve sample-data labels on deterministic captures; record live-provider validation separately. Do not promote a package to stable by merely removing the word BETA: require a reviewed newer version and a deliberate channel change.

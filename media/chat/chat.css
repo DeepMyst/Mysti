@@ -10623,3 +10623,17 @@
 .dictation-actions button:disabled { opacity: .5; cursor: default; }
 .dictation-btn[aria-pressed="true"] { color: var(--vscode-button-foreground); background: var(--vscode-button-background); border-radius: 6px; }
 .dictation-panel.hidden, .dictation-panel .hidden { display: none; }
+
+/* Explicit agent assignments: identity, status and output stay together. */
+.collaboration-group { margin: 16px 0; padding: 14px; border: 1px solid var(--vscode-panel-border); border-radius: 14px; background: var(--vscode-editor-background); }
+.collaboration-group h3 { margin: 0 0 12px; font-size: 12px; font-weight: 500; color: var(--vscode-descriptionForeground); }
+.collaboration-card { border: 1px solid var(--vscode-panel-border); border-left: 3px solid var(--agent-color); border-radius: 9px; margin: 10px 0; min-width: 0; overflow-wrap: anywhere; }
+.collaboration-card summary { padding: 12px; display: flex; gap: 10px; align-items: center; justify-content: space-between; cursor: pointer; font-weight: 600; }
+.collaboration-card summary:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 2px; }
+.collaboration-status { font-size: 11px; font-weight: 400; color: var(--vscode-descriptionForeground); }
+.collaboration-status[data-state="running"] { color: var(--vscode-textLink-foreground); }
+.collaboration-status[data-state="complete"] { color: var(--vscode-testing-iconPassed, #69c8a1); }
+.collaboration-status[data-state="error"], .collaboration-error { color: var(--vscode-errorForeground); }
+.collaboration-output, .collaboration-card .mysti-node-activity { padding: 0 12px 12px; }
+.collaboration-output:empty, .collaboration-card .mysti-node-activity:empty { display: none; }
+@media (max-width: 420px) { .collaboration-card summary { flex-wrap: wrap; } }

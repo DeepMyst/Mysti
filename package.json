@@ -1,8 +1,8 @@
 {
   "name": "mysti",
-  "displayName": "Mysti - AI Coding Agent",
-  "description": "Multi-agent AI coding assistant. Claude Code, Codex, Gemini, and GitHub Copilot brainstorm together, debate approaches, and deliver superior solutions. Like Cursor & Copilot, but with collaborative AI agents.",
-  "version": "0.5.2",
+  "displayName": "Mysti 2.0 BETA — AI Coding Workspace",
+  "description": "Bring Claude Code, Codex and other coding agents into one VS Code workspace. Assign tasks, compare independent opinions, build with Canvas, and follow important changes with Proactive.",
+  "version": "2.0.0",
   "publisher": "DeepMyst",
   "author": {
     "name": "Baha Abunojaim",
@@ -11,7 +11,7 @@
   },
   "icon": "resources/Mysti-Logo.png",
   "galleryBanner": {
-    "color": "#1e1e1e",
+    "color": "#101820",
     "theme": "dark"
   },
   "repository": {
@@ -2248,7 +2248,8 @@
     "perf:sizes": "node scripts/perf-sizes.js",
     "test:vscode": "tsc -p tsconfig.vscode-test.json && node ./scripts/prepare-vscode-fixture.js && vscode-test",
     "pretest:vscode": "npm run compile:release",
-    "validate:installers": "node scripts/validation/installers.cjs"
+    "validate:installers": "node scripts/validation/installers.cjs",
+    "demo:record": "node scripts/record-release-demos.cjs"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",

@@ -4809,6 +4809,7 @@
             break;
           case 'responseStarted':
             subAgentCards.stop();
+            stopCollaborations();
             // Who is answering this turn, as the extension resolved it — the
             // agent it routed to and the model that agent will really run
             // (a per-provider custom-model override outranks the picker, so
@@ -4849,6 +4850,11 @@
             // Payload is { message, usage } - extract message for finalization
             var responsePayload = message.payload || {};
             var completedMessage = responsePayload.message || responsePayload;
+            if (Array.isArray(completedMessage.participants)) {
+              collaborationRuns.forEach(function(run) {
+                if (run.closed) { run.cards.forEach(function(card) { card.el.open = false; }); }
+              });
+            }
             var finalizedEl = finalizeStreamingMessage(completedMessage);
             // Plan 02 Phase 3.4: unified footer (also auto-resolves running
             // tool cards for providers that never stream tool_result)
@@ -4935,6 +4941,7 @@
             break;
           case 'requestCancelled':
             subAgentCards.stop();
+            stopCollaborations();
             hideLoading();
             // Resolve any still-running tool cards in the active streaming
             // message so Stop never leaves an eternal spinner (review [5]).
@@ -4957,6 +4964,12 @@
             }
             break;
           // Sub-agent response events (from @-mentions)
+          case 'collaborationStarted':
+          case 'collaborator':
+          case 'collaborationComplete':
+          case 'collaborationError':
+            handleCollaboration(message.type, message.payload || {});
+            break;
           case 'subAgentStarted':
             subAgentCards.started(message.payload);
             break;
@@ -8297,6 +8310,107 @@
         }
       }
 
+      var collaborationRuns = new Map();
+
+      function stopCollaborations() {
+        if (!collaborationRuns) { return; }
+        collaborationRuns.forEach(function(run) {
+          if (run.closed) { return; }
+          run.closed = true;
+          run.title.textContent = 'Agent assignments · stopped';
+          run.cards.forEach(function(card) {
+            if (card.status.dataset.state === 'running') {
+              card.status.textContent = 'Stopped';
+              card.status.dataset.state = 'stopped';
+            }
+          });
+        });
+      }
+
+      function handleCollaboration(type, p) {
+        if (!p.runId) { return; }
+        var run = collaborationRuns.get(p.runId);
+        if (type === 'collaborationStarted') {
+          if (run) { return; }
+          // Bound retained DOM references; completed transcript DOM stays intact.
+          if (collaborationRuns.size >= 100) {
+            collaborationRuns.forEach(function(old, key) { if (old.closed) { collaborationRuns.delete(key); } });
+          }
+          var group = document.createElement('section');
+          group.className = 'collaboration-group';
+          group.setAttribute('aria-label', 'Agent assignments');
+          var title = document.createElement('h3');
+          title.textContent = 'Agent assignments · ' + (p.dependsOnPrevious ? 'following previous results' : 'independent work');
+          group.appendChild(title);
+          messagesEl.appendChild(group);
+          run = { group: group, title: title, cards: new Map(), closed: false };
+          collaborationRuns.set(p.runId, run);
+          setProcessing(true);
+          scrollToBottom();
+          return;
+        }
+        if (!run || run.closed) { return; }
+        if (type === 'collaborationError') {
+          var error = document.createElement('p');
+          error.className = 'collaboration-error';
+          error.textContent = p.message || 'Assignment failed';
+          run.group.appendChild(error);
+          return;
+        }
+        if (type === 'collaborationComplete') {
+          run.closed = true;
+          run.title.textContent = 'Agent assignments · finished';
+          return;
+        }
+        if (!p.collaboratorId) { return; }
+        var card = run.cards.get(p.collaboratorId);
+        if (!card) {
+          var el = document.createElement('details');
+          el.className = 'collaboration-card';
+          el.open = true;
+          var summary = document.createElement('summary');
+          var name = document.createElement('span');
+          var display = getAgentDisplay(p.agentId);
+          name.textContent = p.label || display.name || p.agentId;
+          el.style.setProperty('--agent-color', display.color || 'var(--vscode-focusBorder)');
+          var status = document.createElement('span');
+          status.className = 'collaboration-status';
+          status.setAttribute('role', 'status');
+          summary.appendChild(name); summary.appendChild(status); el.appendChild(summary);
+          var activity = document.createElement('div'); activity.className = 'mysti-node-activity';
+          var output = document.createElement('div'); output.className = 'collaboration-output';
+          el.appendChild(activity); el.appendChild(output); run.group.appendChild(el);
+          card = { el: el, status: status, output: output, text: '' };
+          run.cards.set(p.collaboratorId, card);
+        }
+        if (p.type === 'collab_started' || p.type === 'collab_thinking') {
+          card.status.textContent = p.type === 'collab_thinking' ? 'Thinking' : 'Running';
+          card.status.dataset.state = 'running';
+        } else if (p.type === 'collab_text') {
+          card.text += p.content || '';
+          card.output.innerHTML = formatContent(card.text);
+          card.status.textContent = 'Responding'; card.status.dataset.state = 'running';
+        } else if (p.type === 'collab_retry') {
+          card.text = ''; card.output.textContent = '';
+          card.status.textContent = 'Retrying'; card.status.dataset.state = 'running';
+        } else if (p.type === 'collab_tool_use') {
+          mystiNodeToolUse(card.el, p.toolCall);
+        } else if (p.type === 'collab_tool_result') {
+          mystiNodeToolResult(card.el, p.toolCall);
+        } else if (p.type === 'collab_tool_denied') {
+          card.status.textContent = 'Tool denied';
+        } else if (p.type === 'collab_ask_user_question') {
+          card.status.textContent = 'Waiting for your answer';
+        } else if (p.type === 'collab_complete' || p.type === 'collab_error' || p.type === 'collab_skipped') {
+          var failed = p.hasError || p.type !== 'collab_complete';
+          card.status.textContent = failed ? 'Unavailable · ' + (p.failure || 'failed') : 'Complete';
+          card.status.dataset.state = failed ? 'error' : 'complete';
+          if (p.responseText) { card.text = p.responseText; card.output.innerHTML = formatContent(card.text); }
+          if (failed && !card.text) { card.output.textContent = p.hint || p.content || 'This agent did not provide a response. No opinion was substituted.'; }
+        }
+        scrollToBottom();
+      }
+
       function handleMystiCollab(evt) {
         var chunk = evt.collab || {};
         var el = mystiNodeEl(evt.nodeId);
@@ -10109,7 +10223,7 @@
        */
       /** Message types that are evidence the BACKEND is still producing. */
       var STREAM_ALIVE = {
-        responseChunk: 1, responseStarted: 1, toolUse: 1, toolResult: 1,
+        responseChunk: 1, responseStarted: 1, toolUse: 1, toolResult: 1, collaborator: 1,
         thinking: 1, subAgentChunk: 1, subAgentToolUse: 1, subAgentToolResult: 1,
         subAgentStatus: 1, jobProgress: 1, jobToolUse: 1, jobToolResult: 1,
         mystiEvent: 1, mystiDelegateTrace: 1, brainstormAgentChunk: 1,
@@ -11128,7 +11242,7 @@
           // mislabel this is here to end — so the chip shows the agent alone
           // until the stamp lands.
           var liveAttribution = currentTurnAttribution
-            ? { provider: currentTurnAttribution.provider, model: currentTurnAttribution.model || '' }
+            ? { provider: currentTurnAttribution.provider, model: currentTurnAttribution.model || '', participants: currentTurnAttribution.participants }
             : { provider: state.activeAgent, model: state.settings.model };
           streamingEl.innerHTML = '<div class="message-header"><div class="message-role-container"><span class="message-role assistant">Mysti</span><span class="message-model-info">' + escapeHtml(formatAttributionLabel(liveAttribution)) + '</span></div></div><div class="message-body"></div>';
           messagesEl.appendChild(streamingEl);
@@ -13304,6 +13418,9 @@
       // provider/model, then to the live settings (fixes stale model chips
       // after switching providers).
       function getMessageAttribution(msg) {
+        if (msg && Array.isArray(msg.participants) && msg.participants.length) {
+          return { provider: null, model: '', participants: msg.participants.slice(0, 5) };
+        }
         var conv = state.conversation || {};
         return {
           provider: (msg && msg.provider) || conv.provider || (state.settings && state.settings.provider) || null,
@@ -13329,6 +13446,9 @@
        * here is the only per-message statement of who actually answered.
        */
       function formatAttributionLabel(attribution) {
+        if (Array.isArray(attribution.participants) && attribution.participants.length) {
+          return attribution.participants.map(function(id) { return getAgentDisplayName(id) || id; }).join(' + ') + ' · assigned responses';
+        }
         var model = getModelDisplayName(attribution.model);
         var agent = getAgentDisplayName(attribution.provider);
         if (!agent) return model;
