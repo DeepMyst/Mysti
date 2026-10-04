@@ -132,7 +132,40 @@
 
   // ── Rendering ────────────────────────────────────────────────────────────
 
+  /** The focused control, by row and action, so it can be found again after a re-render. */
+  function focusKey() {
+    const a = document.activeElement;
+    const row = a && a.closest ? a.closest('li[data-id], li[data-name]') : null;
+    if (!row) { return null; }
+    return {
+      list: row.parentElement && row.parentElement.id,
+      id: row.dataset.id || row.dataset.name,
+      sel: a.getAttribute('role') === 'switch' ? '[role="switch"]'
+        : a.dataset.action ? '[data-action="' + a.dataset.action + '"]'
+          : a.dataset.scope ? '[data-scope="' + a.dataset.scope + '"]'
+            : a.tagName === 'SUMMARY' ? 'summary' : null,
+    };
+  }
+
+  function restoreFocus(key) {
+    if (!key || !key.list || !key.sel) { return; }
+    const rows = document.querySelectorAll('#' + key.list + ' > li');
+    for (let i = 0; i < rows.length; i++) {
+      if ((rows[i].dataset.id || rows[i].dataset.name) === key.id) {
+        const target = rows[i].querySelector(key.sel);
+        if (target) { target.focus(); }
+        return;
+      }
+    }
+  }
+
   function render() {
+    const key = focusKey();
+    renderNow();
+    restoreFocus(key);
+  }
+
+  function renderNow() {
     if (!state) { return; }
     const s = state;
     if (s.selected !== lastSelected) {
@@ -270,7 +303,7 @@
     if (busy) {
       side.append(el('span', 'row-busy', busy));
     } else {
-      if (can.toggle) {
+      if (can.toggle && p.scope !== 'managed') {
         const sw = button('', 'switch', {
           role: 'switch', 'aria-checked': String(p.enabled !== false), 'data-action': 'toggle',
           'aria-label': (p.enabled !== false ? 'Turn off ' : 'Turn on ') + p.name,

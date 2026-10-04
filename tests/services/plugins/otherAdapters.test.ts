@@ -192,6 +192,20 @@ describe('runCli (Plan 45)', () => {
     expect(r.timedOut).toBe(true);
   });
 
+  it.skipIf(process.platform === 'win32')('a timeout also kills what the CLI started (git, npm)', async () => {
+    // The "CLI" starts a grandchild that would outlive it, prints its pid, then hangs.
+    const script = 'const c=require("child_process").spawn(process.execPath,["-e","setTimeout(()=>{},60000)"],{stdio:"ignore"});'
+      + 'process.stdout.write(String(c.pid));setTimeout(()=>{},60000)';
+    const r = await runCli(process.execPath, ['-e', script], { timeoutMs: 500 });
+    expect(r.timedOut).toBe(true);
+    const grandchild = Number(r.stdout);
+    expect(grandchild).toBeGreaterThan(0);
+    await new Promise((res) => setTimeout(res, 300));
+    const alive = (() => { try { process.kill(grandchild, 0); return true; } catch { return false; } })();
+    if (alive) { process.kill(grandchild, 'SIGKILL'); }
+    expect(alive).toBe(false);
+  });
+
   it('reports a missing binary instead of throwing', async () => {
     const r = await runCli('/nonexistent/mysti-test-cli', []);
     expect(r.code).toBeNull();

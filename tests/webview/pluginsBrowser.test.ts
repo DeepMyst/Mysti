@@ -291,4 +291,22 @@ describe('Plan 45 — Manage Plugins tab', () => {
     expect(await pg.$eval('#installed', (u) => (u as HTMLElement).hidden)).toBe(false);
     expect(await ids(pg, 'installed')).toHaveLength(2);
   });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('shows no switch for an administrator-managed plugin (review M4)', async () => {
+    const listing = { installed: [{ id: 'org@m', name: 'org', scope: 'managed', enabled: true }], available: [] };
+    const pg = await openPage(state({ listing }));
+    expect(await pg.$$eval('#installed [role="switch"]', (b) => b.length)).toBe(0);
+    expect(await pg.$eval('#installed > li', (li) => li.textContent)).toContain('Managed');
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('keeps keyboard focus on the control you used after the list re-renders (review M9)', async () => {
+    const pg = await openPage();
+    const sw = '#installed > li[data-id="superpowers@claude-plugins-official"] [role="switch"]';
+    await pg.focus(sw);
+    await send(pg, state({ busy: {} }));
+    expect(await pg.evaluate(() => {
+      const a = document.activeElement as HTMLElement | null;
+      return a ? `${a.closest('li')?.getAttribute('data-id')}|${a.getAttribute('role')}` : 'none';
+    })).toBe('superpowers@claude-plugins-official|switch');
+  });
 });

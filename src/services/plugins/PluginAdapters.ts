@@ -21,11 +21,12 @@
  * the `--json` line's `outcome`.
  */
 
-import { execFile } from 'child_process';
+import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { ProviderType } from '../../types';
 import { getEnrichedEnv } from '../../utils/platform';
+import { killProcessTree } from '../../utils/processKill';
 
 export type PluginScope = 'user' | 'project' | 'local';
 
@@ -88,6 +89,8 @@ export interface PluginAdapter {
   scopes: PluginScope[];
   /** Shown beside what the adapter CAN do, e.g. what its CLI cannot. */
   note?: string;
+  /** Appended to the "applies from your next message" banner when the backend needs more. */
+  applyHint?: string;
   /** Absent when the CLI cannot list plugins (Cursor manages only marketplaces). */
   list?(run: Run): Promise<PluginListing>;
   /** Catalogs that only answer a query (ClawHub, Hermes). */
@@ -129,24 +132,36 @@ export function runCli(cliPath: string, args: string[], opts: { timeoutMs?: numb
   if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(cliPath)) {
     return Promise.resolve({ code: null, stdout: '', stderr: `Manage Plugins can't run ${path.basename(cliPath)} on Windows yet. Use the CLI's own plugin command in a terminal.`, timedOut: false });
   }
+  const posix = process.platform !== 'win32';
+  const cap = 64 * 1024 * 1024;
   return new Promise((resolve) => {
-    const child = execFile(cliPath, args, {
-      cwd: opts.cwd,
-      timeout: opts.timeoutMs ?? LIST_TIMEOUT_MS,
-      killSignal: 'SIGKILL',
-      maxBuffer: 64 * 1024 * 1024,
-      windowsHide: true,
-      env: getEnrichedEnv(),
-      encoding: 'utf8',
-    }, (err, stdout, stderr) => {
-      const e = err as (Error & { code?: number | string; killed?: boolean; signal?: string | null }) | null;
-      resolve({
-        code: e ? (typeof e.code === 'number' ? e.code : null) : 0,
-        stdout: String(stdout ?? ''),
-        stderr: String(stderr ?? '') || (e && typeof e.code !== 'number' ? e.message : ''),
-        timedOut: !!e && e.killed === true && e.signal === 'SIGKILL',
-      });
-    });
+    let timedOut = false;
+    let settled = false;
+    const out: Buffer[] = [];
+    const err: Buffer[] = [];
+    let size = 0;
+    const finish = (code: number | null, extraErr = '') => {
+      if (settled) { return; }
+      settled = true;
+      clearTimeout(timer);
+      resolve({ code, stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8') || extraErr, timedOut });
+    };
+    // spawn, not execFile: execFile drops `detached`. Its own process group on
+    // POSIX lets a timeout reach the git/npm processes the CLI started too
+    // (Windows kills the tree via taskkill). Still an argv array, no shell.
+    const child = spawn(cliPath, args, { cwd: opts.cwd, env: getEnrichedEnv(), windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], detached: posix });
+    const collect = (into: Buffer[]) => (chunk: Buffer) => {
+      size += chunk.length;
+      if (size <= cap) { into.push(chunk); } else { void killProcessTree(child, 0, { useProcessGroup: posix, initialSignal: 'SIGKILL' }); }
+    };
+    child.stdout?.on('data', collect(out));
+    child.stderr?.on('data', collect(err));
+    child.on('error', (e) => finish(null, e.message));
+    child.on('close', (code) => finish(typeof code === 'number' ? code : null));
+    const timer = setTimeout(() => {
+      timedOut = true;
+      void killProcessTree(child, 1000, { useProcessGroup: posix, initialSignal: 'SIGKILL', label: 'plugin CLI' });
+    }, opts.timeoutMs ?? LIST_TIMEOUT_MS);
     // No TTY and nothing to say: a CLI that stops to ask a question gets EOF
     // (and its default) instead of hanging until the timeout.
     child.stdin?.on('error', () => { /* already exited */ });
@@ -206,8 +221,8 @@ const num = (v: unknown): number | undefined => (typeof v === 'number' ? v : und
 // ── Claude Code ─────────────────────────────────────────────────────────────
 
 /**
- * A Claude `--json` mutation result. Failure is `outcome: "failed"` unless the
- * plugin is already in the requested state; the exit code is only a tiebreak.
+ * A Claude `--json` mutation result. Success is `outcome: "ok"` (or the plugin
+ * already being in the requested state); the exit code is only a tiebreak.
  */
 function claudeOutcome(r: RunResult): void {
   if (r.timedOut) { throw new PluginCliError(TIMED_OUT); }
@@ -219,7 +234,9 @@ function claudeOutcome(r: RunResult): void {
   }
   const j = obj(parsed);
   if (j.alreadyInGoalState === true) { return; }
-  if (j.outcome === 'failed' || r.code !== 0) {
+  // The result writer emits exactly "ok" or "failed" (Claude 2.1.288); anything
+  // else is unknown, and unknown is not success.
+  if (j.outcome !== 'ok' || r.code !== 0) {
     throw new PluginCliError(str(j.message) ?? str(j.failureCode) ?? 'Claude Code reported a failure.', claudeAcceptCommand(j));
   }
 }
@@ -413,6 +430,8 @@ const COPILOT_ADAPTER: PluginAdapter = {
 
 const OPENCLAW_ADAPTER: PluginAdapter = {
   scopes: ['user'],
+  // A Gateway OpenClaw manages hot-reloads; one the user runs themselves doesn't.
+  applyHint: 'If you run its Gateway yourself, restart it with `openclaw gateway restart`.',
 
   async list(run) {
     const j = obj(parseJson(await run(['plugins', 'list', '--json'], { timeoutMs: LIST_TIMEOUT_MS }), "OpenClaw's plugin list"));

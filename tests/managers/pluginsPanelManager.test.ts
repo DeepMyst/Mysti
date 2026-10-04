@@ -432,4 +432,21 @@ describe('PluginsPanelManager (Plan 45)', () => {
       expect(installSource).not.toHaveBeenCalled();
     });
   });
+
+  it('refuses to toggle a plugin an administrator manages (review M4)', async () => {
+    adapter = testAdapter({ list: vi.fn(async () => ({ installed: [{ id: 'org@m', name: 'org', scope: 'managed' as const, enabled: true }], available: [] })) });
+    build({ 'claude-code': adapter, 'openai-codex': null, 'continue': null });
+    await manager.handleMessage({ type: 'ready' });
+    await manager.handleMessage({ type: 'setEnabled', id: 'org@m', scope: 'managed', on: false });
+    expect(adapter.setEnabled).not.toHaveBeenCalled();
+    expect(state!.error).toMatch(/administrator/i);
+  });
+
+  it('adds the backend\'s own "how it applies" hint to the banner (review M11)', async () => {
+    adapter = testAdapter({ applyHint: 'If you run its Gateway yourself, restart it with `openclaw gateway restart`.' } as Partial<PluginAdapter>);
+    build({ 'claude-code': adapter, 'openai-codex': null, 'continue': null });
+    await manager.handleMessage({ type: 'ready' });
+    await manager.handleMessage({ type: 'setEnabled', id: 'on@m', scope: 'user', on: false });
+    expect(state!.banner).toMatch(/next message.*openclaw gateway restart/s);
+  });
 });

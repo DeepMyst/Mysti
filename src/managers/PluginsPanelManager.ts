@@ -373,6 +373,8 @@ export class PluginsPanelManager implements vscode.Disposable {
       await this._mutate(backend, p.id, 'Uninstalling…', true, `Uninstalled ${p.name}.`, () => adapter.uninstall!(run, p));
     } else if (op === 'setEnabled') {
       if (!adapter.setEnabled) { return; }
+      // Its enable/disable only takes user/project/local; an administrator sets managed ones.
+      if (p.scope === 'managed') { this._fail(backend, `${oneLine(p.name)} is managed by an administrator and can't be turned on or off here.`); return; }
       const on = msg.on === true;
       await this._mutate(backend, p.id, on ? 'Turning on…' : 'Turning off…', true, `Turned ${on ? 'on' : 'off'} ${p.name}.`, () => adapter.setEnabled!(run, p, on));
     } else {
@@ -445,7 +447,8 @@ export class PluginsPanelManager implements vscode.Disposable {
         declined = (await fn(setBusy)) === false;
         if (!declined) {
           if (changesPlugins) { this._providers.getProviderInstance(backend)?.markPluginsChanged?.(); }
-          this._banner = changesPlugins ? `${done} It applies from your next message in ${this._name(backend)} chats.` : done;
+          const hint = this._adapterFor(backend)?.applyHint;
+          this._banner = changesPlugins ? `${done} It applies from your next message in ${this._name(backend)} chats.${hint ? ` ${hint}` : ''}` : done;
         }
       } catch (e) {
         this._rowErrors.set(key, errorText(e));
