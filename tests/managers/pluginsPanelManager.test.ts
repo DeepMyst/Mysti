@@ -449,4 +449,70 @@ describe('PluginsPanelManager (Plan 45)', () => {
     await manager.handleMessage({ type: 'setEnabled', id: 'on@m', scope: 'user', on: false });
     expect(state!.banner).toMatch(/next message.*openclaw gateway restart/s);
   });
+
+  // ── Phase 2 review fixes ──────────────────────────────────────────────────
+
+  describe('with no folder open (review P2-I1)', () => {
+    const folders = (workspace as any).workspaceFolders;
+    afterEach(() => { (workspace as any).workspaceFolders = folders; });
+
+    it('refuses a project or local install, and tells the panel so', async () => {
+      (workspace as any).workspaceFolders = undefined;
+      await manager.handleMessage({ type: 'refresh' });
+      expect(state!.projectOk).toBe(false);
+      await manager.handleMessage({ type: 'install', id: 'plain@m', scope: 'project' });
+      await manager.handleMessage({ type: 'install', id: 'plain@m', scope: 'local' });
+      expect(adapter.install).not.toHaveBeenCalled();
+      expect(state!.error).toMatch(/Open a folder/);
+    });
+
+    it('refuses a project install from source too', async () => {
+      const installSource = vi.fn(async () => {});
+      adapter = testAdapter({ scopes: ['user', 'project'], installSource } as Partial<PluginAdapter>);
+      build({ 'claude-code': adapter, 'openai-codex': null, 'continue': null });
+      (workspace as any).workspaceFolders = undefined;
+      await manager.handleMessage({ type: 'ready' });
+      modal.mockImplementation(async (_m: string, _o: unknown, ...items: string[]) => items[0]);
+      await manager.handleMessage({ type: 'installSource', source: 'https://github.com/o/r', scope: 'project' });
+      expect(installSource).not.toHaveBeenCalled();
+    });
+  });
+
+  it('clears an earlier source install error when another source is tried (review P2-m3)', async () => {
+    const installSource = vi.fn().mockRejectedValueOnce(new PluginCliError('repo not found')).mockResolvedValueOnce(undefined);
+    adapter = testAdapter({ installSource } as Partial<PluginAdapter>);
+    build({ 'claude-code': adapter, 'openai-codex': null, 'continue': null });
+    await manager.handleMessage({ type: 'ready' });
+    modal.mockImplementation(async (_m: string, _o: unknown, ...items: string[]) => items[0]);
+    await manager.handleMessage({ type: 'installSource', source: 'https://github.com/o/a', scope: 'user' });
+    expect(Object.values(state!.rowErrors)).toContain('repo not found');
+    await manager.handleMessage({ type: 'installSource', source: 'https://github.com/o/b', scope: 'user' });
+    expect(Object.keys(state!.rowErrors).filter((k) => k.startsWith('source:'))).toEqual([]);
+  });
+
+  it('says why a source was refused (review P2-m8)', async () => {
+    adapter = testAdapter({ installSource: vi.fn(), sourceHint: { label: 'Git URL', placeholder: '' } } as Partial<PluginAdapter>);
+    build({ 'claude-code': adapter, 'openai-codex': null, 'continue': null });
+    await manager.handleMessage({ type: 'ready' });
+    await manager.handleMessage({ type: 'installSource', source: '-rf', scope: 'user' });
+    expect(state!.error).toMatch(/starts with "-"/);
+  });
+
+  it.each(['https://github.com/o/\u202Eevil', 'a\u2028b', 'x\u0085y'])('refuses a source with invisible or line-breaking characters %j (review P2-m7)', async (source) => {
+    const installSource = vi.fn();
+    adapter = testAdapter({ installSource } as Partial<PluginAdapter>);
+    build({ 'claude-code': adapter, 'openai-codex': null, 'continue': null });
+    await manager.handleMessage({ type: 'ready' });
+    modal.mockImplementation(async (_m: string, _o: unknown, ...items: string[]) => items[0]);
+    await manager.handleMessage({ type: 'installSource', source, scope: 'user' });
+    await manager.handleMessage({ type: 'addMarketplace', source });
+    expect(installSource).not.toHaveBeenCalled();
+    expect(adapter.marketplaces!.add).not.toHaveBeenCalled();
+  });
+
+  it('refuses a marketplace source with a DEL character (review P2-m7)', async () => {
+    modal.mockImplementation(async (_m: string, _o: unknown, ...items: string[]) => items[0]);
+    await manager.handleMessage({ type: 'addMarketplace', source: 'owner/repo\u007f' });
+    expect(adapter.marketplaces!.add).not.toHaveBeenCalled();
+  });
 });

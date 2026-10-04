@@ -152,17 +152,31 @@ export function runCli(cliPath: string, args: string[], opts: { timeoutMs?: numb
     // POSIX lets a timeout reach the git/npm processes the CLI started too
     // (Windows kills the tree via taskkill). Still an argv array, no shell.
     const child = spawn(cliPath, args, { cwd: opts.cwd, env: getEnrichedEnv(), windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], detached: posix });
+    // Kill the CLI and everything it started. The group signal reaches children
+    // even after the leader has exited (killProcessTree skips a dead leader).
+    let killed = false;
+    const killAll = () => {
+      if (killed) { return; }
+      killed = true;
+      if (posix && child.pid) { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* group already gone */ } }
+      void killProcessTree(child, 1000, { useProcessGroup: posix, initialSignal: 'SIGKILL', label: 'plugin CLI' });
+    };
     const collect = (into: Buffer[]) => (chunk: Buffer) => {
       size += chunk.length;
-      if (size <= cap) { into.push(chunk); } else { void killProcessTree(child, 0, { useProcessGroup: posix, initialSignal: 'SIGKILL' }); }
+      if (size <= cap) { into.push(chunk); } else { killAll(); }
     };
     child.stdout?.on('data', collect(out));
     child.stderr?.on('data', collect(err));
     child.on('error', (e) => finish(null, e.message));
     child.on('close', (code) => finish(typeof code === 'number' ? code : null));
+    // The CLI has exited, but something it started may still hold the output
+    // pipe: give that a moment, then kill it and report the CLI's own result.
+    child.on('exit', (code) => {
+      setTimeout(() => { if (!settled) { killAll(); finish(typeof code === 'number' ? code : null); } }, 1000).unref?.();
+    });
     const timer = setTimeout(() => {
       timedOut = true;
-      void killProcessTree(child, 1000, { useProcessGroup: posix, initialSignal: 'SIGKILL', label: 'plugin CLI' });
+      killAll();
     }, opts.timeoutMs ?? LIST_TIMEOUT_MS);
     // No TTY and nothing to say: a CLI that stops to ask a question gets EOF
     // (and its default) instead of hanging until the timeout.
@@ -195,11 +209,13 @@ function parseJson(r: RunResult, what: string): unknown {
   try {
     return JSON.parse(r.stdout);
   } catch { /* maybe a banner first */ }
-  // Some CLIs print a warning banner before the JSON (OpenClaw's config box).
+  // Some CLIs print warnings before the JSON (OpenClaw's config box; Gemini's
+  // "[ExtensionManager] …", which itself starts with "["), so try each line
+  // that could begin it.
   const lines = r.stdout.split(/\r?\n/);
-  const start = lines.findIndex((l) => /^\s*[[{]/.test(l));
-  if (start > 0) {
-    try { return JSON.parse(lines.slice(start).join('\n')); } catch { /* fall through */ }
+  for (let i = 1; i < lines.length; i++) {
+    if (!/^\s*[[{]/.test(lines[i])) { continue; }
+    try { return JSON.parse(lines.slice(i).join('\n')); } catch { /* next candidate */ }
   }
   const why = cleanCliText(r.stderr);
   throw new PluginCliError(`Couldn't read ${what}${why ? `: ${why}` : '.'}`);
@@ -209,6 +225,8 @@ function splitId(id: string): { name: string; marketplace?: string } {
   const at = id.lastIndexOf('@');
   return at > 0 ? { name: id.slice(0, at), marketplace: id.slice(at + 1) } : { name: id };
 }
+
+const errorMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 function str(v: unknown): string | undefined {
   return typeof v === 'string' && v ? v : undefined;
@@ -527,6 +545,10 @@ const CODEX_ADAPTER: PluginAdapter = {
     }));
     // A failed remote catalog fetch still exits 0, with empty lists and a stderr warning.
     const down = /failed to list remote marketplace plugins/i.test(r.stderr);
+    // Unknown is not zero: an empty list from a failed fetch says nothing.
+    if (down && installed.length === 0) {
+      throw new PluginCliError("Codex couldn't reach its plugin catalog, so Mysti can't tell what's installed. Refresh to try again.");
+    }
     return { installed, available, warning: down ? "Codex couldn't reach its plugin catalog, so these lists may be incomplete. Refresh to try again." : undefined };
   },
 
@@ -596,7 +618,9 @@ export function parseQwenExtensions(text: string): InstalledPlugin[] | undefined
   // eslint-disable-next-line no-control-regex -- stripping ANSI color escapes is the point
   const clean = text.replace(/\x1b\[[0-9;]*m/g, '');
   for (const block of clean.split(/\r?\n\s*\r?\n/)) {
-    const where = /(\S*[\\/]\.qwen[\\/]extensions[\\/][^\s\\/]+)/.exec(block);
+    // A whole "<label>: <path>" line, so a description that mentions another
+    // extension's path can't lend it its id.
+    const where = /^\s*[^:\n]+:\s*(\S*[\\/]\.qwen[\\/]extensions[\\/][^\s\\/]+)\s*$/m.exec(block);
     if (!where) { continue; }
     const id = path.basename(where[1]);
     const header = /^\s*([✓✗])\s+(.*)\s+\(([^()]*)\)\s*$/m.exec(block);
@@ -666,7 +690,15 @@ function clineInstalls(root: string): string[] {
   const walk = (dir: string, depth: number) => {
     if (depth > 5) { return; }
     let entries: fs.Dirent[];
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (e) {
+      // No folder is "nothing installed"; a folder it can't read is unknown.
+      if (depth === 0 && (e as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw new PluginCliError(`Couldn't read Cline's plugin folder ${dir}: ${(e as NodeJS.ErrnoException).code ?? errorMessage(e)}`);
+      }
+      return;
+    }
     if (entries.some((e) => e.isFile() && e.name === 'package.json')) { found.push(dir); return; }
     for (const e of entries) {
       if (e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules') { walk(path.join(dir, e.name), depth + 1); }
@@ -682,7 +714,11 @@ const CLINE_ADAPTER: PluginAdapter = {
   sourceHint: { label: 'Official plugin name, npm package, git URL, or local path', placeholder: 'plugin-name or https://github.com/owner/plugin' },
 
   async list(run) {
-    const disabled = objs([obj(readJson(path.join(clineHome(), 'data', 'settings', 'global-settings.json')))])[0].disabledPlugins;
+    const settingsFile = path.join(clineHome(), 'data', 'settings', 'global-settings.json');
+    const settings = readJson(settingsFile);
+    // A settings file that exists but can't be read leaves on/off unknown.
+    const known = settings !== undefined || !fs.existsSync(settingsFile);
+    const disabled = obj(settings).disabledPlugins;
     const off = new Set(Array.isArray(disabled) ? disabled.filter((x): x is string => typeof x === 'string') : []);
     const roots: [string, PluginScope][] = [[path.join(clineHome(), 'plugins'), 'user']];
     if (run.cwd) { roots.push([path.join(run.cwd, '.cline', 'plugins'), 'project']); }
@@ -691,7 +727,7 @@ const CLINE_ADAPTER: PluginAdapter = {
       for (const dir of clineInstalls(root)) {
         const pkg = obj(readJson(path.join(dir, 'package.json')));
         const name = str(pkg.name) ?? path.basename(dir);
-        installed.push({ id: dir, name, version: str(pkg.version), description: str(pkg.description), scope, enabled: !off.has(dir) && !off.has(name) });
+        installed.push({ id: dir, name, version: str(pkg.version), description: str(pkg.description), scope, enabled: known ? !off.has(dir) && !off.has(name) : undefined });
       }
     }
     return { installed };

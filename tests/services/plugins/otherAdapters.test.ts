@@ -207,6 +207,14 @@ describe('runCli (Plan 45)', () => {
     expect(alive).toBe(false);
   });
 
+  it.skipIf(process.platform === 'win32')('returns as soon as the CLI exits, killing a child left holding its output (review P2-m1)', async () => {
+    const started = Date.now();
+    const r = await runCli('/bin/sh', ['-c', 'sleep 6 & echo started'], { timeoutMs: 5000 });
+    expect(Date.now() - started).toBeLessThan(3500);
+    expect(r).toMatchObject({ code: 0, timedOut: false });
+    expect(r.stdout.trim()).toBe('started');
+  });
+
   it('reports a missing binary instead of throwing', async () => {
     const r = await runCli('/nonexistent/mysti-test-cli', []);
     expect(r.code).toBeNull();

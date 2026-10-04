@@ -309,4 +309,32 @@ describe('Plan 45 — Manage Plugins tab', () => {
       return a ? `${a.closest('li')?.getAttribute('data-id')}|${a.getAttribute('role')}` : 'none';
     })).toBe('superpowers@claude-plugins-official|switch');
   });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('greys out project scopes when no folder is open (review P2-I1)', async () => {
+    const pg = await openPage(state({ projectOk: false }));
+    await pg.click('#available > li[data-id="context7@claude-plugins-official"] [data-action="install"]');
+    const scopes = await pg.$$eval('#available [data-scope]', (bs) => bs.map((b) => [(b as HTMLElement).dataset.scope, (b as HTMLButtonElement).disabled, b.textContent]));
+    expect(scopes.map((x) => x.slice(0, 2))).toEqual([['user', false], ['project', true], ['local', true]]);
+    expect(String(scopes[1][2])).toMatch(/Open a folder/);
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('puts focus back on the switch after its own busy state clears (review P2-m4)', async () => {
+    const pg = await openPage();
+    const sw = '#installed > li[data-id="superpowers@claude-plugins-official"] [role="switch"]';
+    await pg.focus(sw);
+    await send(pg, state({ busy: { 'superpowers@claude-plugins-official': 'Turning off…' } }));
+    await send(pg, state({ busy: {} }));
+    expect(await pg.evaluate(() => {
+      const a = document.activeElement as HTMLElement | null;
+      return a ? `${a.closest('li')?.getAttribute('data-id')}|${a.getAttribute('role')}` : 'none';
+    })).toBe('superpowers@claude-plugins-official|switch');
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('does not claim "On" when the on/off state is unknown (review P2-m6)', async () => {
+    const listing = { installed: [{ id: '/p/x', name: 'x', scope: 'user' }] };
+    const pg = await openPage(state({ can: { list: true, toggle: false }, listing }));
+    const side = await pg.$$eval('#installed > li .row-side > *', (els) => els.map((e) => e.textContent));
+    expect(side).not.toContain('On');
+    expect(side).not.toContain('Off');
+  });
 });

@@ -17,7 +17,7 @@
   const vscode = acquireVsCodeApi();
   const CAP = 100;
   const SCOPE_LABEL = { user: 'For you', project: 'This project', local: 'Just you, this repo' };
-  const SCOPE_HINT = { user: 'Every project on this machine', project: 'Shared with this workspace', local: 'Only you, in this workspace' };
+  const SCOPE_HINT = { user: 'Every project on this machine', project: 'Only in this workspace', local: 'Only you, in this workspace' };
   const SCOPE_BADGE = { user: 'User', project: 'Project', local: 'Local', bundled: 'Bundled', managed: 'Managed' };
 
   let state = null;
@@ -26,6 +26,8 @@
   let sourceScopesOpen = false;
   let lastSelected = null;
   let searchTimer = null;
+  /** A control that was focused before its row went busy, to refocus when it returns. */
+  let pendingFocus = null;
 
   function $(id) { return document.getElementById(id); }
   function post(m) { vscode.postMessage(m); }
@@ -148,21 +150,22 @@
   }
 
   function restoreFocus(key) {
-    if (!key || !key.list || !key.sel) { return; }
+    if (!key || !key.list || !key.sel) { return true; }
     const rows = document.querySelectorAll('#' + key.list + ' > li');
     for (let i = 0; i < rows.length; i++) {
       if ((rows[i].dataset.id || rows[i].dataset.name) === key.id) {
         const target = rows[i].querySelector(key.sel);
-        if (target) { target.focus(); }
-        return;
+        if (target) { target.focus(); return true; }
+        return false;  // the row is busy: its control will come back
       }
     }
+    return true;
   }
 
   function render() {
-    const key = focusKey();
+    const key = focusKey() || pendingFocus;
     renderNow();
-    restoreFocus(key);
+    pendingFocus = restoreFocus(key) ? null : key;
   }
 
   function renderNow() {
@@ -310,8 +313,9 @@
         });
         sw.append(el('span', 'knob'));
         side.append(sw);
-      } else {
-        side.append(el('span', 'meta', p.enabled === false ? 'Off' : 'On'));
+      } else if (typeof p.enabled === 'boolean') {
+        // Unknown on/off says nothing rather than "On".
+        side.append(el('span', 'meta', p.enabled ? 'On' : 'Off'));
       }
       const items = [];
       if (can.details) { items.push(['details', 'Details']); }
@@ -369,10 +373,12 @@
 
   function scopeButtons(container, s) {
     (s.scopes || []).forEach(function (scope) {
-      const locked = scope !== 'user' && !s.trusted;
+      const noFolder = scope !== 'user' && s.projectOk === false;
+      const locked = scope !== 'user' && (noFolder || !s.trusted);
       const b = button('', 'scope', { 'data-scope': scope });
       b.disabled = locked;
-      b.append(el('strong', null, SCOPE_LABEL[scope] || scope), el('span', 'meta', locked ? 'Needs a trusted workspace' : SCOPE_HINT[scope] || ''));
+      const why = noFolder ? 'Open a folder first' : 'Needs a trusted workspace';
+      b.append(el('strong', null, SCOPE_LABEL[scope] || scope), el('span', 'meta', locked ? why : SCOPE_HINT[scope] || ''));
       container.append(b);
     });
   }

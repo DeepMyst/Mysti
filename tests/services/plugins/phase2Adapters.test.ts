@@ -51,8 +51,14 @@ describe('Codex adapter (Plan 45 Phase 2)', () => {
     expect(listing.warning).toBeUndefined();
   });
 
-  it('warns that the lists may be incomplete when its remote catalog fails (it still exits 0)', async () => {
+  it('refuses to show "nothing installed" when its catalog fails and it reports no plugins (review P2-I2)', async () => {
     const run = fakeRun({ 'plugin list --json --available': ok('{"installed":[],"available":[]}', 'Warning: failed to list remote marketplace plugins: network error') });
+    await expect(codex.list!(run)).rejects.toThrow(/can't tell what's installed/);
+  });
+
+  it('warns that the lists may be incomplete when its remote catalog fails (it still exits 0)', async () => {
+    const partial = '{"installed":[{"pluginId":"local@mine","name":"local","marketplaceName":"mine","installed":true,"enabled":true}],"available":[]}';
+    const run = fakeRun({ 'plugin list --json --available': ok(partial, 'Warning: failed to list remote marketplace plugins: network error') });
     const listing = await codex.list!(run);
     expect(listing.warning).toMatch(/couldn't reach its plugin catalog/i);
   });
@@ -110,6 +116,12 @@ describe('Gemini adapter (Plan 45 Phase 2)', () => {
     expect(listing.installed).toHaveLength(2);
   });
 
+  it('reads its list past a warning line that itself starts with "[" (review P2-m2)', async () => {
+    const noisy = `[ExtensionManager] Error loading agent/policies from /home/user/.gemini/extensions/broken\n${ext}\n`;
+    const listing = await gemini.list!(fakeRun({ 'extensions list -o json': ok('', noisy) }));
+    expect(listing.installed).toHaveLength(2);
+  });
+
   it('installs from a typed source with consent given by the modal, never prompting', async () => {
     const run = fakeRun({ 'extensions install https://github.com/o/ext --consent --skip-settings': ok('') });
     await gemini.installSource!(run, 'https://github.com/o/ext', 'user');
@@ -158,6 +170,12 @@ describe('Qwen adapter (Plan 45 Phase 2)', () => {
       ['quiet-tool', 'Quiet Tool', '0.3.1', false],
     ]);
     expect(listing.installed[0].description).toBe('Plans and tracks work');
+  });
+
+  it('takes the id from the Path line, not from a description that mentions another extension (review P2-m5)', async () => {
+    const text = ['✓ Helper (1.0.0)', ' Description: replaces /home/user/.qwen/extensions/old-helper', ' Path: /home/user/.qwen/extensions/helper', ''].join('\n');
+    const listing = await qwen.list!(fakeRun({ 'extensions list': ok(text) }));
+    expect(listing.installed.map((p) => p.id)).toEqual(['helper']);
   });
 
   it('reads the empty message as nothing installed', async () => {
@@ -229,6 +247,24 @@ describe('Cline adapter (Plan 45 Phase 2)', () => {
       expect.objectContaining({ id: userDir, name: 'web-tools', scope: 'user', enabled: true, description: 'web-tools plugin' }),
       expect.objectContaining({ id: projectDir, name: 'repo-plugin', scope: 'project', enabled: false }),
     ]);
+  });
+
+  it('shows on/off as unknown when its settings file cannot be read (review P2-m6)', async () => {
+    plugin(path.join(home, 'plugins'), 'npm/a-1', 'a');
+    fs.mkdirSync(path.join(home, 'data', 'settings'), { recursive: true });
+    fs.writeFileSync(path.join(home, 'data', 'settings', 'global-settings.json'), '{not json');
+    expect((await cline.list!(fakeRun({}, ws))).installed[0].enabled).toBeUndefined();
+  });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('refuses a plugin folder it cannot read instead of showing it as empty (review P2-m6)', async () => {
+    const installed = path.join(home, 'plugins', '_installed');
+    fs.mkdirSync(installed, { recursive: true });
+    fs.chmodSync(installed, 0o000);
+    try {
+      await expect(cline.list!(fakeRun({}, ws))).rejects.toThrow(/Couldn't read/);
+    } finally {
+      fs.chmodSync(installed, 0o755);
+    }
   });
 
   it('lists nothing when it has no plugin folders', async () => {
