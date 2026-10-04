@@ -1,0 +1,76 @@
+{
+ "installed": [
+  {
+   "pluginId": "openai-templates@openai-curated-remote",
+   "name": "openai-templates",
+   "marketplaceName": "openai-curated-remote",
+   "version": "0.1.1",
+   "installed": true,
+   "enabled": true,
+   "source": {
+    "source": "remote",
+    "id": "plugin_connector_1p_2330815c823c8191941e5dc465bb899f"
+   },
+   "installPolicy": "INSTALLED_BY_DEFAULT",
+   "authPolicy": "ON_USE"
+  },
+  {
+   "pluginId": "pages@openai-curated-remote",
+   "name": "pages",
+   "marketplaceName": "openai-curated-remote",
+   "version": "0.1.19",
+   "installed": true,
+   "enabled": true,
+   "source": {
+    "source": "remote",
+    "id": "plugin_connector_1p_4a72ddeef4c481918f92d8e8df18fb2c"
+   },
+   "installPolicy": "INSTALLED_BY_DEFAULT",
+   "authPolicy": "ON_USE"
+  }
+ ],
+ "available": [
+  {
+   "pluginId": "gmail@openai-curated-remote",
+   "name": "gmail",
+   "marketplaceName": "openai-curated-remote",
+   "version": "0.1.10",
+   "installed": false,
+   "enabled": false,
+   "source": {
+    "source": "remote",
+    "id": "plugin_connector_1p_95d39881713c8191931482a62d6edff9"
+   },
+   "installPolicy": "AVAILABLE",
+   "authPolicy": "ON_INSTALL"
+  },
+  {
+   "pluginId": "app-6a057d268ebc81919918d37eec718425@openai-curated-remote",
+   "name": "app-6a057d268ebc81919918d37eec718425",
+   "marketplaceName": "openai-curated-remote",
+   "version": "1.0.0",
+   "installed": false,
+   "enabled": false,
+   "source": {
+    "source": "remote",
+    "id": "plugin_asdk_app_6a057d268ebc81919918d37eec718425"
+   },
+   "installPolicy": "AVAILABLE",
+   "authPolicy": "ON_INSTALL"
+  },
+  {
+   "pluginId": "google-drive@openai-curated-remote",
+   "name": "google-drive",
+   "marketplaceName": "openai-curated-remote",
+   "version": "0.1.16",
+   "installed": false,
+   "enabled": false,
+   "source": {
+    "source": "remote",
+    "id": "plugin_connector_1p_ab21a553bfbc81919ea8fd1858e3ffa7"
+   },
+   "installPolicy": "AVAILABLE",
+   "authPolicy": "ON_INSTALL"
+  }
+ ]
+}

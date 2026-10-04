@@ -469,7 +469,9 @@ export class PluginsPanelManager implements vscode.Disposable {
   private _runFor(backend: string): Run {
     const cliPath = this._providers.getProviderInstance(backend)?.getCliPath() ?? '';
     const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    return (args, opts) => this._runCli(cliPath, args, { timeoutMs: opts?.timeoutMs, cwd });
+    const run: Run = (args, opts) => this._runCli(cliPath, args, { timeoutMs: opts?.timeoutMs, cwd });
+    run.cwd = cwd;
+    return run;
   }
 
   private _catalog(backend: string): CatalogPlugin[] {

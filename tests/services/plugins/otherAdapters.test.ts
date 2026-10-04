@@ -169,8 +169,9 @@ describe('the backend table (Plan 45)', () => {
       const b = PLUGIN_ADAPTERS[id];
       return isAdapter(b) ? 'adapter' : b ? 'note' : 'none';
     };
-    for (const id of ['claude-code', 'github-copilot', 'openclaw', 'hermes'] as const) { expect(kind(id)).toBe('adapter'); }
-    for (const id of ['openai-codex', 'google-gemini', 'qwen-code', 'cline', 'opencode', 'cursor', 'kimi-code'] as const) { expect(kind(id)).toBe('note'); }
+    for (const id of ['claude-code', 'github-copilot', 'openclaw', 'hermes', 'openai-codex', 'google-gemini', 'qwen-code', 'cline', 'opencode', 'cursor'] as const) { expect(kind(id)).toBe('adapter'); }
+    // Kimi manages plugins only inside its TUI.
+    for (const id of ['kimi-code'] as const) { expect(kind(id)).toBe('note'); }
     for (const id of ['continue', 'ollama', 'localai', 'openrouter', 'minimax'] as const) { expect(kind(id)).toBe('none'); }
   });
 });
