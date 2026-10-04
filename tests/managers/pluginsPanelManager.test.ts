@@ -371,4 +371,65 @@ describe('PluginsPanelManager (Plan 45)', () => {
       (window as any).createWebviewPanel = original;
     }
   });
+
+  // ── Phase 2 contract ──────────────────────────────────────────────────────
+
+  it('shows an adapter\'s note next to what it can do', async () => {
+    adapter = testAdapter({ note: 'Turning plugins on and off: use /plugins inside Codex.' } as Partial<PluginAdapter>);
+    build({ 'claude-code': adapter, 'openai-codex': null, 'continue': null });
+    await manager.handleMessage({ type: 'ready' });
+    expect(state!.note).toMatch(/inside Codex/);
+    expect(state!.listing).toBeDefined();
+  });
+
+  it('handles a backend that can manage marketplaces but cannot list or install plugins', async () => {
+    const markets = { list: vi.fn(async () => [{ name: 'mk', source: 'https://x/mk.git' }]), add: vi.fn(), remove: vi.fn(), refresh: vi.fn() };
+    build({ 'claude-code': { scopes: ['user'], note: 'Install plugins with /plugin inside Cursor.', marketplaces: markets } as unknown as PluginAdapter, 'openai-codex': null, 'continue': null });
+    await manager.handleMessage({ type: 'ready' });
+    expect(state!.backends[0].status).toBe('ok');
+    expect(state!.can).toMatchObject({ list: false, install: false, marketplaces: true });
+    expect(state!.error).toBeUndefined();
+    expect(state!.markets).toEqual([{ name: 'mk', source: 'https://x/mk.git' }]);
+  });
+
+  describe('install from a source the user typed', () => {
+    let installSource: ReturnType<typeof vi.fn>;
+    beforeEach(async () => {
+      installSource = vi.fn(async () => {});
+      adapter = testAdapter({ scopes: ['user', 'project'], installSource, sourceHint: { label: 'Git URL or path', placeholder: 'https://github.com/o/r' } } as Partial<PluginAdapter>);
+      build({ 'claude-code': adapter, 'openai-codex': null, 'continue': null });
+      await manager.handleMessage({ type: 'ready' });
+    });
+
+    it('offers it and says what to type', () => {
+      expect(state!.can.installSource).toBe(true);
+      expect(state!.sourceHint).toEqual({ label: 'Git URL or path', placeholder: 'https://github.com/o/r' });
+    });
+
+    it('always asks first, showing the source, and installs nothing if declined', async () => {
+      await manager.handleMessage({ type: 'installSource', source: 'https://github.com/o/r', scope: 'user' });
+      expect(String(modal.mock.calls[0][1].detail)).toContain('https://github.com/o/r');
+      expect(installSource).not.toHaveBeenCalled();
+    });
+
+    it('installs on yes and tells open chats', async () => {
+      modal.mockImplementation(async (_m: string, _o: unknown, ...items: string[]) => items[0]);
+      await manager.handleMessage({ type: 'installSource', source: 'https://github.com/o/r', scope: 'project' });
+      expect(installSource).toHaveBeenCalledWith(expect.any(Function), 'https://github.com/o/r', 'project', undefined);
+      expect(providers['claude-code'].markPluginsChanged).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(['-rf', '--registry=evil', 'a\nb', '', 'x'.repeat(501)])('refuses the source %j', async (source) => {
+      modal.mockImplementation(async (_m: string, _o: unknown, ...items: string[]) => items[0]);
+      await manager.handleMessage({ type: 'installSource', source, scope: 'user' });
+      expect(installSource).not.toHaveBeenCalled();
+    });
+
+    it('refuses a project install from source in an untrusted workspace', async () => {
+      (workspace as any).isTrusted = false;
+      modal.mockImplementation(async (_m: string, _o: unknown, ...items: string[]) => items[0]);
+      await manager.handleMessage({ type: 'installSource', source: 'https://github.com/o/r', scope: 'project' });
+      expect(installSource).not.toHaveBeenCalled();
+    });
+  });
 });

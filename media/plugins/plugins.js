@@ -23,6 +23,7 @@
   let state = null;
   let tab = 'plugins';
   let scopeFor = null;
+  let sourceScopesOpen = false;
   let lastSelected = null;
   let searchTimer = null;
 
@@ -63,6 +64,24 @@
   });
   document.querySelectorAll('[role="tab"]').forEach(function (t) {
     t.addEventListener('click', function () { tab = t.dataset.tab; render(); });
+  });
+  $('source-install').addEventListener('click', function () {
+    const source = $('source-input').value.trim();
+    if (!source || !state) { return; }
+    const scopes = state.scopes || [];
+    if (scopes.length > 1) {
+      sourceScopesOpen = !sourceScopesOpen;
+      render();
+    } else {
+      post({ type: 'installSource', source: source, scope: scopes[0] || 'user' });
+    }
+  });
+  $('source-scopes').addEventListener('click', function (e) {
+    const b = e.target.closest('button[data-scope]');
+    if (!b || b.disabled) { return; }
+    sourceScopesOpen = false;
+    post({ type: 'installSource', source: $('source-input').value.trim(), scope: b.dataset.scope });
+    render();
   });
   $('mkt-add').addEventListener('click', function () {
     const source = $('mkt-source').value.trim();
@@ -120,7 +139,9 @@
       lastSelected = s.selected;
       tab = 'plugins';
       scopeFor = null;
+      sourceScopesOpen = false;
       $('search').value = '';
+      $('source-input').value = '';
     }
     const current = (s.backends || []).find(function (b) { return b.id === s.selected; }) || {};
     renderBackends(s);
@@ -176,6 +197,18 @@
     const query = $('search').value.trim().toLowerCase();
     const can = s.can || {};
     const listing = s.listing;
+    // A CLI that can't list (Cursor) shows only its note: never "Nothing installed".
+    const canList = can.list !== false;
+    const hasCatalog = !!can.search || !!(listing && listing.available);
+    $('search-box').hidden = !canList;
+    ['installed-h', 'installed'].forEach(function (id) { $(id).hidden = !canList; });
+    if (!canList) { $('installed-empty').hidden = true; }
+    renderSourceForm(s);
+    if (!canList) {
+      ['available-h', 'available-empty', 'available', 'more'].forEach(function (id) { $(id).hidden = true; });
+      return;
+    }
+    ['available-h', 'available'].forEach(function (id) { $(id).hidden = !hasCatalog; });
     const installedAll = listing ? listing.installed : [];
     const installed = installedAll.filter(matches(query));
     $('count-installed').textContent = listing ? String(installedAll.length) : '';
@@ -204,7 +237,7 @@
     // OpenClaw installs a ClawHub package under its runtime id.
     available = available.filter(function (p) { return !installedIds[p.id] && !(p.installedAs && installedIds[p.installedAs]); });
     fill($('available'), available, function (p) { return availableRow(p, s); });
-    show($('available-empty'), available.length ? '' : empty);
+    show($('available-empty'), available.length || !hasCatalog ? '' : empty);
     const more = installed.length > CAP || available.length > CAP;
     show($('more'), more ? (Math.max(installed.length, available.length) - CAP) + ' more. Search to narrow the list.' : '');
   }
@@ -283,7 +316,7 @@
     const err = s.rowErrors && s.rowErrors[p.id];
     if (busy) {
       side.append(el('span', 'row-busy', busy));
-    } else {
+    } else if ((s.can || {}).install !== false) {
       side.append(button('Install', 'btn', { 'data-action': 'install', 'aria-expanded': String(scopeFor === p.id), 'aria-label': 'Install ' + p.name }));
     }
     head.append(main, side);
@@ -293,18 +326,44 @@
       group.setAttribute('role', 'group');
       group.setAttribute('aria-label', 'Install ' + p.name + ' for');
       const choices = el('div', 'scope-choices');
-      (s.scopes || []).forEach(function (scope) {
-        const locked = scope !== 'user' && !s.trusted;
-        const b = button('', 'scope', { 'data-scope': scope });
-        b.disabled = locked;
-        b.append(el('strong', null, SCOPE_LABEL[scope] || scope), el('span', 'meta', locked ? 'Needs a trusted workspace' : SCOPE_HINT[scope] || ''));
-        choices.append(b);
-      });
+      scopeButtons(choices, s);
       group.append(choices, button('Cancel', 'btn btn-link', { 'data-action': 'cancel-scope' }));
       li.append(group);
     }
     if (err) { li.append(el('div', 'row-error', err)); }
     return li;
+  }
+
+  function scopeButtons(container, s) {
+    (s.scopes || []).forEach(function (scope) {
+      const locked = scope !== 'user' && !s.trusted;
+      const b = button('', 'scope', { 'data-scope': scope });
+      b.disabled = locked;
+      b.append(el('strong', null, SCOPE_LABEL[scope] || scope), el('span', 'meta', locked ? 'Needs a trusted workspace' : SCOPE_HINT[scope] || ''));
+      container.append(b);
+    });
+  }
+
+  function renderSourceForm(s) {
+    const can = s.can || {};
+    $('source-form').hidden = !can.installSource;
+    if (!can.installSource) { return; }
+    const hint = s.sourceHint || { label: 'Source', placeholder: '' };
+    $('source-label').textContent = hint.label;
+    $('source-input').placeholder = hint.placeholder;
+    const box = $('source-scopes');
+    box.replaceChildren();
+    box.hidden = !sourceScopesOpen;
+    if (sourceScopesOpen) {
+      const choices = el('div', 'scope-choices');
+      scopeButtons(choices, s);
+      box.append(choices);
+    }
+    const firstKey = function (map) { return Object.keys(map || {}).find(function (k) { return k.indexOf('source:') === 0; }); };
+    const busyKey = firstKey(s.busy);
+    const errKey = firstKey(s.rowErrors);
+    show($('source-status'), busyKey ? s.busy[busyKey] : '');
+    show($('source-error'), errKey ? s.rowErrors[errKey] : '');
   }
 
   function renderMarkets(s) {

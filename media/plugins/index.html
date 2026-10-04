@@ -48,10 +48,20 @@
     </div>
 
     <section id="panel-plugins" role="tabpanel" aria-labelledby="tab-plugins">
-      <label class="search">
+      <label class="search" id="search-box">
         <span class="visually-hidden">Search plugins</span>
         <input id="search" type="search" placeholder="Search plugins" autocomplete="off" />
       </label>
+      <div id="source-form" class="add" hidden>
+        <label id="source-label" for="source-input">Source</label>
+        <div class="add-row">
+          <input id="source-input" type="text" autocomplete="off" />
+          <button type="button" id="source-install" class="btn btn-primary">Install</button>
+        </div>
+        <div id="source-scopes" class="scopes" role="group" aria-label="Install for" hidden></div>
+        <p id="source-status" class="muted small" role="status" hidden></p>
+        <p id="source-error" class="row-error" hidden></p>
+      </div>
       <h2 class="section-h" id="installed-h">Installed</h2>
       <p id="installed-empty" class="empty" hidden></p>
       <ul id="installed" class="rows" aria-labelledby="installed-h"></ul>

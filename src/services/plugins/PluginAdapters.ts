@@ -86,11 +86,18 @@ export class PluginCliError extends Error {
 
 export interface PluginAdapter {
   scopes: PluginScope[];
-  list(run: Run): Promise<PluginListing>;
+  /** Shown beside what the adapter CAN do, e.g. what its CLI cannot. */
+  note?: string;
+  /** Absent when the CLI cannot list plugins (Cursor manages only marketplaces). */
+  list?(run: Run): Promise<PluginListing>;
   /** Catalogs that only answer a query (ClawHub, Hermes). */
   search?(run: Run, query: string): Promise<CatalogPlugin[]>;
-  inspect(run: Run, entry: CatalogPlugin): Promise<CodeParts>;
-  install(run: Run, id: string, scope: PluginScope, approval?: Approval): Promise<void>;
+  /** Required whenever install exists; absent means "can't see before install". */
+  inspect?(run: Run, entry: CatalogPlugin): Promise<CodeParts>;
+  install?(run: Run, id: string, scope: PluginScope, approval?: Approval): Promise<void>;
+  /** Install from a source the user types (git URL, path, npm package). Contents are never visible first. */
+  installSource?(run: Run, source: string, scope: PluginScope, approval?: Approval): Promise<void>;
+  sourceHint?: { label: string; placeholder: string };
   uninstall?(run: Run, p: InstalledPlugin): Promise<void>;
   setEnabled?(run: Run, p: InstalledPlugin, on: boolean): Promise<void>;
   update?(run: Run, p: InstalledPlugin, approval?: Approval): Promise<void>;
@@ -502,5 +509,5 @@ export const PLUGIN_ADAPTERS: Record<ProviderType, PluginBackend> = {
 };
 
 export function isAdapter(b: PluginBackend): b is PluginAdapter {
-  return !!b && 'list' in b;
+  return !!b && 'scopes' in b;
 }
