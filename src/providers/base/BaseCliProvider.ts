@@ -157,6 +157,9 @@ export interface PanelSessionState {
      * must respawn, same bug class as the issue-#39 custom-model fix. */
     effortLevel: string;
     ultracode?: boolean;
+    /** Plan 45: the provider's plugin generation at spawn. Absent on snapshots
+     * taken before any plugin change, which reads as 0. */
+    pluginGeneration?: number;
   };
   /** Buffered stdout data received during persistent process initialization */
   _initBuffer?: string;
@@ -949,15 +952,17 @@ export abstract class BaseCliProvider implements ICliProvider {
     // like mysti.claudeCodeModel), not the raw dropdown value — otherwise a
     // custom model set while a persistent process is already running would never
     // trigger a respawn and would be silently ignored (issue #39).
-    if (!session.persistentSettings) {
-      session.persistentSettings = {
-        model: this._getEffectiveModel(settings),
-        permissionMode: this._derivePermissionMode(settings),
-        thinkingLevel: settings.thinkingLevel || 'none',
-        effortLevel: settings.effortLevel || '',
-        ...(this.capabilities.supportsUltracode ? { ultracode: !!settings.ultracode } : {}),
-      };
-    }
+    // ALWAYS, not only when absent: this process was just spawned with these
+    // settings. A snapshot left by a disposed predecessor would otherwise make
+    // the pre-send check respawn on EVERY later turn (Plan 45 review C1).
+    session.persistentSettings = {
+      model: this._getEffectiveModel(settings),
+      permissionMode: this._derivePermissionMode(settings),
+      thinkingLevel: settings.thinkingLevel || 'none',
+      effortLevel: settings.effortLevel || '',
+      ...(this.capabilities.supportsUltracode ? { ultracode: !!settings.ultracode } : {}),
+      pluginGeneration: this._pluginGeneration,
+    };
 
     console.log(`[Mysti] ${this.displayName}: Persistent process ready for panel: ${session.panelId}`);
 
@@ -1194,7 +1199,18 @@ export abstract class BaseCliProvider implements ICliProvider {
       && ps.permissionMode === this._derivePermissionMode(settings)
       && ps.thinkingLevel === (settings.thinkingLevel || 'none')
       && (!effortRelevant || ps.effortLevel === (settings.effortLevel || ''))
-      && (!this.capabilities.supportsUltracode || !!ps.ultracode === !!settings.ultracode);
+      && (!this.capabilities.supportsUltracode || !!ps.ultracode === !!settings.ultracode)
+      && (ps.pluginGeneration ?? 0) === this._pluginGeneration;
+  }
+
+  /**
+   * Plan 45: a plugin was installed, removed, toggled or updated through this
+   * backend's CLI. A persistent process loaded its plugins at spawn, so this
+   * breaks the spawn-settings match and the pre-turn check respawns it on the
+   * NEXT message (resuming the session) — never in the middle of a turn.
+   */
+  public markPluginsChanged(): void {
+    this._pluginGeneration++;
   }
 
   /**
@@ -1224,6 +1240,7 @@ export abstract class BaseCliProvider implements ICliProvider {
       thinkingLevel: settings.thinkingLevel || 'none',
       effortLevel: settings.effortLevel || '',
       ...(this.capabilities.supportsUltracode ? { ultracode: !!settings.ultracode } : {}),
+      pluginGeneration: this._pluginGeneration,
     };
 
     await this._getOrSpawnPersistentProcess(session, settings);
@@ -1343,6 +1360,9 @@ export abstract class BaseCliProvider implements ICliProvider {
     this._cachedCliVersion = version ?? null;
     return { found: true, path: cliPath, version };
   }
+
+  /** Plan 45: bumped by markPluginsChanged(); see _persistentSettingsMatch. */
+  private _pluginGeneration = 0;
 
   /**
    * `--version` of the discovered CLI, once discovery has run.

@@ -256,6 +256,12 @@
         "icon": "$(plug)"
       },
       {
+        "command": "mysti.managePlugins",
+        "title": "Manage Plugins",
+        "category": "Mysti",
+        "icon": "$(extensions)"
+      },
+      {
         "command": "mysti.deepmyst.signIn",
         "title": "Sign in to DeepMyst",
         "category": "Mysti"

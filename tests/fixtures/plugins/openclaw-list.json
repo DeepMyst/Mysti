@@ -1,0 +1,25 @@
+{
+ "plugins": [
+  {
+   "id": "cohere",
+   "name": "Cohere",
+   "version": "2026.6.34",
+   "description": "OpenClaw Cohere provider plugin.",
+   "format": "openclaw",
+   "origin": "bundled",
+   "enabled": true,
+   "status": "loaded"
+  },
+  {
+   "id": "workboard",
+   "name": "Workboard",
+   "version": "2026.6.34",
+   "description": "Dashboard workboard for agent-owned issues and sessions.",
+   "format": "openclaw",
+   "origin": "bundled",
+   "enabled": false,
+   "status": "disabled"
+  }
+ ],
+ "diagnostics": []
+}

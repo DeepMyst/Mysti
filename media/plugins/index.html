@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<!--
+  Mysti - AI Coding Agent. Copyright (c) 2025 DeepMyst Inc.
+  SPDX-License-Identifier: Apache-2.0
+
+  Plan 45 — Manage Plugins. Rendered by media/plugins/plugins.js from the
+  `state` the host posts; every string from a CLI or marketplace is set with
+  textContent, never parsed as markup.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src {{cspSource}} 'unsafe-inline'; script-src 'nonce-{{nonce}}'; form-action 'none'; base-uri 'none';" />
+  <link rel="stylesheet" href="{{styleUri}}" />
+  <title>Manage Plugins</title>
+</head>
+<body>
+  <header class="header">
+    <div class="title-row">
+      <div>
+        <h1>Plugins</h1>
+        <p class="muted">Install and manage plugins for each backend, through its own command line.</p>
+      </div>
+      <div class="controls">
+        <label class="visually-hidden" for="backend">Backend</label>
+        <select id="backend"></select>
+        <button type="button" id="refresh" class="icon-btn" aria-label="Refresh">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"></path><path d="M13.5 2.5v3h-3"></path></svg>
+        </button>
+      </div>
+    </div>
+    <p id="status" class="muted small"></p>
+  </header>
+
+  <p id="note" class="note" hidden></p>
+  <div id="error" class="msg msg-error" role="alert" hidden></div>
+  <div id="warning" class="msg msg-warn" role="status" hidden></div>
+  <div id="banner" class="msg msg-ok" role="status" hidden>
+    <span id="banner-text"></span>
+    <button type="button" id="banner-close" class="icon-btn" aria-label="Dismiss">×</button>
+  </div>
+
+  <main id="main" hidden>
+    <div role="tablist" class="tabs" aria-label="Plugin views">
+      <button type="button" role="tab" id="tab-plugins" data-tab="plugins" aria-controls="panel-plugins">Plugins <span class="count" id="count-installed"></span></button>
+      <button type="button" role="tab" id="tab-marketplaces" data-tab="marketplaces" aria-controls="panel-marketplaces">Marketplaces <span class="count" id="count-markets"></span></button>
+    </div>
+
+    <section id="panel-plugins" role="tabpanel" aria-labelledby="tab-plugins">
+      <label class="search">
+        <span class="visually-hidden">Search plugins</span>
+        <input id="search" type="search" placeholder="Search plugins" autocomplete="off" />
+      </label>
+      <h2 class="section-h" id="installed-h">Installed</h2>
+      <p id="installed-empty" class="empty" hidden></p>
+      <ul id="installed" class="rows" aria-labelledby="installed-h"></ul>
+      <h2 class="section-h" id="available-h">Available</h2>
+      <p id="available-empty" class="empty" hidden></p>
+      <ul id="available" class="rows" aria-labelledby="available-h"></ul>
+      <p id="more" class="muted small" hidden></p>
+    </section>
+
+    <section id="panel-marketplaces" role="tabpanel" aria-labelledby="tab-marketplaces" hidden>
+      <div class="add">
+        <label for="mkt-source">Add a marketplace</label>
+        <div class="add-row">
+          <input id="mkt-source" type="text" placeholder="owner/repo, a git URL, or a local path" autocomplete="off" />
+          <button type="button" id="mkt-add" class="btn btn-primary">Add</button>
+        </div>
+      </div>
+      <p id="markets-empty" class="empty" hidden>No marketplaces yet.</p>
+      <ul id="markets" class="rows"></ul>
+    </section>
+  </main>
+
+  <script nonce="{{nonce}}" src="{{scriptUri}}"></script>
+</body>
+</html>

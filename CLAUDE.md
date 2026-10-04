@@ -263,6 +263,18 @@ manager/service cluster and has a design doc in `plans/`:
   `mysti.tips.enabled`). `/help` renders a searchable card; `/mode` takes
   plan/ask/auto/full. The walkthrough's Connect step completes on the
   `mysti.agentReady` context key. Browser suite: `tests/webview/onboardingBrowser.test.ts`.
+- **Manage Plugins** (`plans/45`) — one editor tab (`mysti.managePlugins`,
+  `/plugins`, the Mysti tab's nav) for each backend's OWN plugin system.
+  `PLUGIN_ADAPTERS` (`src/services/plugins/`) is a total
+  `Record<ProviderType, adapter | {note} | null>`: an operation exists iff its
+  method does, and every call is that backend's CLI via `execFile` with no
+  shell — Mysti never writes another tool's plugin config. Claude Code's exit
+  code lies (a failed install exits 0), so its `--json` `outcome` decides.
+  `PluginsPanelManager` checks every webview id/scope/source against the last
+  listing, confirms anything that runs code (hooks, MCP/LSP servers, monitors,
+  unrecognised plugin content, or contents it can't see) in a NATIVE modal, and on success calls
+  `markPluginsChanged()`, which respawns persistent CLI processes on their
+  next message. Phase 1 drives Claude Code, Copilot, OpenClaw and Hermes.
 - **Agent catalog & quarantine** (`plans/20`) — the coordinator's `search`/
   `publish`/`skillrun` capabilities over the bundled + user-authored personas,
   skills and roles, all gated on local execution + OS sandbox + trusted
@@ -535,8 +547,8 @@ dropped, never repaired.
 
 ## VSCode Integration Points
 
-- View: `mysti.chatView` (webview sidebar); secondary panels: `mysti.openCanvas`, `mysti.openConnections` (DeepMyst), `mysti.openVisualTestDashboard`
-- Commands: `mysti.getStarted` (opens the onboarding wizard; optional step arg `connect`/`mode`/`task`), `mysti.openChat`, `mysti.newConversation`, `mysti.addToContext`, `mysti.clearContext`, `mysti.openInNewTab`, `mysti.toggleAutonomous`, `mysti.debugSetup`, `mysti.debugSetupFailure`, `mysti.createPersona`, `mysti.createSkill`, `mysti.createRole`, `mysti.importSkills`, `mysti.reloadAgents`, `mysti.updateClis`, `mysti.setCoordinatorModel`, `mysti.viewMystiMemory`, `mysti.reviewSkillProposals`, `mysti.skillReport`, `mysti.revokeCapabilities` (artifact kill switch), `mysti.deskPair`, `mysti.deskRoster`, `mysti.boostSummary`, `mysti.codeLensAction`, `mysti.canvasDiagnostics`, `mysti.canvasAddScaffold`, `mysti.deepmyst.signIn`/`signOut`
+- View: `mysti.chatView` (webview sidebar); secondary panels: `mysti.openCanvas`, `mysti.openConnections` (DeepMyst), `mysti.managePlugins` (Plan 45), `mysti.openVisualTestDashboard`
+- Commands: `mysti.getStarted` (opens the onboarding wizard; optional step arg `connect`/`mode`/`task`), `mysti.openChat`, `mysti.newConversation`, `mysti.addToContext`, `mysti.clearContext`, `mysti.openInNewTab`, `mysti.toggleAutonomous`, `mysti.debugSetup`, `mysti.debugSetupFailure`, `mysti.createPersona`, `mysti.createSkill`, `mysti.createRole`, `mysti.importSkills`, `mysti.reloadAgents`, `mysti.updateClis`, `mysti.managePlugins`, `mysti.setCoordinatorModel`, `mysti.viewMystiMemory`, `mysti.reviewSkillProposals`, `mysti.skillReport`, `mysti.revokeCapabilities` (artifact kill switch), `mysti.deskPair`, `mysti.deskRoster`, `mysti.boostSummary`, `mysti.codeLensAction`, `mysti.canvasDiagnostics`, `mysti.canvasAddScaffold`, `mysti.deepmyst.signIn`/`signOut`
 - Keybindings: `Ctrl+Shift+M` / `Cmd+Shift+M` (open chat), `Ctrl+Shift+N` / `Cmd+Shift+N` (new tab), `Ctrl+Shift+A` / `Cmd+Shift+A` (toggle autonomous)
 - Settings namespace: `mysti.*` (100+ settings covering provider, mode, access, brainstorm, agents, permissions, autonomous, compaction (+ smart), lifecycle, active mode, checkpoints, boost, mysti coordinator, deepmyst, updates)
 - Custom language IDs: `claude-prompt`, `prompt-markdown`, `gpt-prompt`, `gemini-prompt`, `codex-prompt`

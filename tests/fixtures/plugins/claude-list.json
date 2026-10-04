@@ -1,0 +1,81 @@
+{
+ "installed": [
+  {
+   "id": "playwright@claude-plugins-official",
+   "version": "ab024cdcfa7c",
+   "scope": "user",
+   "enabled": false,
+   "installPath": "/home/user/.claude/plugins/cache/claude-plugins-official/playwright/ab024cdcfa7c",
+   "installedAt": "2026-09-22T12:56:54.106Z",
+   "lastUpdated": "2026-10-01T03:28:20.014Z",
+   "mcpServers": {
+    "playwright": {
+     "command": "npx",
+     "args": [
+      "@playwright/mcp@latest"
+     ]
+    }
+   },
+   "projectEnabled": false
+  },
+  {
+   "id": "ponytail@ponytail",
+   "version": "4.10.0",
+   "scope": "user",
+   "enabled": true,
+   "installPath": "/home/user/.claude/plugins/cache/ponytail/ponytail/4.10.0",
+   "installedAt": "2026-09-22T12:53:02.080Z",
+   "lastUpdated": "2026-09-22T12:53:02.080Z",
+   "projectEnabled": false
+  },
+  {
+   "id": "superpowers@claude-plugins-official",
+   "version": "6.4.1",
+   "scope": "user",
+   "enabled": true,
+   "installPath": "/home/user/.claude/plugins/cache/claude-plugins-official/superpowers/6.4.1",
+   "installedAt": "2026-09-22T12:56:07.181Z",
+   "lastUpdated": "2026-09-22T17:17:46.162Z",
+   "projectEnabled": false
+  }
+ ],
+ "available": [
+  {
+   "pluginId": "context7@claude-plugins-official",
+   "name": "context7",
+   "description": "Upstash Context7 MCP server for up-to-date documentation lookup. Connects to Context7's hosted remote MCP server (https://mcp.context7.com/mcp) \u2014 no local Node.js or npx required \u2014 to pull version-specific documentation and code examples directly from source repositories into your LLM context. Works anonymously out of the box; set CONTEXT7_API_KEY for higher rate limits.",
+   "marketplaceName": "claude-plugins-official",
+   "source": "./external_plugins/context7",
+   "installCount": 454347
+  },
+  {
+   "pluginId": "commit-commands@claude-plugins-official",
+   "name": "commit-commands",
+   "description": "Commands for git commit workflows including commit, push, and PR creation",
+   "marketplaceName": "claude-plugins-official",
+   "source": "./plugins/commit-commands",
+   "installCount": 183820
+  },
+  {
+   "pluginId": "vercel@claude-plugins-official",
+   "name": "vercel",
+   "description": "Vercel deployment platform integration. Manage deployments, check build status, access logs, configure domains, and control your frontend infrastructure directly from Claude Code.",
+   "marketplaceName": "claude-plugins-official",
+   "source": {
+    "source": "url",
+    "url": "https://github.com/vercel/vercel-plugin.git",
+    "sha": "882e66c2698689324c341b7bb8fd8beb92c27bf6"
+   },
+   "installCount": 278281
+  },
+  {
+   "pluginId": "typescript-lsp@claude-plugins-official",
+   "name": "typescript-lsp",
+   "description": "TypeScript/JavaScript language server for enhanced code intelligence",
+   "marketplaceName": "claude-plugins-official",
+   "version": "1.0.0",
+   "source": "./plugins/typescript-lsp",
+   "installCount": 231363
+  }
+ ]
+}

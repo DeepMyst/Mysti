@@ -2528,6 +2528,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'openConnections':
         vscode.commands.executeCommand('mysti.openConnections');
         break;
+      // Plan 45: open Manage Plugins on this chat's backend. Opening is all a
+      // chat can do; installs happen only by a click in that tab.
+      case 'openPlugins':
+        vscode.commands.executeCommand('mysti.managePlugins', this._getPanelProvider(msg.panelId));
+        break;
 
       case 'openSettingsHub': {
         // Plan 31: a ⋯ item in a chat — open the Mysti tab acting for that chat.
