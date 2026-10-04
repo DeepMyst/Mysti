@@ -119,7 +119,7 @@ describe('core integrity → trust tier', () => {
     // CRLF. Hashing LF-normalized content keeps the manifest platform-stable —
     // without this every Windows user would silently lose all bundled trust.
     const target = path.join(coreDir, 'skills', 'concise.md');
-    const lf = fs.readFileSync(target, 'utf8');
+    const lf = fs.readFileSync(target, 'utf8').replace(/\r\n/g, '\n');
     fs.writeFileSync(target, lf.replace(/\n/g, '\r\n'));
 
     await loader.loadAllMetadata();

@@ -52,6 +52,7 @@ const PROVIDER_IDS = [
   'localai',
   'hermes',
   'continue',
+  'minimax',
   'openrouter',
   'kimi-code',
   'manus'

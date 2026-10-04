@@ -258,7 +258,7 @@ export function verify(signed: unknown, opts: VerifyOptions): VerifyResult {
     return { ok: false, reason: 'bad-challenge' };
   }
 
-  let verified = false;
+  let verified: boolean;
   try {
     verified = crypto.verify(
       null,

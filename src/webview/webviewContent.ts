@@ -23,6 +23,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import { getWebviewLocalizationScript } from '../localization';
 import { PROVIDER_MANIFEST_SCHEMA_VERSION } from '../providers/base/ProviderManifest';
 
 /** Module-level template cache — read once per extension-host process. */
@@ -109,6 +110,8 @@ export function getWebviewContent(
   const openrouterLogoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'openrouter.png')).toString();
   const kimiLogoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'kimi.png')).toString();
 
+  const minimaxLogoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'icons', 'minimax.svg')).toString();
+
   // Every value the embedded script used to receive via template-literal
   // interpolation now travels through ONE inline nonce'd bootstrap script
   // (window.__MYSTI_BOOT__) emitted before the external chat.js tag.
@@ -133,6 +136,7 @@ export function getWebviewContent(
     continueLogoUri,
     openrouterLogoUri,
     kimiLogoUri,
+    minimaxLogoUri,
     manifestSchemaVersion: PROVIDER_MANIFEST_SCHEMA_VERSION
   };
   // Defensive: keep '<' out of the inline <script> body (e.g. '</script>').
@@ -161,6 +165,8 @@ export function getWebviewContent(
   if (opts.view === 'hub') {
     html = html.replace('<body>', '<body class="view-hub">');
   }
+  const localization = getWebviewLocalizationScript();
+  if (localization) { html = html.replace('</body>', `<script nonce="${nonce}">${localization}</script></body>`); }
   return html;
 }
 

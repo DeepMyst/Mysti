@@ -15,6 +15,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as nodePath from 'path';
+import { randomUUID } from 'crypto';
 import { spawn, ChildProcess, SpawnOptions } from 'child_process';
 import type {
   ICliProvider,
@@ -155,7 +156,8 @@ export interface PanelSessionState {
     /** Plan 18 (4.1): --effort is baked into spawn args — a mid-session change
      * must respawn, same bug class as the issue-#39 custom-model fix. */
     effortLevel: string;
-    /** Plan 39: the provider's plugin generation at spawn. Absent on snapshots
+    ultracode?: boolean;
+    /** Plan 45: the provider's plugin generation at spawn. Absent on snapshots
      * taken before any plugin change, which reads as 0. */
     pluginGeneration?: number;
   };
@@ -421,11 +423,15 @@ export abstract class BaseCliProvider implements ICliProvider {
     if (panelId) {
       const session = this._panelSessions.get(panelId);
       if (session) {
+        this._cancelSessionRequest(session);
+        this.disposePersistentProcess(panelId);
         console.log(`[Mysti] ${this.displayName}: Clearing session for panel ${panelId}:`, session.sessionId);
         session.sessionId = null;
       }
     } else {
       for (const session of this._panelSessions.values()) {
+        this._cancelSessionRequest(session);
+        this.disposePersistentProcess(session.panelId);
         session.sessionId = null;
       }
       console.log(`[Mysti] ${this.displayName}: Clearing all sessions`);
@@ -608,11 +614,14 @@ export abstract class BaseCliProvider implements ICliProvider {
     return null;
   }
 
+  /** A native approval adapter must not downgrade to an unmediated CLI. */
+  protected requiresPersistentTransport(): boolean { return false; }
+
   /**
    * Detect whether a parsed stream line marks the end of a response.
    * Subclasses override to define their response boundary (e.g., `result` event).
    */
-  protected _isResponseBoundary(_line: string): boolean {
+  protected _isResponseBoundary(_line: string, _session?: PanelSessionState): boolean {
     return false;
   }
 
@@ -672,7 +681,7 @@ export abstract class BaseCliProvider implements ICliProvider {
       for (const line of lines) {
         if (!line.trim()) { continue; }
 
-        if (this._isResponseBoundary(line)) {
+        if (this._isResponseBoundary(line, session)) {
           const parsed = this.parseStreamLine(line, session);
           if (parsed) { chunks.push(parsed); }
           sawBoundary = true;
@@ -785,11 +794,11 @@ export abstract class BaseCliProvider implements ICliProvider {
       // complete one. A user-initiated Stop is not a crash (cancelCurrentRequest
       // kills the process on purpose), and the inactivity watchdog above has
       // already emitted its own terminal error — neither is reported twice.
-      // Scope: a CLEAN exit 0 with no boundary is deliberately left alone here,
-      // so this only fires on a genuinely abnormal death.
+      // Native approval transports also require a terminal response boundary:
+      // even exit 0 before that boundary means the response was incomplete.
       const exited = uncleanExit as { code: number | null; signal: NodeJS.Signals | null } | null;
       if (exited && !emittedTerminalError && !session.cancelled) {
-        const abnormal = (exited.code !== null && exited.code !== 0) || exited.signal !== null;
+        const abnormal = this.requiresPersistentTransport() || (exited.code !== null && exited.code !== 0) || exited.signal !== null;
         if (abnormal) {
           if (session.persistentProcess === proc) {
             session.persistentProcess = null;
@@ -945,12 +954,13 @@ export abstract class BaseCliProvider implements ICliProvider {
     // trigger a respawn and would be silently ignored (issue #39).
     // ALWAYS, not only when absent: this process was just spawned with these
     // settings. A snapshot left by a disposed predecessor would otherwise make
-    // the pre-send check respawn on EVERY later turn (Plan 39 review C1).
+    // the pre-send check respawn on EVERY later turn (Plan 45 review C1).
     session.persistentSettings = {
       model: this._getEffectiveModel(settings),
       permissionMode: this._derivePermissionMode(settings),
       thinkingLevel: settings.thinkingLevel || 'none',
       effortLevel: settings.effortLevel || '',
+      ...(this.capabilities.supportsUltracode ? { ultracode: !!settings.ultracode } : {}),
       pluginGeneration: this._pluginGeneration,
     };
 
@@ -1189,11 +1199,12 @@ export abstract class BaseCliProvider implements ICliProvider {
       && ps.permissionMode === this._derivePermissionMode(settings)
       && ps.thinkingLevel === (settings.thinkingLevel || 'none')
       && (!effortRelevant || ps.effortLevel === (settings.effortLevel || ''))
+      && (!this.capabilities.supportsUltracode || !!ps.ultracode === !!settings.ultracode)
       && (ps.pluginGeneration ?? 0) === this._pluginGeneration;
   }
 
   /**
-   * Plan 39: a plugin was installed, removed, toggled or updated through this
+   * Plan 45: a plugin was installed, removed, toggled or updated through this
    * backend's CLI. A persistent process loaded its plugins at spawn, so this
    * breaks the spawn-settings match and the pre-turn check respawns it on the
    * NEXT message (resuming the session) — never in the middle of a turn.
@@ -1228,6 +1239,7 @@ export abstract class BaseCliProvider implements ICliProvider {
       permissionMode: this._derivePermissionMode(settings),
       thinkingLevel: settings.thinkingLevel || 'none',
       effortLevel: settings.effortLevel || '',
+      ...(this.capabilities.supportsUltracode ? { ultracode: !!settings.ultracode } : {}),
       pluginGeneration: this._pluginGeneration,
     };
 
@@ -1349,7 +1361,7 @@ export abstract class BaseCliProvider implements ICliProvider {
     return { found: true, path: cliPath, version };
   }
 
-  /** Plan 39: bumped by markPluginsChanged(); see _persistentSettingsMatch. */
+  /** Plan 45: bumped by markPluginsChanged(); see _persistentSettingsMatch. */
   private _pluginGeneration = 0;
 
   /**
@@ -1501,7 +1513,7 @@ export abstract class BaseCliProvider implements ICliProvider {
             if (request.submitted || usedPersistent) {
               yield this.handleError(err);
             } else {
-              console.warn(`[Mysti] ${this.displayName}: Persistent setup failed, falling back to single-shot:`, err);
+              console.warn(`[Mysti] ${this.displayName}: Persistent setup failed${this.requiresPersistentTransport() ? '; native transport is required' : ', falling back to single-shot'}:`, err);
             }
           }
         }
@@ -1517,6 +1529,11 @@ export abstract class BaseCliProvider implements ICliProvider {
         }
       }
 
+      if (this.requiresPersistentTransport()) {
+        yield { type: 'error', content: `${this.displayName} could not start its native approval transport. Check the CLI installation and retry.` };
+        yield this._doneChunk(panelId);
+        return;
+      }
       yield* this._sendSingleShot(
         content, context, settings, conversation, session, panelId,
         providerManager, persona, agentConfig, attachments, startTime,
@@ -2077,7 +2094,7 @@ export abstract class BaseCliProvider implements ICliProvider {
     settings: Settings,
     persona?: PersonaConfig,
     agentConfig?: AgentConfiguration,
-    _attachments?: Attachment[],
+    attachments?: Attachment[],
     systemContext?: string
   ): Promise<string> {
     if (content.trim().startsWith('/')) {
@@ -2117,6 +2134,15 @@ export abstract class BaseCliProvider implements ICliProvider {
     }
 
     fullPrompt += content;
+
+    // CLI backends must receive the paths produced by prepareAttachments, not
+    // merely write the bytes to disk. HTTP providers do not declare these capabilities.
+    const readable = (attachments || []).filter(a => a.filePath &&
+      (a.type === 'image' ? this.capabilities.supportsImages : this.capabilities.supportsFileAttachments));
+    if (readable.length) {
+      fullPrompt = '[Attached Files — use your file-reading tools to inspect these files]\n' +
+        readable.map(a => `${a.type === 'image' ? 'Image' : 'File'} ${JSON.stringify(a.fileName)}: ${JSON.stringify(a.filePath)}`).join('\n') + '\n\n' + fullPrompt;
+    }
 
     // Inject mode instructions as defense-in-depth (prompt-level + CLI flags)
     if (settings.mode === 'quick-plan') {
@@ -2221,16 +2247,22 @@ export abstract class BaseCliProvider implements ICliProvider {
     await fs.promises.mkdir(dir, { recursive: true });
 
     const written: string[] = [];
-    for (const att of usable) {
-      // Already on disk (attach button) — nothing to write.
-      if (att.filePath && !att.base64Data) { continue; }
-      if (!att.base64Data) { continue; }
-      const ext = att.fileName?.split('.').pop()
-        || (att.type === 'image' ? (att.mimeType?.split('/')[1] || 'png') : 'bin');
-      const target = nodePath.join(dir, `mysti-attachment-${att.id}.${ext}`);
-      await fs.promises.writeFile(target, Buffer.from(att.base64Data, 'base64'));
-      att.filePath = target;
-      written.push(target);
+    try {
+      for (const att of usable) {
+        if (att.filePath && !att.base64Data) { continue; }
+        if (!att.base64Data) { continue; }
+        const suffix = nodePath.extname(att.fileName || '').slice(1);
+        const ext = /^[a-z0-9]{1,12}$/i.test(suffix) ? suffix : 'bin';
+        // An attachment can be reused by concurrent turns. Its UI id must not
+        // become a shared filename that one turn overwrites or cleans up early.
+        const target = nodePath.join(dir, `mysti-attachment-${randomUUID()}.${ext}`);
+        written.push(target);
+        await fs.promises.writeFile(target, Buffer.from(att.base64Data, 'base64'));
+        att.filePath = target;
+      }
+    } catch (error) {
+      await Promise.all(written.map(file => fs.promises.unlink(file).catch(() => {})));
+      throw error;
     }
     if (written.length === 0) { return null; }
 
@@ -2282,7 +2314,9 @@ export abstract class BaseCliProvider implements ICliProvider {
 
   protected addModeInstructions(prompt: string, mode: string): string {
     const modeInstructions: Record<string, string> = {
-      'ask-before-edit': '\n\n[Mode: Ask before making any edits. Explain what changes you want to make and wait for approval before modifying any files.]',
+      'ask-before-edit': this.capabilities.supportsNativeApproval
+        ? '\n\n[Mode: Ask before making any edits. Explain the intended change briefly, then invoke the tool to request permission through Mysti. The native tool request waits for the user’s approval card before execution; do not substitute a conversational permission question.]'
+        : '\n\n[Mode: Ask before making any edits. Explain what changes you want to make and wait for approval before modifying any files.]',
       'edit-automatically': '\n\n[Mode: You may edit files directly without asking for permission.]',
       'plan': '\n\n[Mode: Planning mode. Create a detailed plan for the task without making any actual changes. Break down the work into steps.]'
     };

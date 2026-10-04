@@ -10,7 +10,7 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  *
- * Plan 39 — Manage Plugins: the editor tab that lists, installs, toggles,
+ * Plan 45 — Manage Plugins: the editor tab that lists, installs, toggles,
  * updates and removes plugins for each backend through its own CLI.
  *
  * The webview is untrusted input. Every id, scope, name and source it sends is

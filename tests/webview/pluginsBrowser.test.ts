@@ -10,7 +10,7 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  *
- * Plan 39: the Manage Plugins tab, in headless Chromium, under its REAL
+ * Plan 45: the Manage Plugins tab, in headless Chromium, under its REAL
  * Content-Security-Policy (the nonce'd scripts are injected, nothing else is
  * allowed). The host sends `state`; the page renders it and posts the user's
  * clicks back. Marketplace text is untrusted and must render as text.
@@ -113,7 +113,7 @@ afterAll(async () => {
   for (const d of dirs) { fs.rmSync(d, { recursive: true, force: true }); }
 });
 
-describe('Plan 39 — Manage Plugins tab', () => {
+describe('Plan 45 — Manage Plugins tab', () => {
   it.skipIf(CHROMIUM_UNAVAILABLE)('says it is ready, then renders what the host sent', async () => {
     const pg = await openPage();
     expect((await posted(pg))[0]).toEqual({ type: 'ready' });

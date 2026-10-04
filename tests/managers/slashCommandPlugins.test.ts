@@ -10,7 +10,7 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  *
- * Plan 39: `/plugins` only OPENS the Manage Plugins tab, on the chat's own
+ * Plan 45: `/plugins` only OPENS the Manage Plugins tab, on the chat's own
  * backend. Nothing typed in a chat installs anything.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
@@ -37,7 +37,7 @@ const callbacks = {
   executeManualCompaction: async () => {},
 };
 
-describe('/plugins (Plan 39)', () => {
+describe('/plugins (Plan 45)', () => {
   const original = commands.executeCommand;
   afterEach(() => { (commands as any).executeCommand = original; });
 

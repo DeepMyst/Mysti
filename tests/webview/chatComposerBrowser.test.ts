@@ -586,23 +586,20 @@ describe('Plan 28 Phase 5 — the chrome diet and the palette', () => {
     }
   }, 20000);
 
-  it.skipIf(CHROMIUM_UNAVAILABLE)('shows four segments under the composer, not ten', async () => {
-    // Four SLOTS: agent · model, trust, context, spend. Spend is correctly
-    // absent until there is a saving to report, so three show at rest. The
+  it.skipIf(CHROMIUM_UNAVAILABLE)('keeps slash and actions beside the compact composer controls', async () => {
+    // Actions, agent/model, trust, context and spend. Spend is correctly
+    // absent until there is a saving to report, so four show at rest. The
     // agent map pill is not at rest on this page: the Runs dock tests above
     // left a background job and an @openai-codex sub-agent in this chat, which
     // it rightly counts. A quiet chat, and one where the main agent works
     // alone, keep it hidden; Plan 32's block asserts that on its own page.
-    expect(await visible('.input-status-line > *:not(.status-spacer):not(#agent-map-pill)')).toBe(3);
-    for (const id of ['agent-select-btn', 'context-usage', 'behavior-indicator']) {
+    expect(await visible('.input-status-line > *:not(.status-spacer):not(#agent-map-pill)')).toBe(5);
+    for (const id of ['agent-select-btn', 'context-usage', 'behavior-indicator', 'tools-menu-btn', 'slash-cmd-btn']) {
       expect(await page!.$eval(`#${id}`, (e) => getComputedStyle(e).display), id).not.toBe('none');
     }
     // Model + effort are back as one pill (tested below); with no model list
-    // on this page it hides itself, which is why the count above is still 3.
-    for (const id of ['slash-cmd-btn', 'tools-menu-btn']) {
-      expect(await page!.$(`#${id}`), id).not.toBeNull();     // still in the DOM
-      expect(await page!.$eval(`#${id}`, (e) => getComputedStyle(e).display), id).toBe('none');
-    }
+    // on this page it hides itself. Actions now has its own visible trigger.
+
   }, 20000);
 
   it.skipIf(CHROMIUM_UNAVAILABLE)('opens on Cmd/Ctrl+K without covering the conversation', async () => {
@@ -651,6 +648,63 @@ describe('Plan 28 Phase 5 — the chrome diet and the palette', () => {
 
   it.skipIf(CHROMIUM_UNAVAILABLE)('drove all of that without throwing', async () => {
     expect(pageErrors).toEqual([]);
+  }, 20000);
+});
+
+describe('Brainstorm terminal composer state', () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE).each(['brainstormComplete', 'brainstormError'])('clears the working prompt after %s', async (type) => {
+    const pg = await newPanelPage();
+    try {
+      await pg.fill('#message-input', 'Compare the designs');
+      await pg.click('#send-btn');
+      expect(await pg.locator('#message-input').getAttribute('placeholder')).toContain('Working');
+      await pg.evaluate(type => window.dispatchEvent(new MessageEvent('message', { data: {
+        type, payload: type === 'brainstormComplete' ? { unifiedSolution: 'Use the simpler design.' } : { error: 'Provider unavailable' },
+      } })), type);
+      expect(await pg.locator('#message-input').getAttribute('placeholder')).toContain('Ask anything');
+      expect(await pg.locator('#send-btn').isEnabled()).toBe(true);
+      expect(await pg.locator('#stop-btn').isVisible()).toBe(false);
+    } finally { await pg.context().close(); }
+  }, 20000);
+});
+
+describe('MiniMax composer selection', () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('offers the registered MiniMax adapter and preserves the draft when selected', async () => {
+    const pg = await newPanelPage();
+    try {
+      await pg.fill('#message-input', 'Review the entry point');
+      await pg.click('#agent-select-btn');
+      await pg.click('#agent-menu [data-agent="minimax"]');
+      expect(await pg.inputValue('#message-input')).toBe('Review the entry point');
+      const changes = await pg.evaluate(() => (window as unknown as { __posted: Array<{type: string; payload?: {provider: string}}> }).__posted.filter(m => m.type === 'updateSettings'));
+      expect(changes.some(m => m.payload?.provider === 'minimax')).toBe(true);
+    } finally { await pg.context().close(); }
+  }, 20000);
+});
+
+describe('Second opinion respondent identity', () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('excludes the streamed respondent after a mention override and preserves restored attribution', async () => {
+    const pg = await newPanelPage();
+    const receive = (type: string, payload: unknown) => pg.evaluate(m => {
+      window.dispatchEvent(new MessageEvent('message', { data: m }));
+    }, { type, payload });
+    try {
+      // Composer stays on Claude; Codex is the actual respondent.
+      await receive('messageAdded', { id: 'q', role: 'user', content: 'Which retry failures need tests?' });
+      await receive('responseStarted', { provider: 'openai-codex' });
+      await receive('responseChunk', { type: 'text', content: 'Test ambiguous payment outcomes.' });
+      await receive('responseComplete', { usage: { input_tokens: 12, output_tokens: 8 },
+        message: { id: 'a', role: 'assistant', provider: 'openai-codex', content: 'Test ambiguous payment outcomes.' } });
+      expect(await pg.locator('[data-id="a"]').getAttribute('data-provider')).toBe('openai-codex');
+      await pg.locator('[data-id="a"] [data-second-opinion]').click();
+      expect(await pg.locator('.second-opinion-item[data-agent="openai-codex"]').count()).toBe(0);
+      expect(await pg.locator('.second-opinion-item[data-agent="claude-code"]').count()).toBe(1);
+      await pg.locator('.second-opinion-item[data-agent="claude-code"]').click();
+      const sent = await pg.evaluate(() => (window as unknown as { __posted: Array<{type: string; payload?: {content: string}}> }).__posted.find(m => m.type === 'sendMessage'));
+      expect(sent?.payload?.content).toBe('@claude-code Which retry failures need tests?');
+      await receive('messageAdded', { id: 'restored', role: 'assistant', provider: 'openai-codex', content: 'Saved answer' });
+      expect(await pg.locator('[data-id="restored"]').getAttribute('data-provider')).toBe('openai-codex');
+    } finally { await pg.context().close(); }
   }, 20000);
 });
 
@@ -1666,17 +1720,17 @@ describe('Plan 32 — the agent map', () => {
 
   afterAll(async () => { await pg?.context().close(); });
 
-  it.skipIf(CHROMIUM_UNAVAILABLE)('keeps the pill hidden at rest and through a plain turn, so the status line keeps three segments', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('keeps the map pill hidden at rest and through a plain turn', async () => {
     const segments = () => pg!.$$eval('.input-status-line > *:not(.status-spacer)',
       (els) => els.filter((e) => getComputedStyle(e).display !== 'none').length);
     expect((await pill()).display).toBe('none');
-    expect(await segments()).toBe(3);
+    expect(await segments()).toBe(5);
     // The main agent alone is an ordinary chat, working or done.
     await receive({ type: 'responseStarted', payload: { provider: 'claude-code' } });
     expect((await pill()).display).toBe('none');
     await receive({ type: 'responseComplete', payload: { message: { role: 'assistant', content: 'ok' } } });
     expect((await pill()).display).toBe('none');
-    expect(await segments()).toBe(3);
+    expect(await segments()).toBe(5);
   }, 20000);
 
   it.skipIf(CHROMIUM_UNAVAILABLE)('shows the pill after a delegation, and the pill opens the map', async () => {

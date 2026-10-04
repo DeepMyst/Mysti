@@ -182,7 +182,7 @@ describe('persistent process ownership and turn cleanup', () => {
     await replacementGen.return(undefined);
   });
 
-  it('a prompt build failure releases attachments before a safe fallback', async () => {
+  it('a prompt build failure releases attachments without downgrading native approvals', async () => {
     const { cleanup, prompt, fallback, send, session } = harness();
     const child = fakeProcess();
     vi.mocked(spawn).mockReturnValue(child.proc);
@@ -191,7 +191,7 @@ describe('persistent process ownership and turn cleanup', () => {
     expect(cleanup).toHaveBeenCalledOnce();
     expect(child.write).not.toHaveBeenCalled();
     expect(session().persistentProcess).toBeNull();
-    expect(fallback).toHaveBeenCalledOnce();
+    expect(fallback).not.toHaveBeenCalled();
   });
 
   it('a process error after submitting is surfaced without a replay', async () => {

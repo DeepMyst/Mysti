@@ -11,6 +11,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { gatewayDeviceSigner } from '../providers/openclaw/OpenClawDeviceIdentity';
 import * as vscode from 'vscode';
 import {
   OpenClawGateway,
@@ -62,7 +63,7 @@ export class ActiveModeManager {
       'openclawGatewayUrl', 'ws://127.0.0.1:18789'
     );
     const token = readOpenClawToken();
-    this._gateway = new OpenClawGateway(gatewayUrl, token);
+    this._gateway = new OpenClawGateway(gatewayUrl, token, gatewayDeviceSigner(_context.secrets));
   }
 
   // --- Lifecycle ---
@@ -298,7 +299,7 @@ export class ActiveModeManager {
    * Runs `openclaw skills list --json` and caches the ready (eligible) skills.
    */
   private _fetchSkills(): void {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { exec } = require('child_process') as typeof import('child_process');
     const env = getEnrichedEnv();
     exec('openclaw skills list --json', { timeout: 15000, env, maxBuffer: 1024 * 512 }, (error: Error | null, stdout: string) => {

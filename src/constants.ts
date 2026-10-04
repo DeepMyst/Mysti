@@ -117,7 +117,9 @@ export const MAX_MENTIONS_PER_MESSAGE = 5;         // Maximum @-mentions per use
 /**
  * Brainstorm mode constants
  */
-export const BRAINSTORM_SILENCE_TIMEOUT_MS = 90 * 1000; // 90s silence before aborting an agent stream
+// Deliberating providers can be quiet for minutes. Match normal chat, while
+// retaining cancellation and a bounded inactivity watchdog for broken streams.
+export const BRAINSTORM_SILENCE_TIMEOUT_MS = STREAM_INACTIVITY_TIMEOUT_MS;
 
 /**
  * Compaction system constants

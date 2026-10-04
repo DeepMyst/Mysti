@@ -32,10 +32,12 @@ import type {
   SlashCommandDefinition
 } from '../../types';
 import { validateModelName, validateProfileName } from '../../utils/validation';
-import { getEnrichedEnv } from '../../utils/platform';
 import { toolKind } from '../../utils/toolNames';
 import { clampEffort } from '../../utils/effort';
 import type { EffortLevel } from '../../types';
+import { killProcessTree, isProcessLive } from '../../utils/processKill';
+import { PROCESS_KILL_GRACE_PERIOD_MS } from '../../constants';
+import { codexAppServerInput, handleCodexAppServer, isCodexAppServerBoundary, type CodexAppServerState } from './CodexAppServerProtocol';
 
 /** Codex `model_reasoning_effort` supports low→xhigh (no `max`; clamp down). */
 const CODEX_EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh'];
@@ -44,6 +46,7 @@ const CODEX_EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh'];
  * Per-panel session state for Codex, extending base with tool call tracking.
  */
 export interface CodexSessionState extends PanelSessionState {
+  appServer?: CodexAppServerState;
   activeToolCalls: Map<string, { id: string; name: string; inputJson: string; status: 'running' | 'completed' | 'failed' }>;
   completedToolCalls: Set<string>;
   lastUsageStats: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number } | null;
@@ -62,7 +65,7 @@ export function codexConfiguredContextWindow(toml: string): number | undefined {
  * OpenAI Codex CLI provider implementation
  * Requires ChatGPT Plus/Pro subscription or API key for authentication
  *
- * Uses `codex exec --json` for non-interactive streaming output
+ * Uses the Codex app-server v2 stdio protocol for streaming and native approvals
  *
  * @see https://github.com/openai/codex
  * @see https://developers.openai.com/codex/cli/
@@ -128,20 +131,23 @@ export class CodexProvider extends BaseCliProvider {
     supportsStreaming: true,
     supportsThinking: true, // Codex has 'reasoning' events
     supportsToolUse: true,
-    supportsSessions: true,  // Can resume sessions with `codex exec resume`
+    supportsNativeApproval: true,
+    supportsPersistentProcess: true,
+    supportsSessions: true,  // Native thread/resume
     // Plan 27 Phase 5: attachments are written to a temp file and referenced
     // by PATH (BaseCliProvider.prepareAttachments). This backend has file-read
     // tools, so it can open what it is given.
     supportsImages: true,
+    supportsFileAttachments: true,
     supportsAutoInstall: true,
     supportsPromptEnhancement: false,
     // Plan 02 Phase 1 capability matrix
-    thinkingStyle: 'complete-blocks',  // whole 'reasoning' blocks per event
+    thinkingStyle: 'streamed',  // app-server reasoning deltas
     thinkingLevelEffective: false,     // getThinkingTokens returns undefined
     effortLevels: CODEX_EFFORT_LEVELS, // model_reasoning_effort (low→xhigh)
     effortDefault: 'medium',
     planMode: 'detected',
-    sessionKind: 'prompt-history',     // no actual resume today (F15) — history replayed into the prompt
+    sessionKind: 'cli-resume',
     nativeInstructionFile: 'AGENTS.md',  // loaded by the CLI itself; Mysti does not resend it
     emitsToolResults: true,
     emitsUsage: true,
@@ -239,7 +245,9 @@ export class CodexProvider extends BaseCliProvider {
    * ponytail: profiles, `-c` overrides and the CLI's clamp to the model's
    * max_context_window are not modelled; add when someone relies on them.
    */
-  protected override takeReportedContextWindow(): number | undefined {
+  protected override takeReportedContextWindow(panelId?: string): number | undefined {
+    const state = (this._getSession(panelId) as CodexSessionState).appServer;
+    if (state?.contextWindow) { return state.contextWindow; }
     try {
       return codexConfiguredContextWindow(fs.readFileSync(path.join(os.homedir(), '.codex', 'config.toml'), 'utf8'));
     } catch {
@@ -249,7 +257,8 @@ export class CodexProvider extends BaseCliProvider {
 
   getStoredUsage(panelId?: string): { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number } | null {
     const session = this._getSession(panelId) as CodexSessionState;
-    const usage = session.lastUsageStats;
+    const usage = session.appServer?.usage || session.lastUsageStats;
+    if (session.appServer) { session.appServer.usage = undefined; }
     session.lastUsageStats = null;
     return usage;
   }
@@ -266,7 +275,7 @@ export class CodexProvider extends BaseCliProvider {
       }
       return {
         authenticated: false,
-        error: 'Not authenticated. Please run "codex auth login" to sign in with your ChatGPT account, or set OPENAI_API_KEY environment variable.'
+        error: 'Not authenticated. Please run "codex login" to sign in with your ChatGPT account, or set OPENAI_API_KEY environment variable.'
       };
     }
 
@@ -290,7 +299,7 @@ export class CodexProvider extends BaseCliProvider {
   }
 
   getAuthCommand(): string {
-    return 'codex auth login';
+    return 'codex login';
   }
 
   getInstallCommand(): string {
@@ -919,20 +928,18 @@ export class CodexProvider extends BaseCliProvider {
     }
     // Fall back to dropdown selection, but only if it's a Codex model — the
     // global defaultModel may belong to another provider (cross-provider guard).
-    // Genuine custom Codex models go through the `codexModel` setting above
-    // (now unblocked by the relaxed validation pattern — #39). Full pass-through
-    // of arbitrary dropdown models is deferred to pair with the per-provider
-    // model memory (Plan 02 Phase 6, #33) so a leaked cross-provider model
-    // can't reach the CLI and hard-fail.
+    // The shared catalog stores additional IDs per provider. Honor those IDs
+    // while rejecting a selection leaked from another provider.
     if (settings.model) {
       const validCodexModels = this.config.models.map(m => m.id);
-      if (validCodexModels.includes(settings.model)) {
-        // Built-in: preserve the "default model ⇒ omit --model flag" special case
-        return settings.model !== this.config.defaultModel ? settings.model : undefined;
+      const customModels = config.get<Record<string, string[]>>('customModels', {});
+      const declaredCustom = Array.isArray(customModels?.[this.id]) && customModels[this.id].includes(settings.model);
+      if (validateModelName(settings.model).valid && (validCodexModels.includes(settings.model) || declaredCustom)) {
+        return settings.model;
       }
-      console.warn(`[Mysti] Codex: Ignoring non-Codex model "${settings.model}" (use the codexModel setting for a custom Codex model); using CLI default.`);
+      console.warn(`[Mysti] Codex: Ignoring non-Codex model "${settings.model}" (use the codexModel setting for a custom Codex model); using the Mysti Codex default.`);
     }
-    return undefined;
+    return this.config.defaultModel;
   }
 
   /**
@@ -952,7 +959,8 @@ export class CodexProvider extends BaseCliProvider {
     return undefined;
   }
 
-  // These methods are required by abstract base but we override sendMessage
+  // Legacy event/argv support is retained for imported fixtures; production
+  // requests require app-server and cannot downgrade to single-shot exec.
   protected buildCliArgs(settings: Settings, _session: PanelSessionState): string[] {
     // Plan 18 (Wave 3): the base single-shot path sends the prompt via stdin;
     // `-` tells `codex exec` to read it from there (this used to live in the
@@ -961,7 +969,56 @@ export class CodexProvider extends BaseCliProvider {
   }
 
   protected parseStreamLine(line: string, session: PanelSessionState): StreamChunk | null {
+    const codex = session as CodexSessionState;
+    if (codex.appServer) {
+      try {
+        const data = JSON.parse(line);
+        const chunk = handleCodexAppServer(data, codex.appServer, session.persistentProcess, this._nativeApprovalRequests(session));
+        session.sessionId = codex.appServer.threadId;
+        if (data.error && !data.method) { this._interruptPersistentProcess(session); }
+        return chunk;
+      } catch { return null; }
+    }
     return this._parseCodexEvent(line, session as CodexSessionState);
+  }
+
+  protected requiresPersistentTransport(): boolean { return true; }
+
+  protected buildPersistentCliArgs(settings: Settings, session: PanelSessionState): string[] {
+    const profile = this._getProfile();
+    (session as CodexSessionState).appServer = {
+      profile,
+      settings: { ...settings }, cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || process.cwd(),
+      model: this._getEffectiveModel(settings), effort: clampEffort(settings.effortLevel, CODEX_EFFORT_LEVELS),
+      threadId: session.sessionId, initialized: false, nextId: 0, requests: new Map(), items: new Map(), streamed: new Set(),
+    };
+    return [...(profile ? ['--profile', profile] : []), 'app-server'];
+  }
+
+  protected _persistentSettingsMatch(session: PanelSessionState, settings: Settings): boolean {
+    const state = (session as CodexSessionState).appServer;
+    return super._persistentSettingsMatch(session, settings)
+      && state?.settings.mode === settings.mode && state?.settings.accessLevel === settings.accessLevel
+      && state?.profile === this._getProfile();
+  }
+
+  protected _formatPersistentInput(prompt: string, session: PanelSessionState): string {
+    const state = (session as CodexSessionState).appServer;
+    if (!state) { throw new Error('Codex app-server was not initialized'); }
+    return codexAppServerInput(state, prompt);
+  }
+
+  protected _isResponseBoundary(line: string, session?: PanelSessionState): boolean {
+    try { return isCodexAppServerBoundary(JSON.parse(line), (session as CodexSessionState | undefined)?.appServer); } catch { return false; }
+  }
+
+  protected _interruptPersistentProcess(session: PanelSessionState): void {
+    // Evict on Stop so a late completion cannot terminate the replacement turn.
+    // The CLI-issued thread ID is retained for native resume after respawn.
+    const proc = session.persistentProcess;
+    if (isProcessLive(proc)) { void killProcessTree(proc, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName }); }
+    session.persistentProcess = null;
+    session.persistentReady = false;
   }
 
 }

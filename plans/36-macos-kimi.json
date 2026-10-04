@@ -1,0 +1,9 @@
+{
+  "checkedAt": "2026-10-01T05:00:23.433548+00:00",
+  "platform": "darwin",
+  "arch": "arm64",
+  "scope": "Official installer with KIMI_INSTALL_DIR set to a temporary directory and KIMI_NO_MODIFY_PATH=1; version check only.",
+  "source": "https://code.kimi.com/kimi-code/install.sh",
+  "passed": true,
+  "versionOutput": "2.1.1"
+}

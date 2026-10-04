@@ -1,0 +1,170 @@
+{
+  "checkedAt": "2026-10-01T04:14:30.552Z",
+  "scope": "Read-only package metadata and HTTP HEAD requests; no installer scripts executed",
+  "packages": [
+    {
+      "package": "@anthropic-ai/claude-code",
+      "status": 200,
+      "version": "2.1.286",
+      "engines": {
+        "node": ">=22.0.0"
+      },
+      "bin": {
+        "claude": "bin/claude.exe"
+      }
+    },
+    {
+      "package": "@openai/codex",
+      "status": 200,
+      "version": "0.159.3",
+      "engines": {
+        "node": ">=16"
+      },
+      "bin": {
+        "codex": "bin/codex.js"
+      }
+    },
+    {
+      "package": "@google/gemini-cli",
+      "status": 200,
+      "version": "0.62.0",
+      "engines": {
+        "node": ">=20"
+      },
+      "bin": {
+        "gemini": "bundle/gemini.js"
+      }
+    },
+    {
+      "package": "cline",
+      "status": 200,
+      "version": "3.0.67",
+      "bin": {
+        "cline": "bin/cline"
+      }
+    },
+    {
+      "package": "@github/copilot",
+      "status": 200,
+      "version": "1.0.90",
+      "bin": {
+        "copilot": "npm-loader.js"
+      }
+    },
+    {
+      "package": "openclaw",
+      "status": 200,
+      "version": "2026.9.7",
+      "engines": {
+        "node": ">=24.16.0 <25 || >=26.1.0"
+      },
+      "bin": {
+        "openclaw": "openclaw.mjs"
+      }
+    },
+    {
+      "package": "opencode-ai",
+      "status": 200,
+      "version": "1.18.34",
+      "bin": {
+        "opencode": "bin/opencode.exe"
+      },
+      "os": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "cpu": [
+        "arm64",
+        "x64"
+      ]
+    },
+    {
+      "package": "@qwen-code/qwen-code",
+      "status": 200,
+      "version": "0.24.7",
+      "engines": {
+        "node": ">=22.0.0"
+      },
+      "bin": {
+        "qwen": "cli-entry.js"
+      }
+    },
+    {
+      "package": "@continuedev/cli",
+      "status": 200,
+      "version": "1.5.47",
+      "bin": {
+        "cn": "dist/cn.js"
+      }
+    }
+  ],
+  "routes": [
+    {
+      "url": "https://cursor.com/install",
+      "status": 200,
+      "resolved": "https://cursor.com/install",
+      "contentType": "text/plain"
+    },
+    {
+      "url": "https://cursor.com/install?win32=true",
+      "status": 200,
+      "resolved": "https://cursor.com/install",
+      "contentType": "text/plain"
+    },
+    {
+      "url": "https://hermes-agent.nousresearch.com/install.sh",
+      "status": 200,
+      "resolved": "https://hermes-agent.nousresearch.com/install.sh",
+      "contentType": "text/plain; charset=utf-8"
+    },
+    {
+      "url": "https://hermes-agent.nousresearch.com/install.ps1",
+      "status": 200,
+      "resolved": "https://hermes-agent.nousresearch.com/install.ps1",
+      "contentType": "text/plain; charset=utf-8"
+    },
+    {
+      "url": "https://code.kimi.com/kimi-code/install.sh",
+      "status": 200,
+      "resolved": "https://cdn.kimi.com/kimi-code/install.sh",
+      "contentType": "application/x-sh"
+    },
+    {
+      "url": "https://code.kimi.com/kimi-code/install.ps1",
+      "status": 200,
+      "resolved": "https://cdn.kimi.com/kimi-code/install.ps1",
+      "contentType": "application/octet-stream"
+    },
+    {
+      "url": "https://ollama.com/install.sh",
+      "status": 200,
+      "resolved": "https://release-assets.githubusercontent.com/github-production-release-asset/658928958/01a64a76-3c81-4595-bd57-3a8cd47bcbba",
+      "contentType": "application/octet-stream"
+    },
+    {
+      "url": "https://ollama.com/download/mac",
+      "status": 200,
+      "resolved": "https://ollama.com/download/mac",
+      "contentType": "text/html; charset=utf-8"
+    },
+    {
+      "url": "https://ollama.com/download/OllamaSetup.exe",
+      "status": 200,
+      "resolved": "https://release-assets.githubusercontent.com/github-production-release-asset/658928958/e8b452fe-0738-4a92-a3a5-59cf474bd14a",
+      "contentType": "application/octet-stream"
+    },
+    {
+      "url": "https://github.com/mudler/LocalAI/releases/latest",
+      "status": 200,
+      "resolved": "https://github.com/mudler/LocalAI/releases/tag/v4.10.0",
+      "contentType": "text/html; charset=utf-8"
+    },
+    {
+      "url": "https://openrouter.ai/keys",
+      "status": 200,
+      "resolved": "https://openrouter.ai/workspace-redirect/keys",
+      "contentType": "text/html; charset=utf-8"
+    }
+  ]
+}

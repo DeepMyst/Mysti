@@ -263,7 +263,7 @@ manager/service cluster and has a design doc in `plans/`:
   `mysti.tips.enabled`). `/help` renders a searchable card; `/mode` takes
   plan/ask/auto/full. The walkthrough's Connect step completes on the
   `mysti.agentReady` context key. Browser suite: `tests/webview/onboardingBrowser.test.ts`.
-- **Manage Plugins** (`plans/39`) — one editor tab (`mysti.managePlugins`,
+- **Manage Plugins** (`plans/45`) — one editor tab (`mysti.managePlugins`,
   `/plugins`, the Mysti tab's nav) for each backend's OWN plugin system.
   `PLUGIN_ADAPTERS` (`src/services/plugins/`) is a total
   `Record<ProviderType, adapter | {note} | null>`: an operation exists iff its
@@ -547,7 +547,7 @@ dropped, never repaired.
 
 ## VSCode Integration Points
 
-- View: `mysti.chatView` (webview sidebar); secondary panels: `mysti.openCanvas`, `mysti.openConnections` (DeepMyst), `mysti.managePlugins` (Plan 39), `mysti.openVisualTestDashboard`
+- View: `mysti.chatView` (webview sidebar); secondary panels: `mysti.openCanvas`, `mysti.openConnections` (DeepMyst), `mysti.managePlugins` (Plan 45), `mysti.openVisualTestDashboard`
 - Commands: `mysti.getStarted` (opens the onboarding wizard; optional step arg `connect`/`mode`/`task`), `mysti.openChat`, `mysti.newConversation`, `mysti.addToContext`, `mysti.clearContext`, `mysti.openInNewTab`, `mysti.toggleAutonomous`, `mysti.debugSetup`, `mysti.debugSetupFailure`, `mysti.createPersona`, `mysti.createSkill`, `mysti.createRole`, `mysti.importSkills`, `mysti.reloadAgents`, `mysti.updateClis`, `mysti.managePlugins`, `mysti.setCoordinatorModel`, `mysti.viewMystiMemory`, `mysti.reviewSkillProposals`, `mysti.skillReport`, `mysti.revokeCapabilities` (artifact kill switch), `mysti.deskPair`, `mysti.deskRoster`, `mysti.boostSummary`, `mysti.codeLensAction`, `mysti.canvasDiagnostics`, `mysti.canvasAddScaffold`, `mysti.deepmyst.signIn`/`signOut`
 - Keybindings: `Ctrl+Shift+M` / `Cmd+Shift+M` (open chat), `Ctrl+Shift+N` / `Cmd+Shift+N` (new tab), `Ctrl+Shift+A` / `Cmd+Shift+A` (toggle autonomous)
 - Settings namespace: `mysti.*` (100+ settings covering provider, mode, access, brainstorm, agents, permissions, autonomous, compaction (+ smart), lifecycle, active mode, checkpoints, boost, mysti coordinator, deepmyst, updates)

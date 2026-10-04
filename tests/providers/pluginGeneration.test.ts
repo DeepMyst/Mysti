@@ -10,7 +10,7 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  *
- * Plan 39: a plugin installed, toggled or removed must reach a chat whose CLI
+ * Plan 45: a plugin installed, toggled or removed must reach a chat whose CLI
  * is already running. Claude Code, Hermes and Kimi keep a persistent process
  * that loaded its plugins at spawn, so the change has to break the
  * spawn-settings match — the existing pre-turn check then respawns it (with
@@ -44,6 +44,11 @@ function settings(): Settings {
   } as Settings;
 }
 
+/** Claude also pins its control channel's mode/access (ClaudeCodeProvider override). */
+function claudeSession(provider: unknown, s: Settings, extra: Record<string, unknown> = {}) {
+  return { persistentSettings: { ...snapshot(provider, s), ...extra }, control: { settings: { mode: s.mode, accessLevel: s.accessLevel } } };
+}
+
 function snapshot(provider: unknown, s: Settings) {
   const p = provider as any;
   return {
@@ -54,18 +59,18 @@ function snapshot(provider: unknown, s: Settings) {
   };
 }
 
-describe('plugin changes respawn persistent processes (Plan 39)', () => {
+describe('plugin changes respawn persistent processes (Plan 45)', () => {
   beforeEach(() => clearMockConfig());
 
   it('a snapshot taken before any plugin change still matches', () => {
     const provider = new TestableClaudeProvider();
-    const session: any = { persistentSettings: snapshot(provider, settings()) };
+    const session: any = claudeSession(provider, settings());
     expect((provider as any)._persistentSettingsMatch(session, settings())).toBe(true);
   });
 
   it('markPluginsChanged breaks the match so the next send respawns', () => {
     const provider = new TestableClaudeProvider();
-    const session: any = { persistentSettings: snapshot(provider, settings()) };
+    const session: any = claudeSession(provider, settings());
     provider.markPluginsChanged();
     expect((provider as any)._persistentSettingsMatch(session, settings())).toBe(false);
   });
@@ -73,9 +78,7 @@ describe('plugin changes respawn persistent processes (Plan 39)', () => {
   it('a process spawned after the change matches again', () => {
     const provider = new TestableClaudeProvider();
     provider.markPluginsChanged();
-    const session: any = {
-      persistentSettings: { ...snapshot(provider, settings()), pluginGeneration: 1 },
-    };
+    const session: any = claudeSession(provider, settings(), { pluginGeneration: 1 });
     expect((provider as any)._persistentSettingsMatch(session, settings())).toBe(true);
   });
 
@@ -94,7 +97,7 @@ describe('plugin changes respawn persistent processes (Plan 39)', () => {
   });
 });
 
-describe('a respawned process records the generation it was spawned at (Plan 39 review C1)', () => {
+describe('a respawned process records the generation it was spawned at (Plan 45 review C1)', () => {
   beforeEach(() => { clearMockConfig(); spawned.length = 0; });
 
   it('after a plugin change, ONE respawn — the next turn reuses it', async () => {

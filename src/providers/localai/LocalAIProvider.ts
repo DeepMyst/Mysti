@@ -292,18 +292,18 @@ export class LocalAIProvider extends BaseCliProvider {
         platform: 'all',
         priority: 1,
       },
-      // macOS / Linux — prebuilt binary one-liner
+      // Release filenames include a version and architecture; let users select the matching asset.
       {
         id: 'binary-darwin',
         label: 'Prebuilt binary (macOS)',
-        command: 'curl -Lo local-ai "https://github.com/mudler/LocalAI/releases/latest/download/local-ai-$(uname -s)-$(uname -m)" && chmod +x local-ai && ./local-ai',
+        command: 'https://github.com/mudler/LocalAI/releases/latest',
         platform: 'darwin',
         priority: 2,
       },
       {
         id: 'binary-linux',
         label: 'Prebuilt binary (Linux)',
-        command: 'curl -Lo local-ai "https://github.com/mudler/LocalAI/releases/latest/download/local-ai-$(uname -s)-$(uname -m)" && chmod +x local-ai && ./local-ai',
+        command: 'https://github.com/mudler/LocalAI/releases/latest',
         platform: 'linux',
         priority: 2,
       },

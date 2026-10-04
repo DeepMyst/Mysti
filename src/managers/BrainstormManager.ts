@@ -49,6 +49,7 @@ const AGENT_BRAINSTORM_ICONS: Record<AgentType, string> = {
   'qwen-code': '🟪',
   'hermes': '🟤',
   'continue': '⏩',
+  'minimax': '🟠',
   'openrouter': '🔀',
   'kimi-code': '🌙'
 };
@@ -127,6 +128,7 @@ export class BrainstormManager {
       'qwen-code': 'qwenCode',
       'hermes': 'hermes',
       'continue': 'continue',
+      'minimax': 'minimax',
       'openrouter': 'openrouter',
       'kimi-code': 'kimiCode'
     };
@@ -145,25 +147,42 @@ export class BrainstormManager {
    * Validate that selected providers are available
    */
   private async _validateProviderAvailability(
-    selectedProviders: AgentType[]
+    selectedProviders: AgentType[], signal?: AbortSignal
   ): Promise<{ available: AgentType[]; unavailable: AgentType[]; unavailableReasons: Map<AgentType, string> }> {
     const available: AgentType[] = [];
     const unavailable: AgentType[] = [];
     const unavailableReasons = new Map<AgentType, string>();
 
-    for (const providerId of selectedProviders) {
-      const status = await this._providerManager.getProviderStatus(providerId);
-      if (!status || !status.found) {
+    const statuses = await Promise.all(selectedProviders.map(async providerId => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let onAbort: (() => void) | undefined;
+      try {
+        const status = await Promise.race([
+          this._providerManager.getProviderStatus(providerId),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error('Provider readiness check timed out after 30 seconds.')), 30_000);
+            onAbort = () => reject(signal?.reason ?? new Error('Cancelled'));
+            signal?.addEventListener('abort', onAbort, { once: true });
+            if (signal?.aborted) { onAbort(); }
+          }),
+        ]);
+        return { providerId, status, error: '' };
+      } catch (error) {
+        return { providerId, status: undefined, error: error instanceof Error ? error.message : String(error) };
+      } finally {
+        clearTimeout(timer);
+        if (onAbort) { signal?.removeEventListener('abort', onAbort); }
+      }
+    }));
+    for (const { providerId, status, error } of statuses) {
+      if (error || !status?.found) {
         unavailable.push(providerId);
         const hint = status?.installCommand ? ` Install with: ${status.installCommand}` : '';
-        unavailableReasons.set(providerId, `${providerId} CLI is not installed.${hint}`);
+        unavailableReasons.set(providerId, error ? `${providerId}: ${error}` : `${providerId} CLI is not installed.${hint}`);
       } else if (!status.authenticated) {
-        // B2: Check authentication — installed but not authenticated
         unavailable.push(providerId);
-        unavailableReasons.set(providerId, `${providerId} is installed but not authenticated. Please run the CLI manually to complete authentication.`);
-      } else {
-        available.push(providerId);
-      }
+        unavailableReasons.set(providerId, `${providerId} is installed but not authenticated. Complete authentication in provider setup.`);
+      } else { available.push(providerId); }
     }
 
     return { available, unavailable, unavailableReasons };
@@ -272,7 +291,7 @@ export class BrainstormManager {
     }
 
     // Validate provider availability and authentication
-    const { available, unavailable, unavailableReasons } = await this._validateProviderAvailability(brainstormConfig.agents);
+    const { available, unavailable, unavailableReasons } = await this._validateProviderAvailability(brainstormConfig.agents, signal);
     signal.throwIfAborted();
 
     if (unavailable.length > 0) {
@@ -296,7 +315,7 @@ export class BrainstormManager {
     };
 
     // Validate synthesis agent
-    const synthesisAvailable = await this._validateProviderAvailability([brainstormConfig.synthesisAgent]);
+    const synthesisAvailable = await this._validateProviderAvailability([brainstormConfig.synthesisAgent], signal);
     signal.throwIfAborted();
     if (synthesisAvailable.unavailable.length > 0) {
       console.warn(`[Mysti] Brainstorm: Synthesis agent ${brainstormConfig.synthesisAgent} unavailable, using ${available[0]}`);
@@ -1205,11 +1224,11 @@ export class BrainstormManager {
               synthesis += chunk.content;
               yield { type: 'synthesis_text', content: chunk.content };
             } else if (chunk.type === 'error') {
-              throw new Error(chunk.content || `Fallback synthesis agent ${fallbackAgent.id} reported an error`);
+              throw new Error(chunk.content || `Fallback synthesis agent ${fallbackAgent.id} reported an error`, { cause: error });
             }
           }
           if (!synthesis.trim()) {
-            throw new Error(`Fallback synthesis agent ${fallbackAgent.id} returned an empty synthesis`);
+            throw new Error(`Fallback synthesis agent ${fallbackAgent.id} returned an empty synthesis`, { cause: error });
           }
           session.unifiedSolution = synthesis;
           return;

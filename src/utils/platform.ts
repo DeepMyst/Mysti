@@ -11,6 +11,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { parse as parseJson5 } from 'json5';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -209,7 +210,7 @@ export function getCommonSearchPaths(config: CliSearchConfig): string[] {
     const appData = process.env.APPDATA || path.join(homeDir, 'AppData', 'Roaming');
     const winCmd = windowsCmd || `${commandName}.cmd`;
     // Mysti local-prefix fallback (permission-denied global install): on Windows,
-    // `npm install --prefix X` drops the shim directly in the prefix root
+    // `npm install -g --prefix X` drops the shim directly in the prefix root
     // (X\<cmd>.cmd), NOT in a bin/ subdir as on Unix — so the Unix-shaped localBin
     // added above never matches. Add the Windows-shaped variants here.
     const localPrefix = path.join(homeDir, LOCAL_CLI_PREFIX);
@@ -684,9 +685,7 @@ export function readOpenClawToken(): string | undefined {
     const configPath = path.join(os.homedir(), '.openclaw', 'openclaw.json');
     if (fs.existsSync(configPath)) {
       const raw = fs.readFileSync(configPath, 'utf-8');
-      // Strip single-line comments and trailing commas for JSON5 compat
-      const cleaned = raw.replace(/\/\/.*$/gm, '').replace(/,(\s*[}\]])/g, '$1');
-      const config = JSON.parse(cleaned);
+      const config = parseJson5(raw);
       const token = config?.gateway?.auth?.token;
       if (typeof token === 'string' && token.length > 0) {
         return token;

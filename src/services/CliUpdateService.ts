@@ -268,7 +268,7 @@ export class CliUpdateService implements vscode.Disposable {
    * Fire-and-forget friendly: never throws, and callers do not await it.
    */
   public async checkAll(opts?: { force?: boolean }): Promise<CliUpdateInfo[]> {
-    let statuses: Array<{ providerId: string; found: boolean; version?: string }> = [];
+    let statuses: Array<{ providerId: string; found: boolean; version?: string }>;
     try {
       statuses = await this._versions.getAllStatuses();
     } catch (err) {
@@ -372,6 +372,28 @@ export class CliUpdateService implements vscode.Disposable {
       return `npm install -g ${packageName}@${pin}`;
     }
     return `npm install -g ${packageName}@latest`;
+  }
+
+  /** Install at least the error's required version, never an older cached pin. */
+  public getModelUpgradePlan(providerId: string, minimum: string, cliPath?: string): { executable: string; args: string[] } {
+    const required = parseVersion(minimum, true);
+    if (!required) { throw new Error('Invalid required CLI version.'); }
+    const selfUpdate = getProviderSelfUpdateCommand(providerId);
+    if (typeof selfUpdate === 'string') {
+      const [executable, ...args] = selfUpdate.split(' ');
+      // Update the detected native installation, including an explicit CLI path.
+      return { executable: cliPath || executable, args };
+    }
+    const packageName = getProviderNpmPackage(providerId);
+    if (typeof packageName !== 'string') { throw new Error('This provider has no supported CLI updater.'); }
+    const cached = this._cache.get(providerId);
+    const candidate = cached?.installable ?? cached?.latest;
+    const parsed = parseVersion(candidate, true);
+    if (cached?.requiredNode && parsed && compareVersions(parsed, required) < 0) {
+      throw new Error(`This model needs CLI ${minimum} or newer, but this Node.js version can only install ${candidate}. Upgrade Node.js (${cached.requiredNode}) first.`);
+    }
+    const target = parsed && compareVersions(parsed, required) >= 0 ? candidate! : minimum;
+    return { executable: this._npm.getNpmPath() || 'npm', args: ['install', '-g', `${packageName}@${target}`] };
   }
 
   // ---------------------------------------------------------------------------

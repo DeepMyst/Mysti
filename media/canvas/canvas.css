@@ -951,6 +951,9 @@ body.vscode-high-contrast-light .pane-scrim {
   pointer-events: none; font-variant-numeric: tabular-nums;
 }
 .artboard-surface {
+  /* Each surface has explicit dimensions. Bound descendant layout and paint to
+   * that surface so a pan across many small previews cannot invalidate siblings. */
+  contain: layout paint;
   position: relative; overflow: hidden;
   background: var(--canvas-paper); border-radius: var(--r-3); box-shadow: var(--shadow-art);
   /* The edge cannot be the shadow alone. Both high-contrast themes force
@@ -964,6 +967,10 @@ body.vscode-high-contrast-light .pane-scrim {
   outline: 1px solid var(--line); outline-offset: 0;
 }
 .artboard-preview { position: absolute; inset: 0; overflow: hidden; }
+/* At overview scale many previews enter the viewport together. Give these
+ * static previews reusable compositor layers instead of repainting their full
+ * descendant trees as the world pans. Release the hint at readable zoom. */
+.page-stage[data-overview="true"] .artboard-preview { will-change: transform; }
 .artboard-frame { display: block; border: 0; position: absolute; inset: 0; background: var(--canvas-paper); }
 
 /* Selection chrome is drawn by the PARENT in screen space, outside the

@@ -113,6 +113,44 @@ describe('CliUpdateService', () => {
     execFileMock.mockReset();
   });
 
+  it('upgrades the detected Claude installation with its native updater', () => {
+    const svc = new CliUpdateService(ctx.context, makeVersions([]), npm);
+    expect(svc.getModelUpgradePlan('claude-code', '2.1.280', '/Applications/Custom CLI/claude')).toEqual({
+      executable: '/Applications/Custom CLI/claude', args: ['install', 'latest'],
+    });
+  });
+
+  it('pins an uncached npm upgrade to the minimum required version', () => {
+    const svc = new CliUpdateService(ctx.context, makeVersions([]), npm);
+    expect(svc.getModelUpgradePlan('openai-codex', '0.153.1')).toEqual({
+      executable: '/usr/bin/npm', args: ['install', '-g', '@openai/codex@0.153.1'],
+    });
+    expect(() => svc.getModelUpgradePlan('openai-codex', '0.153.1; touch pwn')).toThrow('Invalid');
+    expect(() => svc.getModelUpgradePlan('__proto__', '1.2.3')).toThrow('no supported');
+  });
+
+  it('does not use a stale pin below the model requirement', async () => {
+    stubNpm({ '@openai/codex': '0.140.0' });
+    const svc = new CliUpdateService(ctx.context, makeVersions([{ providerId: 'openai-codex', found: true, version: '0.130.0' }]), npm);
+    await svc.checkAll();
+    expect(svc.getModelUpgradePlan('openai-codex', '0.153.1').args.at(-1)).toBe('@openai/codex@0.153.1');
+  });
+
+  it('uses a newer cached release when it satisfies the model requirement', async () => {
+    stubNpm({ '@openai/codex': '0.160.0' });
+    const svc = new CliUpdateService(ctx.context, makeVersions([{ providerId: 'openai-codex', found: true, version: '0.130.0' }]), npm);
+    await svc.checkAll();
+    expect(svc.getModelUpgradePlan('openai-codex', '0.153.1').args.at(-1)).toBe('@openai/codex@0.160.0');
+  });
+
+  it('explains when the Node-compatible release is below the model requirement', async () => {
+    await ctx.globalState.update('mysti.cliUpdates.v1', {
+      'openai-codex': { latest: '0.160.0', installable: '0.140.0', requiredNode: '>=99', checkedAt: Date.now() },
+    });
+    const svc = new CliUpdateService(ctx.context, makeVersions([]), npm);
+    expect(() => svc.getModelUpgradePlan('openai-codex', '0.153.1')).toThrow('Upgrade Node.js');
+  });
+
   it('reports a backend whose installed CLI is behind npm', async () => {
     stubNpm({ '@openai/codex': '0.153.1' });
     const svc = new CliUpdateService(

@@ -355,6 +355,7 @@ export const CLAMPED_SETTINGS: readonly string[] = [
  * fails the test rather than shipping silently workspace-writable.
  */
 export const AUTHORITY_BEARING_SETTINGS: readonly string[] = [
+  'mysti.opencodeEndpoint', 'mysti.opencodeRemoteDirectory', 'mysti.opencodeRemoteUsername',
   // Authority level itself — clamped, not machine-scoped (see above).
   'mysti.accessLevel',
   'mysti.defaultMode',
@@ -434,6 +435,7 @@ export const AUTHORITY_BEARING_SETTINGS: readonly string[] = [
   'mysti.agents.qwenCodePersona', 'mysti.agents.qwenCodeCustomPrompt',
   'mysti.agents.hermesPersona', 'mysti.agents.hermesCustomPrompt',
   'mysti.agents.continuePersona', 'mysti.agents.continueCustomPrompt',
+  'mysti.agents.minimaxPersona', 'mysti.agents.minimaxCustomPrompt',
   'mysti.agents.openrouterPersona', 'mysti.agents.openrouterCustomPrompt',
   'mysti.agents.kimiCodePersona', 'mysti.agents.kimiCodeCustomPrompt',
   'mysti.agents.skillSources',

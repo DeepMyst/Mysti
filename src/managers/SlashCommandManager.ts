@@ -581,7 +581,7 @@ export class SlashCommandManager {
       case 'context:attach': {
         const uris = await vscode.window.showOpenDialog({
           canSelectMany: true,
-          openLabel: 'Add to Context',
+          openLabel: vscode.l10n.t('Add to Context'),
         });
         if (uris && uris.length > 0) {
           for (const uri of uris) {
@@ -591,7 +591,7 @@ export class SlashCommandManager {
             type: 'contextUpdated',
             payload: this._contextManager.getContext(panelId)
           });
-          return `Added ${uris.length} file(s) to context`;
+          return vscode.l10n.t('Added {0} file(s) to context', uris.length);
         }
         return;
       }
@@ -604,20 +604,20 @@ export class SlashCommandManager {
       case 'context:show': {
         const context = this._contextManager.getContext(panelId);
         return context.length > 0
-          ? `Current context:\n${context.map(c => `- ${c.path}`).join('\n')}`
-          : 'No context items added';
+          ? vscode.l10n.t('Current context:\n{0}', context.map(c => `- ${c.path}`).join('\n'))
+          : vscode.l10n.t('No context items added');
       }
 
       case 'context:clear':
         this._contextManager.clearContext(panelId);
         callbacks.postToPanel(panelId, { type: 'contextUpdated', payload: [] });
-        return 'Context cleared';
+        return vscode.l10n.t('Context cleared');
 
       // ---- Model ----
       case 'model:switch': {
         if (trimmedArgs) {
           await callbacks.updateSettings({ model: trimmedArgs }, panelId);
-          return `Model changed to: ${trimmedArgs}`;
+          return vscode.l10n.t('Model changed to: {0}', trimmedArgs);
         }
         const selectedModel = await this._selectModel(panelId, callbacks);
         if (selectedModel) {
@@ -635,7 +635,7 @@ export class SlashCommandManager {
           if (agents.includes(trimmedArgs)) {
             return this._applyProviderSwitch(trimmedArgs, panelId, callbacks);
           }
-          return `Invalid provider. Available: ${agents.join(', ')}`;
+          return vscode.l10n.t('Invalid provider. Available: {0}', agents.join(', '));
         }
         const selectedProvider = await this._selectProvider(panelId, callbacks);
         if (selectedProvider) {
@@ -650,9 +650,9 @@ export class SlashCommandManager {
         this._conversationManager.createNewConversation();
         callbacks.postToPanel(panelId, {
           type: 'sessionCleared',
-          payload: { message: 'Session cleared' }
+          payload: { message: vscode.l10n.t('Session cleared') }
         });
-        return 'Conversation and session cleared';
+        return vscode.l10n.t('Conversation and session cleared');
 
       case 'cmd:help':
         // Plan 33: the webview renders a searchable help card.
@@ -672,15 +672,15 @@ export class SlashCommandManager {
         if (trimmedArgs === 'on' || trimmedArgs === 'enable') {
           await callbacks.updateSettings({ provider: 'brainstorm' }, panelId);
           callbacks.postToPanel(panelId, { type: 'agentChanged', payload: { agent: 'brainstorm' } });
-          return 'Brainstorm mode enabled. Multiple agents will collaborate on your queries.';
+          return vscode.l10n.t('Brainstorm mode enabled. Multiple agents will collaborate on your queries.');
         } else if (trimmedArgs === 'off' || trimmedArgs === 'disable') {
           await callbacks.updateSettings({ provider: DEFAULT_PROVIDER }, panelId);
           callbacks.postToPanel(panelId, { type: 'agentChanged', payload: { agent: DEFAULT_PROVIDER } });
           return `Brainstorm mode disabled. Using ${this._getProviderDisplayName(DEFAULT_PROVIDER)}.`;
         } else if (trimmedArgs === 'status') {
           return isBrainstormActive
-            ? 'Brainstorm mode is ON. Multiple agents will collaborate.'
-            : 'Brainstorm mode is OFF. Using single agent.';
+            ? vscode.l10n.t('Brainstorm mode is ON. Multiple agents will collaborate.')
+            : vscode.l10n.t('Brainstorm mode is OFF. Using single agent.');
         }
 
         // Toggle if no args
@@ -704,9 +704,9 @@ export class SlashCommandManager {
           callbacks.postToPanel(panelId, { type: 'clearSuggestions' });
           await callbacks.updateSettings({ mode: 'ask-before-edit' });
 
-          return `Exited ${currentMode}. Switched to: ask-before-edit\n(Ready for implementation with ${currentProv})`;
+          return vscode.l10n.t('Exited {0}. Switched to: ask-before-edit\n(Ready for implementation with {1})', currentMode, currentProv);
         }
-        return 'Not currently in plan mode.';
+        return vscode.l10n.t('Not currently in plan mode.');
       }
 
       case 'cmd:visual-test': {
@@ -764,7 +764,7 @@ export class SlashCommandManager {
       }
 
       case 'cmd:plugins': {
-        // Plan 39: opens the Manage Plugins tab on this chat's backend. Only
+        // Plan 45: opens the Manage Plugins tab on this chat's backend. Only
         // opens it; nothing typed in a chat installs anything.
         await vscode.commands.executeCommand('mysti.managePlugins', callbacks.getPanelProvider(panelId));
         return;
@@ -844,14 +844,14 @@ export class SlashCommandManager {
           const levels = ['none', 'low', 'medium', 'high'];
           if (levels.includes(trimmedArgs)) {
             await callbacks.updateSettings({ thinkingLevel: trimmedArgs });
-            return `Thinking level changed to: ${trimmedArgs}`;
+            return vscode.l10n.t('Thinking level changed to: {0}', trimmedArgs);
           }
-          return `Invalid level. Available: ${levels.join(', ')}`;
+          return vscode.l10n.t('Invalid level. Available: {0}', levels.join(', '));
         }
         const selectedThinking = await this._selectThinkingLevel();
         if (selectedThinking) {
           await callbacks.updateSettings({ thinkingLevel: selectedThinking });
-          return `Thinking level changed to: ${selectedThinking}`;
+          return vscode.l10n.t('Thinking level changed to: {0}', selectedThinking);
         }
         return;
       }
@@ -864,7 +864,7 @@ export class SlashCommandManager {
             callbacks.postToPanel(panelId, { type: 'modeChanged', payload: { accessLevel: trimmedArgs } });
             return `Access level changed to: ${trimmedArgs}`;
           }
-          return `Invalid level. Available: ${levels.join(', ')}`;
+          return vscode.l10n.t('Invalid level. Available: {0}', levels.join(', '));
         }
         const selectedAccess = await this._selectAccessLevel();
         if (selectedAccess) {
@@ -891,7 +891,7 @@ export class SlashCommandManager {
       case 'support:version': {
         const ext = vscode.extensions.getExtension('deepmyst.mysti');
         const version = ext?.packageJSON?.version || 'unknown';
-        return `Mysti v${version}`;
+        return vscode.l10n.t('Mysti v{0}', version);
       }
 
       // ---- Provider-specific: Claude ----
@@ -907,9 +907,9 @@ export class SlashCommandManager {
           const levels = ['none', 'low', 'medium', 'high'];
           if (levels.includes(trimmedArgs)) {
             await callbacks.updateSettings({ thinkingLevel: trimmedArgs });
-            return `Thinking level changed to: ${trimmedArgs}`;
+            return vscode.l10n.t('Thinking level changed to: {0}', trimmedArgs);
           }
-          return `Invalid level. Available: ${levels.join(', ')}`;
+          return vscode.l10n.t('Invalid level. Available: {0}', levels.join(', '));
         }
         // Cycle through levels
         const config = vscode.workspace.getConfiguration('mysti');
@@ -917,7 +917,7 @@ export class SlashCommandManager {
         const cycle = ['none', 'low', 'medium', 'high'];
         const nextIdx = (cycle.indexOf(current) + 1) % cycle.length;
         await callbacks.updateSettings({ thinkingLevel: cycle[nextIdx] });
-        return `Thinking level: ${cycle[nextIdx]}`;
+        return vscode.l10n.t('Thinking level: {0}', cycle[nextIdx]);
       }
 
       // ---- Provider-specific: Codex ----
@@ -925,11 +925,11 @@ export class SlashCommandManager {
         if (trimmedArgs) {
           const config = vscode.workspace.getConfiguration('mysti');
           await config.update('codexProfile', trimmedArgs, vscode.ConfigurationTarget.Global);
-          return `Codex profile changed to: ${trimmedArgs}`;
+          return vscode.l10n.t('Codex profile changed to: {0}', trimmedArgs);
         }
         const config = vscode.workspace.getConfiguration('mysti');
         const profile = config.get<string>('codexProfile', '');
-        return profile ? `Current Codex profile: ${profile}` : 'No Codex profile set';
+        return profile ? vscode.l10n.t('Current Codex profile: {0}', profile) : vscode.l10n.t('No Codex profile set');
       }
 
       // ---- Provider-specific: Cline ----
@@ -939,7 +939,7 @@ export class SlashCommandManager {
         const isPlanMode = currentMode === 'quick-plan' || currentMode === 'detailed-plan';
         const newMode = isPlanMode ? 'ask-before-edit' : 'quick-plan';
         await callbacks.updateSettings({ mode: newMode });
-        return `Cline mode: ${isPlanMode ? 'act' : 'plan'}`;
+        return vscode.l10n.t('Cline mode: {0}', isPlanMode ? 'act' : 'plan');
       }
 
       // ---- Terminal launch (any provider) ----
@@ -954,9 +954,9 @@ export class SlashCommandManager {
             terminal.sendText(cliPath);
             return;
           }
-          return `Provider not found: ${providerId}`;
+          return vscode.l10n.t('Provider not found: {0}', providerId);
         }
-        return `Unknown command: ${commandId}`;
+        return vscode.l10n.t('Unknown command: {0}', commandId);
       }
     }
   }
@@ -974,8 +974,8 @@ export class SlashCommandManager {
       // -- Context --
       {
         id: 'context:attach',
-        label: 'Attach file...',
-        description: 'Add a file to context',
+        label: vscode.l10n.t('Attach file...'),
+        description: vscode.l10n.t('Add a file to context'),
         section: 'context',
         icon: 'new-file',
         provider: 'all',
@@ -984,8 +984,8 @@ export class SlashCommandManager {
       },
       {
         id: 'context:mention',
-        label: 'Mention file from project...',
-        description: 'Reference a workspace file',
+        label: vscode.l10n.t('Mention file from project...'),
+        description: vscode.l10n.t('Reference a workspace file'),
         section: 'context',
         icon: 'mention',
         provider: 'all',
@@ -994,8 +994,8 @@ export class SlashCommandManager {
       },
       {
         id: 'context:show',
-        label: 'Show context',
-        description: 'Display current context items',
+        label: vscode.l10n.t('Show context'),
+        description: vscode.l10n.t('Display current context items'),
         section: 'context',
         icon: 'list-flat',
         provider: 'all',
@@ -1004,8 +1004,8 @@ export class SlashCommandManager {
       },
       {
         id: 'context:clear',
-        label: 'Clear context',
-        description: 'Remove all context items',
+        label: vscode.l10n.t('Clear context'),
+        description: vscode.l10n.t('Remove all context items'),
         section: 'context',
         icon: 'clear-all',
         provider: 'all',
@@ -1016,8 +1016,8 @@ export class SlashCommandManager {
       // -- Model --
       {
         id: 'model:switch',
-        label: 'Switch model...',
-        description: 'Change the AI model',
+        label: vscode.l10n.t('Switch model...'),
+        description: vscode.l10n.t('Change the AI model'),
         section: 'model',
         icon: 'hubot',
         provider: 'all',
@@ -1026,8 +1026,8 @@ export class SlashCommandManager {
       },
       {
         id: 'provider:switch',
-        label: 'Switch provider...',
-        description: 'Change the AI provider',
+        label: vscode.l10n.t('Switch provider...'),
+        description: vscode.l10n.t('Change the AI provider'),
         section: 'model',
         icon: 'server',
         provider: 'all',
@@ -1056,7 +1056,7 @@ export class SlashCommandManager {
       {
         id: 'cmd:clear',
         label: '/clear',
-        description: 'Clear conversation and session',
+        description: vscode.l10n.t('Clear conversation and session'),
         section: 'commands',
         icon: 'trash',
         provider: 'all',
@@ -1076,7 +1076,7 @@ export class SlashCommandManager {
       {
         id: 'cmd:exit-plan',
         label: '/exit-plan-mode',
-        description: 'Exit plan mode',
+        description: vscode.l10n.t('Exit plan mode'),
         section: 'commands',
         icon: 'sign-out',
         provider: 'all',
@@ -1105,8 +1105,8 @@ export class SlashCommandManager {
       },
       {
         id: 'cmd:export',
-        label: 'Export Conversation',
-        description: 'Copy conversation as Markdown',
+        label: vscode.l10n.t('Export Conversation'),
+        description: vscode.l10n.t('Copy conversation as Markdown'),
         section: 'commands' as SlashCommandSection,
         icon: 'export',
         provider: 'all',
@@ -1115,8 +1115,8 @@ export class SlashCommandManager {
       },
       {
         id: 'cmd:import',
-        label: 'Import Conversation',
-        description: 'Import from .mysti.json, .json, or .jsonl file',
+        label: vscode.l10n.t('Import Conversation'),
+        description: vscode.l10n.t('Import from .mysti.json, .json, or .jsonl file'),
         section: 'commands' as SlashCommandSection,
         icon: 'cloud-download',
         provider: 'all',
@@ -1125,8 +1125,8 @@ export class SlashCommandManager {
       },
       {
         id: 'cmd:share',
-        label: 'Share Conversation',
-        description: 'Copy a shareable deep link to clipboard',
+        label: vscode.l10n.t('Share Conversation'),
+        description: vscode.l10n.t('Copy a shareable deep link to clipboard'),
         section: 'commands' as SlashCommandSection,
         icon: 'link',
         provider: 'all',
@@ -1135,8 +1135,8 @@ export class SlashCommandManager {
       },
       {
         id: 'cmd:init-team',
-        label: 'Init Team Workspace',
-        description: 'Set up .mysti/ config for your team',
+        label: vscode.l10n.t('Init Team Workspace'),
+        description: vscode.l10n.t('Set up .mysti/ config for your team'),
         section: 'commands' as SlashCommandSection,
         icon: 'organization',
         provider: 'all',
@@ -1145,8 +1145,8 @@ export class SlashCommandManager {
       },
       {
         id: 'cmd:memory',
-        label: 'Memory',
-        description: 'View and edit project memory (MEMORY.md)',
+        label: vscode.l10n.t('Memory'),
+        description: vscode.l10n.t('View and edit project memory (MEMORY.md)'),
         section: 'commands' as SlashCommandSection,
         icon: 'book',
         provider: 'all',
@@ -1155,8 +1155,8 @@ export class SlashCommandManager {
       },
       {
         id: 'cmd:rules',
-        label: 'Rules',
-        description: 'View and edit project rules (.mysti/rules/)',
+        label: vscode.l10n.t('Rules'),
+        description: vscode.l10n.t('View and edit project rules (.mysti/rules/)'),
         section: 'commands' as SlashCommandSection,
         icon: 'law',
         provider: 'all',
@@ -1190,8 +1190,8 @@ export class SlashCommandManager {
       // -- Settings --
       {
         id: 'settings:mode',
-        label: 'Operation mode',
-        description: 'Change operation mode',
+        label: vscode.l10n.t('Operation mode'),
+        description: vscode.l10n.t('Change operation mode'),
         section: 'settings',
         icon: 'settings-gear',
         provider: 'all',
@@ -1200,8 +1200,8 @@ export class SlashCommandManager {
       },
       {
         id: 'settings:thinking',
-        label: 'Thinking level',
-        description: 'Adjust thinking depth',
+        label: vscode.l10n.t('Thinking level'),
+        description: vscode.l10n.t('Adjust thinking depth'),
         section: 'settings',
         icon: 'lightbulb',
         provider: 'all',
@@ -1210,8 +1210,8 @@ export class SlashCommandManager {
       },
       {
         id: 'settings:access',
-        label: 'Access level',
-        description: 'Change permission level',
+        label: vscode.l10n.t('Access level'),
+        description: vscode.l10n.t('Change permission level'),
         section: 'settings',
         icon: 'shield',
         provider: 'all',
@@ -1240,8 +1240,8 @@ export class SlashCommandManager {
       },
       {
         id: 'settings:open',
-        label: 'Mysti settings...',
-        description: 'Open Mysti extension settings',
+        label: vscode.l10n.t('Mysti settings...'),
+        description: vscode.l10n.t('Open Mysti extension settings'),
         section: 'settings',
         icon: 'gear',
         provider: 'all',
@@ -1252,8 +1252,8 @@ export class SlashCommandManager {
       // -- Support --
       {
         id: 'support:help',
-        label: 'View help docs',
-        description: 'Open documentation',
+        label: vscode.l10n.t('View help docs'),
+        description: vscode.l10n.t('Open documentation'),
         section: 'support',
         icon: 'book',
         provider: 'all',
@@ -1263,8 +1263,8 @@ export class SlashCommandManager {
       },
       {
         id: 'support:report',
-        label: 'Report a problem',
-        description: 'Report a bug on GitHub',
+        label: vscode.l10n.t('Report a problem'),
+        description: vscode.l10n.t('Report a bug on GitHub'),
         section: 'support',
         icon: 'bug',
         provider: 'all',
@@ -1274,8 +1274,8 @@ export class SlashCommandManager {
       },
       {
         id: 'support:version',
-        label: 'Version',
-        description: 'Show extension version',
+        label: vscode.l10n.t('Version'),
+        description: vscode.l10n.t('Show extension version'),
         section: 'support',
         icon: 'info',
         provider: 'all',
@@ -1391,12 +1391,12 @@ export class SlashCommandManager {
     const items = models.map(model => ({
       label: model.id === currentModel ? `$(check) ${model.name}` : model.name,
       description: model.id,
-      detail: model.description,
+      detail: model.description ? vscode.l10n.t(model.description) : undefined,
       modelId: model.id,
     }));
 
     const selected = await vscode.window.showQuickPick(items, {
-      placeHolder: 'Select a model',
+      placeHolder: vscode.l10n.t('Select a model'),
       matchOnDescription: true,
       matchOnDetail: true,
     });
@@ -1414,12 +1414,12 @@ export class SlashCommandManager {
     const items = allProviders.map(p => ({
       label: p.name === currentProvider ? `$(check) ${p.displayName}` : p.displayName,
       description: p.name,
-      detail: `Models: ${p.models.map(m => m.name).join(', ')}`,
+      detail: vscode.l10n.t('Models: {0}', p.models.map(m => m.name).join(', ')),
       providerId: p.name,
     }));
 
     const selected = await vscode.window.showQuickPick(items, {
-      placeHolder: 'Select a provider',
+      placeHolder: vscode.l10n.t('Select a provider'),
       matchOnDescription: true,
       matchOnDetail: true,
     });
@@ -1432,10 +1432,10 @@ export class SlashCommandManager {
     const current = config.get<string>('defaultMode', 'ask-before-edit');
 
     const items: { label: string; description: string; detail: string; modeId: string }[] = [
-      { label: 'Ask Before Edit', description: 'ask-before-edit', detail: 'AI will ask permission before making changes', modeId: 'ask-before-edit' },
-      { label: 'Edit Automatically', description: 'edit-automatically', detail: 'AI will make changes without asking', modeId: 'edit-automatically' },
-      { label: 'Quick Plan', description: 'quick-plan', detail: 'AI will generate a quick implementation plan', modeId: 'quick-plan' },
-      { label: 'Detailed Plan', description: 'detailed-plan', detail: 'AI will generate a detailed implementation plan', modeId: 'detailed-plan' },
+      { label: vscode.l10n.t('Ask Before Edit'), description: 'ask-before-edit', detail: vscode.l10n.t('AI will ask permission before making changes'), modeId: 'ask-before-edit' },
+      { label: vscode.l10n.t('Edit Automatically'), description: 'edit-automatically', detail: vscode.l10n.t('AI will make changes without asking'), modeId: 'edit-automatically' },
+      { label: vscode.l10n.t('Quick Plan'), description: 'quick-plan', detail: vscode.l10n.t('AI will generate a quick implementation plan'), modeId: 'quick-plan' },
+      { label: vscode.l10n.t('Detailed Plan'), description: 'detailed-plan', detail: vscode.l10n.t('AI will generate a detailed implementation plan'), modeId: 'detailed-plan' },
     ];
 
     for (const item of items) {
@@ -1445,7 +1445,7 @@ export class SlashCommandManager {
     }
 
     const selected = await vscode.window.showQuickPick(items, {
-      placeHolder: 'Select operation mode',
+      placeHolder: vscode.l10n.t('Select operation mode'),
     });
 
     return selected?.modeId;
@@ -1456,10 +1456,10 @@ export class SlashCommandManager {
     const current = config.get<string>('defaultThinkingLevel', 'medium');
 
     const items: { label: string; description: string; detail: string; levelId: string }[] = [
-      { label: 'None', description: 'none', detail: 'No extended thinking', levelId: 'none' },
-      { label: 'Low', description: 'low', detail: 'Minimal extended thinking', levelId: 'low' },
-      { label: 'Medium', description: 'medium', detail: 'Balanced thinking depth', levelId: 'medium' },
-      { label: 'High', description: 'high', detail: 'Deep reasoning and analysis', levelId: 'high' },
+      { label: vscode.l10n.t('None'), description: 'none', detail: vscode.l10n.t('No extended thinking'), levelId: 'none' },
+      { label: vscode.l10n.t('Low'), description: 'low', detail: vscode.l10n.t('Minimal extended thinking'), levelId: 'low' },
+      { label: vscode.l10n.t('Medium'), description: 'medium', detail: vscode.l10n.t('Balanced thinking depth'), levelId: 'medium' },
+      { label: vscode.l10n.t('High'), description: 'high', detail: vscode.l10n.t('Deep reasoning and analysis'), levelId: 'high' },
     ];
 
     for (const item of items) {
@@ -1469,7 +1469,7 @@ export class SlashCommandManager {
     }
 
     const selected = await vscode.window.showQuickPick(items, {
-      placeHolder: 'Select thinking level',
+      placeHolder: vscode.l10n.t('Select thinking level'),
     });
 
     return selected?.levelId;
@@ -1480,9 +1480,9 @@ export class SlashCommandManager {
     const current = config.get<string>('accessLevel', 'ask-permission');
 
     const items: { label: string; description: string; detail: string; levelId: string }[] = [
-      { label: 'Read Only', description: 'read-only', detail: 'AI can only read files, no modifications', levelId: 'read-only' },
-      { label: 'Ask Permission', description: 'ask-permission', detail: 'AI will ask before making changes', levelId: 'ask-permission' },
-      { label: 'Full Access', description: 'full-access', detail: 'AI has full read/write access', levelId: 'full-access' },
+      { label: vscode.l10n.t('Read Only'), description: 'read-only', detail: vscode.l10n.t('AI can only read files, no modifications'), levelId: 'read-only' },
+      { label: vscode.l10n.t('Ask Permission'), description: 'ask-permission', detail: vscode.l10n.t('AI will ask before making changes'), levelId: 'ask-permission' },
+      { label: vscode.l10n.t('Full Access'), description: 'full-access', detail: vscode.l10n.t('AI has full read/write access'), levelId: 'full-access' },
     ];
 
     for (const item of items) {
@@ -1492,7 +1492,7 @@ export class SlashCommandManager {
     }
 
     const selected = await vscode.window.showQuickPick(items, {
-      placeHolder: 'Select access level',
+      placeHolder: vscode.l10n.t('Select access level'),
     });
 
     return selected?.levelId;
@@ -1517,9 +1517,9 @@ export class SlashCommandManager {
 
     const agentName = this._getProviderDisplayName(providerId);
     if (willSwitchModel && newProviderConfig) {
-      return `Switched to ${agentName} (model auto-switched to ${newModel})`;
+      return vscode.l10n.t('Switched to {0} (model auto-switched to {1})', agentName, newModel);
     }
-    return `Switched to ${agentName}`;
+    return vscode.l10n.t('Switched to {0}', agentName);
   }
 
   /**

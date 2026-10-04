@@ -1,0 +1,13 @@
+{
+  "provider": "ollama",
+  "platform": "darwin",
+  "arch": "arm64",
+  "release": "v0.35.0",
+  "installed": true,
+  "serverStarted": true,
+  "version": {
+    "version": "0.35.0"
+  },
+  "modelListResponded": true,
+  "modelInferenceTested": false
+}

@@ -10,7 +10,7 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  *
- * Plan 39: the host side of Manage Plugins. The webview is untrusted input —
+ * Plan 45: the host side of Manage Plugins. The webview is untrusted input —
  * every id, scope and source it sends is checked against what the CLI last
  * reported before anything spawns — and the install gate is a NATIVE modal the
  * webview cannot answer for the user.
@@ -62,7 +62,7 @@ function testAdapter(over: Partial<PluginAdapter> = {}): PluginAdapter {
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
-describe('PluginsPanelManager (Plan 39)', () => {
+describe('PluginsPanelManager (Plan 45)', () => {
   let providers: Record<string, ReturnType<typeof fakeProvider>>;
   let adapter: PluginAdapter;
   let manager: PluginsPanelManager;

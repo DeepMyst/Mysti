@@ -56,7 +56,7 @@ export function parsePatchEnvelope(text: string): { ok: true; ops: PatchOp[] } |
   }
 
   while (i < lines.length) {
-    if (END.test(lines[i])) { i++; break; }
+    if (END.test(lines[i])) { break; }
     const h = lines[i].match(HEADER);
     if (!h) { return { ok: false, error: `patch: expected an "*** <Op>:" header, got "${lines[i].slice(0, 60)}"` }; }
     const kind = h[1].toLowerCase();

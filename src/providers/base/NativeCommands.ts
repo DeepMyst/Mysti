@@ -696,6 +696,7 @@ export const NATIVE_COMMANDS: Record<ProviderType, NativeCommandSpec[]> = {
   // ---------------------------------------------------------------------------
   'ollama': [],
   'localai': [],
+  'minimax': [],
   'openrouter': [],
 };
 
@@ -807,5 +808,6 @@ export const NATIVE_COMMAND_SOURCES: Record<ProviderType, NativeCommandSource[]>
   ],
   'ollama': [],
   'localai': [],
+  'minimax': [],
   'openrouter': [],
 };

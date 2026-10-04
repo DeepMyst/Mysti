@@ -1,0 +1,21 @@
+{
+  "version": "2.0.0",
+  "capturedAt": "2026-10-03T15:36:34.195Z",
+  "source": "Shipped chat, Connections and Proactive webviews",
+  "recordings": [
+    "agent-opinions",
+    "second-opinion",
+    "agent-workflow",
+    "provider-switching",
+    "connected-tools",
+    "brainstorm",
+    "composer-controls",
+    "proactive-inbox"
+  ],
+  "data": "Deterministic sample responses and evidence; no live agent or connected-account calls",
+  "command": "npm run demo:record",
+  "viewport": {
+    "width": 1000,
+    "height": 760
+  }
+}

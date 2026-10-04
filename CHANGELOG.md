@@ -1,6 +1,42 @@
 # Changelog
 
+## Unreleased — issue review
+
+- OpenCode remote HTTP/SSE connections for WSL, Docker and HTTPS servers, with setup and connection-test commands, SecretStorage credentials and native tool approvals.
+- Remember each provider's selected model when switching agents, and apply custom-model changes to the correct panel provider.
+- Allow Brainstorm deliberation beyond 90 seconds; bound and parallelize provider-readiness checks so discovery cannot leave analysis waiting indefinitely.
+- Prepare publication of the exact tested beta VSIX to Open VSX (publisher credentials still required).
+
+
 All notable changes to the Mysti extension will be documented in this file.
+
+## Unreleased — review follow-up
+
+- Integrate Russian command/settings catalogs and webview chrome while preserving user and agent text.
+- Add MiniMax API setup with SecretStorage, model routing, reasoning/usage streaming and isolated cancellation.
+- Repair translated README star-history links using the official service.
+- Reconcile dependency updates, patch browser libraries, and preserve VS Code 1.86 runtime support.
+
+## [2.0.0] — Mysti 2.0 BETA (pre-release candidate)
+
+### Fixed
+
+- Explicit agent tags now dispatch to every named provider, including the selected provider. The default model no longer decides which requested opinions to omit or substitutes its own answer for another agent.
+- Independent advisory assignments run concurrently through the bounded collaborator pool. Explicit handoffs retain order; file writers serialize, and failed prerequisites block dependent tasks.
+- Live collaboration cards now render separate identities, output, tools, retries and errors. Final attributed results persist in conversation history; late events cannot update a closed group.
+- Child routing clears an inherited routed-model override so a model selected for one provider does not leak into another.
+- The composer footer now reflects effort and Ultracode changes immediately; the effort slider no longer shares its HTML ID with the footer label.
+- Assignment cards now show elapsed time and provider-specific quiet-period notices instead of leaving a slow participant at an unexplained “Running” status. Sequential requests show step numbers and the next waiting agents; regression coverage includes Cline as the base provider and parallel reviews between sequential steps.
+- Empty thinking-start events now reach collaborator cards, so providers can report “Thinking” even when they do not expose reasoning text.
+
+### Release presentation
+
+- Rebuilt README and getting-started guide for **Mysti 2.0 BETA**, with current assignment semantics, provider boundaries, honest beta limits and contribution paths.
+- Added reproducible UI GIFs, screenshots, an MP4 tour and a routing diagram. Captures use clearly labelled deterministic sample data.
+- Package version is `2.0.0`; beta distribution uses the Marketplace pre-release channel. Publication is a separate release step.
+
+See [2.0 BETA release notes](docs/releases/2.0-beta/RELEASE-NOTES.md) and [validation](docs/releases/2.0-beta/VALIDATION.md).
+
 
 ## [Unreleased]
 

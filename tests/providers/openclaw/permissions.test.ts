@@ -1,47 +1,27 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { TestableOpenClawProvider } from '../../helpers/providerFactory';
 import { createOpenClawSession } from '../../helpers/sessionFactory';
 import { clearMockConfig } from '../../helpers/mockVscode';
-import type { Settings } from '../../../src/types';
-
-function s(overrides?: Partial<Settings>): Settings {
-  return {
-    mode: 'default', thinkingLevel: 'medium', accessLevel: 'ask-permission',
-    contextMode: 'auto', model: '', provider: 'openclaw', ...overrides,
-  };
-}
-
-describe('OpenClaw permission flag mapping', () => {
-  let provider: TestableOpenClawProvider;
-
-  beforeEach(() => {
-    clearMockConfig();
-    provider = new TestableOpenClawProvider();
-  });
-
+import type { Settings, StreamChunk } from '../../../src/types';
+const settings: Settings = { mode: 'ask-before-edit', thinkingLevel: 'none', accessLevel: 'ask-permission', contextMode: 'manual', model: '', provider: 'openclaw' };
+beforeEach(clearMockConfig);
+describe('OpenClaw authority contract', () => {
   it.each([
-    ['quick-plan'],
-    ['detailed-plan'],
-  ] as const)('should use --sandbox for %s mode', (mode) => {
-    const args = provider.buildCliArgs(s({ mode }), createOpenClawSession());
-    expect(args).toContain('--sandbox');
-    expect(args).not.toContain('--yolo');
+    { mode: 'quick-plan' }, { mode: 'detailed-plan' }, { accessLevel: 'read-only' },
+    { mode: 'ask-before-edit', accessLevel: 'full-access' }, { mode: 'edit-automatically' },
+  ] as Partial<Settings>[])('rejects unsupported restrictions before either transport: %j', async override => {
+    const provider = new TestableOpenClawProvider();
+    const gateway = (provider as any)._gateway;
+    const connect = vi.spyOn(gateway, 'connect');
+    const spawn = vi.spyOn(provider, 'buildCliArgs');
+    const chunks: StreamChunk[] = [];
+    for await (const chunk of provider.sendMessage('test', [], { ...settings, ...override }, null)) { chunks.push(chunk); }
+    expect(chunks.map(chunk => chunk.type)).toEqual(['error', 'done']);
+    expect(connect).not.toHaveBeenCalled(); expect(spawn).not.toHaveBeenCalled(); provider.dispose();
   });
-
-  it('should use --sandbox for read-only access', () => {
-    const args = provider.buildCliArgs(s({ accessLevel: 'read-only' }), createOpenClawSession());
-    expect(args).toContain('--sandbox');
-    expect(args).not.toContain('--yolo');
-  });
-
-  it.each([
-    { mode: 'edit-automatically' as const, accessLevel: 'full-access' as const },
-    { mode: 'default' as const, accessLevel: 'full-access' as const },
-    { mode: 'default' as const, accessLevel: 'ask-permission' as const },
-    { mode: 'ask-before-edit' as const, accessLevel: 'ask-permission' as const },
-  ])('should use --yolo for mode=$mode access=$accessLevel', ({ mode, accessLevel }) => {
-    const args = provider.buildCliArgs(s({ mode, accessLevel }), createOpenClawSession());
-    expect(args).toContain('--yolo');
-    expect(args).not.toContain('--sandbox');
+  it('never generates nonexistent CLI permission flags', () => {
+    const provider = new TestableOpenClawProvider();
+    const args = provider.buildCliArgs({ ...settings, mode: 'edit-automatically', accessLevel: 'full-access' }, createOpenClawSession());
+    expect(args).not.toContain('--sandbox'); expect(args).not.toContain('--yolo'); provider.dispose();
   });
 });

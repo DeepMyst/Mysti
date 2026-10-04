@@ -211,10 +211,10 @@ describe('discovery prefers PATH over the hard-coded guesses', () => {
    */
   it('runs the binary the shell resolves, not the one a guess would find first', async () => {
     const name = `mysti-test-cli-${process.pid}`;
-    const preferred = path.join(onPathBin, name);
-    const stale = path.join(guessBin, name);
+    const preferred = path.join(onPathBin, name + (process.platform === 'win32' ? '.cmd' : ''));
+    const stale = path.join(guessBin, name + (process.platform === 'win32' ? '.cmd' : ''));
     for (const [file, tag] of [[preferred, 'NEW'], [stale, 'OLD']] as const) {
-      fs.writeFileSync(file, `#!/bin/sh\necho ${tag}\n`);
+      fs.writeFileSync(file, process.platform === 'win32' ? `@echo off\r\necho ${tag}\r\n` : `#!/bin/sh\necho ${tag}\n`);
       fs.chmodSync(file, 0o755);
     }
 
@@ -223,24 +223,24 @@ describe('discovery prefers PATH over the hard-coded guesses', () => {
     // The system PATH stays on the end — `which` itself has to be findable.
     const resolved = await resolveCommandOnPath(name, {
       ...process.env,
-      PATH: `${onPathBin}:${guessBin}:${process.env.PATH ?? ''}`,
+      PATH: [onPathBin, guessBin, process.env.PATH ?? ''].join(path.delimiter),
     });
-    expect(resolved).toBe(preferred);
-    expect(resolved).not.toBe(stale);
+    expect(fs.realpathSync.native(resolved!)).toBe(fs.realpathSync.native(preferred));
+    expect(fs.realpathSync.native(resolved!)).not.toBe(fs.realpathSync.native(stale));
   });
 
   /** Reversing PATH reverses the winner — it really is PATH doing the work. */
   it('follows PATH order rather than a fixed preference', async () => {
     const name = `mysti-test-order-${process.pid}`;
-    const a = path.join(onPathBin, name);
-    const b = path.join(guessBin, name);
+    const a = path.join(onPathBin, name + (process.platform === 'win32' ? '.cmd' : ''));
+    const b = path.join(guessBin, name + (process.platform === 'win32' ? '.cmd' : ''));
     for (const file of [a, b]) {
-      fs.writeFileSync(file, '#!/bin/sh\nexit 0\n');
+      fs.writeFileSync(file, process.platform === 'win32' ? '@exit /b 0\r\n' : '#!/bin/sh\nexit 0\n');
       fs.chmodSync(file, 0o755);
     }
     const sys = process.env.PATH ?? '';
-    expect(await resolveCommandOnPath(name, { ...process.env, PATH: `${onPathBin}:${guessBin}:${sys}` })).toBe(a);
-    expect(await resolveCommandOnPath(name, { ...process.env, PATH: `${guessBin}:${onPathBin}:${sys}` })).toBe(b);
+    expect(fs.realpathSync.native((await resolveCommandOnPath(name, { ...process.env, PATH: [onPathBin, guessBin, sys].join(path.delimiter) }))!)).toBe(fs.realpathSync.native(a));
+    expect(fs.realpathSync.native((await resolveCommandOnPath(name, { ...process.env, PATH: [guessBin, onPathBin, sys].join(path.delimiter) }))!)).toBe(fs.realpathSync.native(b));
   });
 });
 

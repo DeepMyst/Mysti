@@ -651,8 +651,8 @@ export class ProviderManager {
    * the one they selected, so it is reported to the UI rather than done
    * silently; the webview attributes the result to `enhancedBy`.
    */
-  public async enhancePrompt(prompt: string): Promise<PromptEnhancedPayload> {
-    const active = this._getActiveProvider();
+  public async enhancePrompt(prompt: string, providerId?: string): Promise<PromptEnhancedPayload> {
+    const active = this._getActiveProvider(providerId);
 
     if (typeof active.enhancePrompt === 'function') {
       const enhanced = await active.enhancePrompt(prompt);

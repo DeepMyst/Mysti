@@ -292,3 +292,17 @@ describe('ConversationManager — Plan 02 Phase 3 persistence', () => {
     });
   });
 });
+
+it('preserves explicit participant attribution across a real store reload and prunes invalid identities', () => {
+  clearMockConfig();
+  const { context } = createMockContext();
+  const manager = new ConversationManager(context);
+  const conversation = manager.getCurrentConversation()!;
+  const saved = manager.addMessageToConversation(conversation.id, 'assistant', 'Independent opinions', undefined, undefined, undefined, {
+    participants: ['claude-code', 'openai-codex', 'claude-code', 'spoofed-agent' as any],
+  });
+  expect(saved.participants).toEqual(['claude-code', 'openai-codex']);
+  const reloaded = new ConversationManager(context).getConversation(conversation.id)!;
+  expect(reloaded.messages.find(m => m.id === saved.id)?.participants).toEqual(['claude-code', 'openai-codex']);
+  expect(reloaded.messages.find(m => m.id === saved.id)?.provider).toBeUndefined();
+});

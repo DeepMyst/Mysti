@@ -12,6 +12,7 @@
  */
 
 import * as vscode from 'vscode';
+import { DictationManager } from '../managers/DictationManager';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -28,6 +29,7 @@ import {
 } from '../chat/onboarding';
 import { settleWithin } from '../utils/settleWithin';
 import { clampEffort } from '../utils/effort';
+import { installerShell } from '../utils/installerShell';
 import { MystiTagScanner, type MystiDirective, ALL_MYSTI_KINDS, MYSTI_EXEC_KINDS, MYSTI_MCP_KINDS, MYSTI_SKILL_KINDS, MYSTI_CAPABILITY_KINDS, MYSTI_CONNECT_KINDS, MYSTI_VISUAL_KINDS, MYSTI_VISUAL_ACT_KINDS, MYSTI_CANVAS_KINDS } from '../utils/mystiDelegateParser';
 import { resolveCanvasApproval } from '../canvas/resolveCanvasApproval';
 import { canvasDirectiveToToolCall, isCanvasDirectiveError } from '../canvas/canvasDirective';
@@ -84,6 +86,8 @@ import { AgentLoader, type AgentMetadata } from '../managers/AgentLoader';
 import { AgentContextManager } from '../managers/AgentContextManager';
 import { CollaboratorPool } from '../services/CollaboratorPool';
 import { CollaborationManager } from '../managers/CollaborationManager';
+import { runExplicitMentions } from '../managers/ExplicitMentionRunner';
+import { planExplicitMentions, resolveExplicitMentions } from '../services/ExplicitMentionPlan';
 import { SessionManager } from '../managers/SessionManager';
 import { getSessionShape } from '../managers/sessionShapes';
 import { MystiOrchestratorManager } from '../managers/MystiOrchestratorManager';
@@ -147,6 +151,7 @@ import { VideoGenerationService } from '../services/VideoGenerationService';
 import type { ModelRegistryService } from '../services/ModelRegistryService';
 import type { ModelAnnouncementService, AnnouncedModel } from '../services/ModelAnnouncementService';
 import type { CliUpdateService } from '../services/CliUpdateService';
+import { requiredCliVersion, meetsCliVersion, runCliUpgradeTask } from '../services/CliModelUpgrade';
 import type { CanvasSecrets } from '../services/CanvasSecrets';
 import { BrowserManager } from '../services/BrowserManager';
 import { ScreenshotService } from '../services/ScreenshotService';
@@ -166,7 +171,7 @@ import {
   getProviderDisplayName
 } from './base/ProviderManifest';
 import type { ProviderManifestPayload, ModelsUpdatedPayload, PromptEnhanceUnavailablePayload } from '../types';
-import type { AnnouncedModelPayload, CliUpdatePayload } from '../types';
+import type { AnnouncedModelPayload, CliUpdatePayload, ModelCliUpgradePayload } from '../types';
 import { normalizeUsage, resolveUsageConvention, hasUsageSignal, contextFillTokens, touchedPromptCache } from '../services/TokenAccounting';
 import type { UsageConvention } from '../services/TokenAccounting';
 import type { CollaboratorGateCallback, CollaboratorSpec, CollaboratorFailure } from '../types';
@@ -283,6 +288,17 @@ export interface ChatViewDependencies {
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
+  private _dictationManager?: DictationManager;
+  private get _dictation(): DictationManager {
+    return this._dictationManager ??= new DictationManager((panelId, event) => {
+      this._postToPanel(panelId, { type: 'dictationState', payload: event });
+      if (event.state === 'complete') {
+        if (panelId === this._sidebarId) { this._view?.show(false); }
+        else { this._panelStates.get(panelId)?.panel?.reveal(undefined, false); }
+      }
+    });
+  }
+
   private _view?: vscode.WebviewView;
   private _panelStates: Map<string, PanelState> = new Map();
   private readonly _sidebarId = 'sidebar';
@@ -360,6 +376,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private _modelAnnouncements?: ModelAnnouncementService;
   private _cliUpdates?: CliUpdateService;
+  private _modelCliUpgrades = new Map<string, { panelId: string; providerId: string; minimum: string; state: ModelCliUpgradePayload['state'] }>();
+  private _upgradingClis = new Set<string>();
   // Code checkpoints — shadow git repo backing "rewind code to here".
   private _checkpointManager: CheckpointManager;
   private _imageGenService: ImageGenerationService;
@@ -668,6 +686,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // initialState may have been built from cached/incomplete statuses, so
     // the webview must treat provider badges as updatable after first paint.
     this._setupManager.onWizardStatusUpdated((status) => {
+      this._broadcastToAll({ type: 'wizardStatus', payload: status });
       this._broadcastToAll({
         type: 'providerAvailability',
         payload: { providerAvailability: this._buildProviderAvailability(status) }
@@ -766,6 +785,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           mode: config.get('defaultMode', 'ask-before-edit') as Settings['mode'],
           thinkingLevel: config.get('defaultThinkingLevel', 'none') as Settings['thinkingLevel'],
           effortLevel: config.get('defaultEffortLevel', 'high') as Settings['effortLevel'],
+          ultracode: config.get<boolean>('claudeUltracode', false),
           accessLevel: config.get('accessLevel', 'ask-permission') as Settings['accessLevel'],
           contextMode: config.get('autoContext', true) ? 'auto' : 'manual',
           model: this._getPanelModel(panelId),
@@ -1243,6 +1263,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // (which overwrote the entry with a new webview) is not removed by the old
     // view's late dispose event.
     webviewView.onDidDispose(() => {
+      void this._dictationManager?.cancelPanel(this._sidebarId);
       if (this._panelStates.get(this._sidebarId)?.webview === webviewView.webview) {
         this._panelStates.delete(this._sidebarId);
         this._unbindHubFrom(this._sidebarId);
@@ -1372,6 +1393,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       mode: config.get('defaultMode', 'ask-before-edit'),
       thinkingLevel: config.get('defaultThinkingLevel', 'none'),
       effortLevel: config.get('defaultEffortLevel', 'high') as Settings['effortLevel'],
+      ultracode: config.get<boolean>('claudeUltracode', false),
       accessLevel: config.get('accessLevel', 'ask-permission'),
       contextMode: config.get('autoContext', true) ? 'auto' : 'manual',
       model: this._getPanelModel(panelId),
@@ -1648,6 +1670,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       msg.panelId = this._sidebarId;
     }
     switch (msg.type) {
+      case 'startDictation':
+        await this._dictation.start(msg.panelId, (msg.payload as { requestId: string })?.requestId);
+        break;
+      case 'finishDictation':
+        await this._dictationManager?.finish(msg.panelId, (msg.payload as { requestId: string })?.requestId);
+        break;
+      case 'cancelDictation':
+        await this._dictationManager?.cancelPanel(msg.panelId, (msg.payload as { requestId: string })?.requestId);
+        break;
+      case 'dictationSettings':
+        await vscode.commands.executeCommand('workbench.action.openSettings', '@tag:accessibility voice');
+        break;
+      case 'installDictationSupport':
+        try {
+          await vscode.commands.executeCommand('workbench.extensions.installExtension', 'ms-vscode.vscode-speech');
+          void vscode.window.showInformationMessage('Speech support installed. Click the Mysti microphone to try dictation again.');
+        } catch (error) {
+          void vscode.window.showErrorMessage(`Could not install VS Code Speech: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        break;
       case 'sendMessage':
         await this._handleSendMessage(
           msg.payload as {
@@ -2184,6 +2226,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       }
 
+      case 'upgradeModelCli': {
+        const id = (msg.payload as { id?: unknown } | undefined)?.id;
+        if (typeof id === 'string') { await this._upgradeModelCli(msg.panelId, id); }
+        break;
+      }
+
       case 'requestAgentLists': {
         // Plan 14: webview self-heal — if its persona/skill/role lists came up
         // empty, re-send them once the catalog has finished loading.
@@ -2230,8 +2278,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         );
         break;
 
+      case 'requestCustomModel':
+        await this._handleCustomModel(msg.panelId);
+        break;
+
       case 'enhancePrompt':
-        await this._handleEnhancePrompt(msg.payload as string, msg.panelId);
+        await this._handleEnhancePrompt(msg.payload as string | { prompt: string; requestId?: number }, msg.panelId);
         break;
 
       case 'deskRequestRoster':
@@ -2245,6 +2297,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'newConversation':
+        await this._dictationManager?.cancelPanel(msg.panelId);
         {
           const panelId = msg.panelId;
           const panelState = this._panelStates.get(panelId);
@@ -2291,7 +2344,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           });
           this._postToPanel(panelId, {
             type: 'sessionCleared',
-            payload: { message: 'Session cleared' }
+            payload: { message: vscode.l10n.t('Session cleared') }
           });
         }
         break;
@@ -2314,7 +2367,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           if (panelId) {
             this._postToPanel(panelId, {
               type: 'sessionCleared',
-              payload: { message: 'Session cleared' }
+              payload: { message: vscode.l10n.t('Session cleared') }
             });
           }
         }
@@ -2384,6 +2437,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               mode: ciConfig.get('defaultMode', 'default') as Settings['mode'],
               thinkingLevel: ciConfig.get('defaultThinkingLevel', 'none') as Settings['thinkingLevel'],
               effortLevel: ciConfig.get('defaultEffortLevel', 'high') as Settings['effortLevel'],
+              ultracode: ciConfig.get<boolean>('claudeUltracode', false),
               accessLevel: ciConfig.get('accessLevel', 'ask-permission') as Settings['accessLevel'],
               contextMode: ciConfig.get('autoContext', true) ? 'auto' : 'manual',
               model: this._getPanelModel(msg.panelId),
@@ -2467,10 +2521,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         vscode.commands.executeCommand('mysti.openInNewTab');
         break;
 
+      case 'openProactive':
+        vscode.commands.executeCommand('mysti.openProactive');
+        break;
+
       case 'openConnections':
         vscode.commands.executeCommand('mysti.openConnections');
         break;
-      // Plan 39: open Manage Plugins on this chat's backend. Opening is all a
+      // Plan 45: open Manage Plugins on this chat's backend. Opening is all a
       // chat can do; installs happen only by a click in that tab.
       case 'openPlugins':
         vscode.commands.executeCommand('mysti.managePlugins', this._getPanelProvider(msg.panelId));
@@ -2606,7 +2664,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // Handle both object payload (providerId + command) and string payload (auth command)
           const terminalPayload = msg.payload;
           if (typeof terminalPayload === 'string') {
-            const terminal = vscode.window.createTerminal('Authenticate Provider');
+            const terminal = vscode.window.createTerminal(vscode.l10n.t('Authenticate Provider'));
             terminal.show();
             terminal.sendText(terminalPayload);
           } else {
@@ -2666,6 +2724,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'switchConversation':
+        await this._dictationManager?.cancelPanel(msg.panelId);
         {
           const panelId = msg.panelId;
           const switchId = (msg.payload as { id: string }).id;
@@ -3043,30 +3102,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // ---- Conversation Export Messages ----
 
       case 'exportConversation':
-        {
-          const exportPanelId = msg.panelId;
-          const panelState = this._panelStates.get(exportPanelId);
-          const conversationId = panelState?.currentConversationId;
-          if (conversationId) {
-            const markdown = this._conversationManager.exportToMarkdown(conversationId);
-            if (markdown) {
-              await vscode.env.clipboard.writeText(markdown);
-              this._postToPanel(exportPanelId, {
-                type: 'exportResult',
-                payload: { success: true, markdown }
-              });
-              // Track export for engagement badges
-              const exportBadges = this._engagementManager.trackExport();
-              this._emitBadgeUnlocks(exportPanelId, exportBadges);
-              console.log('[Mysti] Conversation exported to clipboard');
-            } else {
-              this._postToPanel(exportPanelId, {
-                type: 'exportResult',
-                payload: { success: false, error: 'Conversation not found' }
-              });
-            }
-          }
-        }
+        await this._handleExportConversation(msg.panelId);
         break;
 
       case 'copyMessageMarkdown':
@@ -3090,7 +3126,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             } else {
               this._postToPanel(copyMsgPanelId, {
                 type: 'exportResult',
-                payload: { success: false, error: 'Message not found' }
+                payload: { success: false, error: vscode.l10n.t('Message not found') }
               });
             }
           }
@@ -3113,8 +3149,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             if (content) {
               const uri = await vscode.window.showSaveDialog({
                 filters: isMarkdown
-                  ? { 'Markdown': ['md'] }
-                  : { 'Mysti JSON': ['mysti.json'], 'JSON': ['json'] },
+                  ? { [vscode.l10n.t('Markdown')]: ['md'] }
+                  : { [vscode.l10n.t('Mysti JSON')]: ['mysti.json'], [vscode.l10n.t('JSON')]: ['json'] },
                 defaultUri: vscode.Uri.file(`conversation.${isMarkdown ? 'md' : 'mysti.json'}`)
               });
               if (uri) {
@@ -3138,7 +3174,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             canSelectFiles: true,
             canSelectMany: false,
             filters: {
-              'Conversation Files': ['mysti.json', 'json', 'jsonl', 'md']
+              [vscode.l10n.t('Conversation Files')]: ['mysti.json', 'json', 'jsonl', 'md']
             }
           });
           if (uris && uris.length > 0) {
@@ -3157,7 +3193,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               });
               console.log(`[Mysti] Conversation imported from: ${fileName}`);
             } else {
-              vscode.window.showErrorMessage('Failed to import conversation: unrecognized format');
+              vscode.window.showErrorMessage(vscode.l10n.t('Failed to import conversation: unrecognized format'));
             }
           }
         }
@@ -3176,10 +3212,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 // Too long for a URI — fall back to clipboard with JSON
                 const json = this._conversationManager.exportToJson(shareConvId);
                 await vscode.env.clipboard.writeText(json);
-                vscode.window.showInformationMessage('Conversation too long for a deep link — full JSON copied to clipboard instead.');
+                vscode.window.showInformationMessage(vscode.l10n.t('Conversation too long for a deep link — full JSON copied to clipboard instead.'));
               } else {
                 await vscode.env.clipboard.writeText(uri);
-                vscode.window.showInformationMessage('Share link copied to clipboard!');
+                vscode.window.showInformationMessage(vscode.l10n.t('Share link copied to clipboard!'));
               }
               this._emitBadgeUnlocks(sharePanelId, this._engagementManager.trackConversationShared());
               console.log('[Mysti] Share link generated');
@@ -3351,7 +3387,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async _initTeamWorkspace(_panelId: string): Promise<void> {
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (!workspaceFolders || workspaceFolders.length === 0) {
-      vscode.window.showWarningMessage('No workspace folder open. Open a project first.');
+      vscode.window.showWarningMessage(vscode.l10n.t('No workspace folder open. Open a project first.'));
       return;
     }
 
@@ -3445,7 +3481,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._emitBadgeUnlocks(_panelId, this._engagementManager.trackWorkspaceRecommendation());
     this._emitBadgeUnlocks(_panelId, this._engagementManager.trackTeamInitialized());
     vscode.window.showInformationMessage(
-      'Project configured for Mysti. Created .mysti/, mysti.md, and rules/ — commit these so collaborators can discover Mysti.'
+      vscode.l10n.t('Project configured for Mysti. Created .mysti/, mysti.md, and rules/ — commit these so collaborators can discover Mysti.')
     );
     console.log('[Mysti] Team workspace initialized with mysti.md + rules');
   }
@@ -3463,7 +3499,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       const retryPath = this._memoryManager.getProjectMemoryPath();
       if (!retryPath) {
-        vscode.window.showWarningMessage('No workspace folder open.');
+        vscode.window.showWarningMessage(vscode.l10n.t('No workspace folder open.'));
         return;
       }
       // Create default MEMORY.md
@@ -3492,7 +3528,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async _openProjectRules(): Promise<void> {
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (!workspaceFolders || workspaceFolders.length === 0) {
-      vscode.window.showWarningMessage('No workspace folder open.');
+      vscode.window.showWarningMessage(vscode.l10n.t('No workspace folder open.'));
       return;
     }
 
@@ -3595,7 +3631,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (event.isNew) {
         this._postToPanel(panelId, {
           type: 'badgeUnlocked',
-          payload: event.badge
+          payload: {
+            ...event.badge,
+            name: vscode.l10n.t(event.badge.name),
+            description: vscode.l10n.t(event.badge.description)
+          }
         });
       }
     }
@@ -3693,7 +3733,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         });
       }
 
-      vscode.window.showInformationMessage(`Reverted changes to ${payload.path}`);
+      vscode.window.showInformationMessage(vscode.l10n.t('Reverted changes to {0}', payload.path));
     } catch (error) {
       if (panelId) {
         this._postToPanel(panelId, {
@@ -3706,7 +3746,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         });
       }
 
-      vscode.window.showErrorMessage(`Failed to revert ${payload.path}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      vscode.window.showErrorMessage(vscode.l10n.t('Failed to revert {0}: {1}', payload.path, error instanceof Error ? error.message : vscode.l10n.t('Unknown error')));
     }
   }
 
@@ -3751,6 +3791,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       mode: config.get('defaultMode', 'ask-before-edit') as Settings['mode'],
       thinkingLevel: config.get('defaultThinkingLevel', 'none') as Settings['thinkingLevel'],
       effortLevel: config.get('defaultEffortLevel', 'high') as Settings['effortLevel'],
+      ultracode: config.get<boolean>('claudeUltracode', false),
       accessLevel: config.get('accessLevel', 'ask-permission') as Settings['accessLevel'],
       contextMode: config.get('autoContext', true) ? 'auto' : 'manual',
       model: this._getPanelModel(panelId),
@@ -4205,7 +4246,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Bump the panel's send generation FIRST (review [4]/[11]): any Mysti run
     // still in flight for this panel is now superseded and self-terminates at
     // its next checkpoint, regardless of the 50ms cancel-flag window below.
-    this._mystiRunGen.set(panelId, (this._mystiRunGen.get(panelId) ?? 0) + 1);
+    const turnGeneration = (this._mystiRunGen.get(panelId) ?? 0) + 1;
+    this._mystiRunGen.set(panelId, turnGeneration);
     // Invalidate old classification before any await in the new send. A late
     // result must not offer or auto-select plans for a superseded turn.
     this._pendingPlanSelections.delete(panelId);
@@ -4273,6 +4315,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this._providerManager.cancelRequest(panelId);
       // Tear down an in-flight Mysti run (coordinator stream + gated delegation).
       this._abortMystiDirect(panelId);
+      this._collaborationManager.cancelPanel(panelId);
+      this._mentionRouter.cancelSubAgents(panelId, this._providerManager.getAllProviderIds());
       // Dismiss the SUPERSEDED foreground turn's pending gate(s) only (scoped by
       // panelId) — never a concurrent background job's, which owns its gate under
       // its jobId. _abortMystiDirect already dismissed the foreground Mysti gate;
@@ -4303,8 +4347,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Clear any pending interactive states — a new message implicitly dismisses them
     this._pendingAskUserQuestions.delete(panelId);
 
-    const { content, context, mentions, attachments } = payload;
+    const { content, context, attachments } = payload;
+    const mentions = resolveExplicitMentions(content, payload.mentions);
     let { settings } = payload;
+    if (attachments?.length && isPseudoAgentId(settings.provider as unknown as string)) {
+      this._postToPanel(panelId, { type: 'attachmentWarning', payload: { message: 'Attachments are not passed to this agent. Add files through Context instead.' } });
+    }
 
     // The webview keeps its OWN copy of `settings.model` and posts it back with
     // every message, so a copy that went stale — the panel was on Qwen when it
@@ -4373,6 +4421,65 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     // Stream response from provider
     try {
+      // Explicit assignments precede every selected provider, including Mysti.
+      // Preserve switch-only requests on the existing per-panel switch path.
+      const explicitAgents = (mentions || []).filter(m => m.type === 'agent' && m.value !== 'mysti');
+      const switchOnly = explicitAgents.length === 1 && /^(?:switch\s+to|use|change\s+to)\s*$/i.test(
+        this._mentionRouter.stripMentions(content, mentions || [])
+      );
+      if (explicitAgents.length && !switchOnly) {
+        const generation = turnGeneration;
+        const isCancelled = () => this._cancelledPanels.has(panelId) ||
+          this._mystiRunGen.get(panelId) !== generation || !this._panelStates.has(panelId);
+        if (isCancelled()) { return; }
+        this._runningPanels.add(panelId);
+        finishPreparation();
+        try {
+          const { MAX_MENTIONS_PER_MESSAGE } = await import('../constants');
+          if (explicitAgents.length > MAX_MENTIONS_PER_MESSAGE) {
+            throw new Error(`Use at most ${MAX_MENTIONS_PER_MESSAGE} agent mentions per message. No assignments were started.`);
+          }
+          this._postToPanel(panelId, { type: 'responseStarted', payload: {
+            provider: explicitAgents.length === 1 ? explicitAgents[0].value : 'mysti',
+            participants: [...new Set(explicitAgents.map(m => m.value))],
+          } });
+          if (attachments?.length) {
+            this._postToPanel(panelId, { type: 'attachmentWarning', payload: {
+              message: 'Agent assignments use Context files and @file mentions. Composer attachments are not forwarded to collaborators; add the file through Context.',
+            } });
+          }
+          const resolvedContext = [...context];
+          for await (const chunk of this._mentionRouter.processMentions(
+            content, (mentions || []).filter(m => m.type !== 'agent'), context,
+            settings, conversation, panelId
+          )) {
+            if (isCancelled()) { return; }
+            if (chunk.resolvedFiles) { resolvedContext.push(...chunk.resolvedFiles); }
+            if (chunk.type === 'file_resolution_warning') {
+              this._postToPanel(panelId, { type: 'mentionWarning', payload: { message: chunk.content } });
+            }
+          }
+          const answer = await runExplicitMentions(this._collaborationManager,
+            planExplicitMentions(content, mentions || []), {
+              context: resolvedContext, settings, conversation, panelId, isCancelled,
+              onQuestion: this._createSubAgentQuestionCallback(panelId),
+              onGate: (spec, tool, native) => this._requestCollaboratorPermission(spec, tool, panelId, panelId, native),
+            }, message => { if (!isCancelled()) { this._postToPanel(panelId, message); } });
+          if (isCancelled()) { return; }
+          const message = this._conversationManager.addMessageToConversation(conversationId, 'assistant', answer,
+            undefined, undefined, undefined, {
+              participants: [...new Set(explicitAgents.map(m => m.value as ProviderType))],
+            });
+          this._postToPanel(panelId, { type: 'responseChunk', payload: { type: 'text', content: answer } });
+          this._postToPanel(panelId, { type: 'responseComplete', payload: { message } });
+          return;
+        } finally {
+          if (this._mystiRunGen.get(panelId) === generation) {
+            this._runningPanels.delete(panelId);
+            this._lifecycleManager.markIdle(panelId);
+          }
+        }
+      }
       // Plan 16: the Mysti agent. By DEFAULT it answers like a normal streaming
       // agent — its own model, streamed token-by-token (fixes the "hi → whole
       // plan/execute/synthesize ceremony" problem). The multi-step orchestrator
@@ -5381,6 +5488,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               type: 'authError',
               payload: {
                 error: chunk.content,
+                providerId: settings.provider,
+                apiKeySetup: !!this._providerManager.getProviderInstance(settings.provider)?.configureAuthentication,
                 authCommand: chunk.authCommand,
                 providerName: chunk.providerName
               }
@@ -5560,6 +5669,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             });
 
             // Track successful response for engagement (review prompts + badges)
+            // Some CLIs return API failures as a completed assistant message.
+            this._offerModelCliUpgrade(panelId, effectiveSettings.provider, persistedContent);
             this._engagementManager.trackSuccessfulResponse();
 
             // Auto-memory: record project learnings from tool_use patterns
@@ -5594,6 +5705,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     mode: config.get('defaultMode', 'ask-before-edit') as Settings['mode'],
                     thinkingLevel: config.get('defaultThinkingLevel', 'none') as Settings['thinkingLevel'],
                     effortLevel: config.get('defaultEffortLevel', 'high') as Settings['effortLevel'],
+                    ultracode: config.get<boolean>('claudeUltracode', false),
                     accessLevel: config.get('accessLevel', 'ask-permission') as Settings['accessLevel'],
                     contextMode: config.get('autoContext', true) ? 'auto' : 'manual',
                     model: this._getPanelModel(panelId),
@@ -5718,6 +5830,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                   mode: autoConfig.get('defaultMode', 'default') as Settings['mode'],
                   thinkingLevel: autoConfig.get('defaultThinkingLevel', 'none') as Settings['thinkingLevel'],
                   effortLevel: autoConfig.get('defaultEffortLevel', 'high') as Settings['effortLevel'],
+                  ultracode: autoConfig.get<boolean>('claudeUltracode', false),
                   accessLevel: autoConfig.get('accessLevel', 'ask-permission') as Settings['accessLevel'],
                   contextMode: autoConfig.get('autoContext', true) ? 'auto' : 'manual',
                   model: this._getPanelModel(panelId),
@@ -5805,6 +5918,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       mode: config.get('defaultMode', 'default') as Settings['mode'],
       thinkingLevel: config.get('defaultThinkingLevel', 'none') as Settings['thinkingLevel'],
       effortLevel: config.get('defaultEffortLevel', 'high') as Settings['effortLevel'],
+      ultracode: config.get<boolean>('claudeUltracode', false),
       accessLevel: config.get('accessLevel', 'ask-permission') as Settings['accessLevel'],
       contextMode: config.get('autoContext', true) ? 'auto' : 'manual',
       model,
@@ -6493,6 +6607,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (settings.effortLevel !== undefined) {
       await config.update('defaultEffortLevel', settings.effortLevel, vscode.ConfigurationTarget.Global);
     }
+    if (typeof settings.ultracode === 'boolean') {
+      await config.update('claudeUltracode', settings.ultracode, vscode.ConfigurationTarget.Global);
+    }
     if (settings.accessLevel !== undefined) {
       await config.update('accessLevel', settings.accessLevel, vscode.ConfigurationTarget.Global);
     }
@@ -6501,6 +6618,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this._contextManager.setAutoContext(settings.contextMode === 'auto');
     }
     if (settings.model !== undefined) {
+      const selectedProvider = settings.provider ?? (panelId ? this._getPanelProvider(panelId) : config.get<string>('defaultProvider', DEFAULT_PROVIDER));
+      if (!isPseudoAgentId(selectedProvider) && validateModelName(settings.model).valid) {
+        const selections = this._extensionContext.globalState.get<Record<string, string>>('mysti.providerModelSelections', {});
+        await this._extensionContext.globalState.update('mysti.providerModelSelections', { ...selections, [selectedProvider]: settings.model });
+      }
       if (panelId) {
         // Store per-panel — don't contaminate other panels
         const panelState = this._panelStates.get(panelId);
@@ -6567,7 +6689,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const storedModel = panelId
           ? (this._panelStates.get(panelId)?.settingsOverrides?.model || config.get<string>('defaultModel', ''))
           : config.get<string>('defaultModel', '');
-        const resolvedModel = storedModel ? this._resolveModelForProvider(storedModel, settings.provider) : '';
+        const selections = this._extensionContext.globalState.get<Record<string, string>>('mysti.providerModelSelections', {});
+        const savedModel = Object.prototype.hasOwnProperty.call(selections, settings.provider) ? selections[settings.provider] : undefined;
+        const preferredModel = settings.model ?? (typeof savedModel === 'string' && validateModelName(savedModel).valid ? savedModel : storedModel);
+        const resolvedModel = preferredModel ? this._resolveModelForProvider(preferredModel, settings.provider) : '';
         if (resolvedModel && resolvedModel !== storedModel) {
           if (panelId) {
             const panelState = this._panelStates.get(panelId);
@@ -6591,7 +6716,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const settingsAny = settings as Record<string, unknown>;
     if ('customModel' in settingsAny) {
       const customModel = settingsAny['customModel'] as string;
-      const provider = settings.provider || config.get<string>('defaultProvider', DEFAULT_PROVIDER);
+      const provider = settings.provider || (panelId ? this._getPanelProvider(panelId) : config.get<string>('defaultProvider', DEFAULT_PROVIDER));
       const settingKey = getCustomModelSettingKey(provider);
       if (settingKey) {
         if (!customModel) {
@@ -6764,6 +6889,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       mode: config.get('defaultMode', 'default') as Settings['mode'],
       thinkingLevel: config.get('defaultThinkingLevel', 'none') as Settings['thinkingLevel'],
       effortLevel: config.get('defaultEffortLevel', 'high') as Settings['effortLevel'],
+      ultracode: config.get<boolean>('claudeUltracode', false),
       accessLevel: config.get('accessLevel', 'ask-permission') as Settings['accessLevel'],
       contextMode: config.get('autoContext', true) ? 'auto' : 'manual',
       model: this._getPanelModel(panelId),
@@ -6775,11 +6901,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
+  private async _handleExportConversation(panelId: string): Promise<void> {
+    try {
+      const id = this._panelStates.get(panelId)?.currentConversationId;
+      const markdown = id ? this._conversationManager.exportToMarkdown(id) : undefined;
+      if (!markdown) {
+        this._postToPanel(panelId, { type: 'exportResult', payload: { success: false, error: 'There is no conversation to export yet.' } });
+        return;
+      }
+      await vscode.env.clipboard.writeText(markdown);
+      this._postToPanel(panelId, { type: 'exportResult', payload: { success: true } });
+      this._emitBadgeUnlocks(panelId, this._engagementManager.trackExport());
+    } catch (error) {
+      this._postToPanel(panelId, { type: 'exportResult', payload: { success: false, error: error instanceof Error ? error.message : 'Could not copy the conversation.' } });
+    }
+  }
+
   private async _handleRequestFileAttachment(panelId?: string) {
     const fileUris = await vscode.window.showOpenDialog({
       canSelectMany: true,
-      openLabel: 'Attach',
-      title: 'Select files to attach'
+      openLabel: vscode.l10n.t('Attach'),
+      title: vscode.l10n.t('Select files to attach')
     });
 
     if (!fileUris || fileUris.length === 0) {
@@ -6789,6 +6931,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
     const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico'];
     const attachments: Attachment[] = [];
+    const warnings: string[] = [];
 
     for (const fileUri of fileUris) {
       try {
@@ -6797,29 +6940,41 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const stat = await fs.promises.stat(filePath);
 
         if (stat.size > MAX_FILE_SIZE) {
+          warnings.push(`${fileName} exceeds the 10 MB attachment limit.`);
           console.log(`[Mysti] Skipping oversized file: ${fileName} (${(stat.size / 1024 / 1024).toFixed(1)} MB)`);
           continue;
         }
 
+        if (!stat.isFile()) { warnings.push(`${fileName} is not a regular file.`); continue; }
         const buffer = await fs.promises.readFile(filePath);
         const base64Data = buffer.toString('base64');
         const ext = path.extname(fileName).slice(1).toLowerCase();
         const isImage = IMAGE_EXTENSIONS.includes(ext);
+        if (panelId) {
+          const agent = this._getPanelAgent(panelId);
+          const provider = this._providerManager.getProviderInstance(agent);
+          const supported = isImage ? provider?.capabilities.supportsImages : provider?.capabilities.supportsFileAttachments;
+          if (!supported) { warnings.push(`${fileName}: ${agent} does not accept ${isImage ? 'image' : 'file'} attachments. Add files through Context instead.`); continue; }
+        }
 
         attachments.push({
           id: `att-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
           type: isImage ? 'image' : 'file',
           fileName,
-          mimeType: isImage ? `image/${ext === 'jpg' ? 'jpeg' : ext}` : 'application/octet-stream',
+          mimeType: isImage ? `image/${ext === 'jpg' ? 'jpeg' : ext === 'svg' ? 'svg+xml' : ext === 'ico' ? 'vnd.microsoft.icon' : ext}` : 'application/octet-stream',
           base64Data,
           filePath,
           size: stat.size
         });
       } catch (error) {
+        warnings.push(`Could not read ${path.basename(fileUri.fsPath)}.`);
         console.error(`[Mysti] Error reading file ${fileUri.fsPath}:`, error);
       }
     }
 
+    if (panelId && warnings.length) {
+      this._postToPanel(panelId, { type: 'attachmentWarning', payload: { message: warnings.join(' ') } });
+    }
     if (panelId && attachments.length > 0) {
       this._postToPanel(panelId, {
         type: 'fileAttachmentSelected',
@@ -7037,6 +7192,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async _generateSuggestionsAsync(lastMessage: Message, panelId?: string) {
+    if (!vscode.workspace.getConfiguration('mysti').get<boolean>('showSuggestions', true)) { return; }
     // Don't generate suggestions if this panel's request was cancelled
     if (panelId && this._cancelledPanels.has(panelId)) {return;}
 
@@ -7066,6 +7222,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         lastMessage
       );
 
+      if (!vscode.workspace.getConfiguration('mysti').get<boolean>('showSuggestions', true)) { return; }
+
       if (panelId) {
         this._postToPanel(panelId, {
           type: 'suggestionsReady',
@@ -7087,17 +7245,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async _handleEnhancePrompt(prompt: string, panelId?: string) {
+  private async _handleCustomModel(panelId: string): Promise<void> {
+    const provider = this._getPanelProvider(panelId);
+    const model = await vscode.window.showInputBox({
+      title: 'Choose a custom model', prompt: 'Enter the model ID supported by your provider or local server.',
+      value: this._getPanelModel(panelId), ignoreFocusOut: true,
+      validateInput: value => validateModelName(value.trim()).valid ? undefined : validateModelName(value.trim()).error || 'Enter a model ID.'
+    });
+    if (!model?.trim() || !this._panelStates.has(panelId) || this._getPanelProvider(panelId) !== provider) { return; }
+    await this._handleUpdateSettings({ model: model.trim(), customModel: model.trim() } as Partial<Settings>, panelId);
+  }
+
+  private async _handleEnhancePrompt(request: string | { prompt: string; requestId?: number }, panelId?: string) {
+    const prompt = typeof request === 'string' ? request : request.prompt;
+    const requestId = typeof request === 'string' ? undefined : request.requestId;
     try {
       // Send to AI to enhance the prompt. The result carries which backend ran
       // it and whether the text actually changed — 12 of 16 providers cannot
       // enhance at all, and even the 4 that can resolve the original prompt
       // when their CLI fails, so the webview must be told the difference.
-      const result = await this._providerManager.enhancePrompt(prompt);
+      const result = await this._providerManager.enhancePrompt(prompt, panelId ? this._getPanelProvider(panelId) : undefined);
       if (panelId) {
         this._postToPanel(panelId, {
           type: 'promptEnhanced',
-          payload: result
+          payload: { ...result, requestId }
         });
       }
     } catch (error) {
@@ -7109,9 +7280,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this._postToPanel(panelId, {
             type: 'promptEnhanceUnavailable',
             payload: {
+              requestId,
               activeProviderName: error.activeProviderName,
               reason: error.message
-            } satisfies PromptEnhanceUnavailablePayload
+            } as PromptEnhanceUnavailablePayload & { requestId?: number }
           });
         }
         return;
@@ -7121,7 +7293,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (panelId) {
         this._postToPanel(panelId, {
           type: 'promptEnhanceError',
-          payload: error instanceof Error ? error.message : 'Failed to enhance prompt'
+          payload: { requestId, error: error instanceof Error ? error.message : 'Failed to enhance prompt' }
         });
       }
     }
@@ -7131,16 +7303,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     payload: { action: string; details: string },
     panelId?: string
   ) {
+    const allow = vscode.l10n.t('Allow');
     const result = await vscode.window.showInformationMessage(
-      `Mysti wants to ${payload.action}: ${payload.details}`,
+      vscode.l10n.t('Mysti wants to {0}: {1}', payload.action, payload.details),
       { modal: true },
-      'Allow',
-      'Deny'
+      allow,
+      vscode.l10n.t('Deny')
     );
     if (panelId) {
       this._postToPanel(panelId, {
         type: 'permissionResult',
-        payload: { action: payload.action, allowed: result === 'Allow' }
+        payload: { action: payload.action, allowed: result === allow }
       });
     }
   }
@@ -8044,6 +8217,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       mode: executionMode,
       thinkingLevel: config.get('defaultThinkingLevel', 'none'),
       effortLevel: config.get('defaultEffortLevel', 'high') as Settings['effortLevel'],
+      ultracode: config.get<boolean>('claudeUltracode', false),
       accessLevel: config.get('accessLevel', 'ask-permission'),
       contextMode: config.get('autoContext', true) ? 'auto' : 'manual',
       model: this._getPanelModel(panelId),
@@ -8268,37 +8442,37 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return [
       {
         id: 'explain',
-        label: 'Explain this code',
+        label: vscode.l10n.t('Explain this code'),
         prompt: 'Explain the selected code in detail',
         icon: 'info'
       },
       {
         id: 'refactor',
-        label: 'Refactor',
+        label: vscode.l10n.t('Refactor'),
         prompt: 'Suggest refactoring improvements for this code',
         icon: 'wrench'
       },
       {
         id: 'fix-bugs',
-        label: 'Find bugs',
+        label: vscode.l10n.t('Find bugs'),
         prompt: 'Find potential bugs in this code',
         icon: 'bug'
       },
       {
         id: 'add-tests',
-        label: 'Add tests',
+        label: vscode.l10n.t('Add tests'),
         prompt: 'Generate unit tests for this code',
         icon: 'beaker'
       },
       {
         id: 'optimize',
-        label: 'Optimize',
+        label: vscode.l10n.t('Optimize'),
         prompt: 'Suggest performance optimizations',
         icon: 'zap'
       },
       {
         id: 'document',
-        label: 'Add docs',
+        label: vscode.l10n.t('Add docs'),
         prompt: 'Add documentation and comments to this code',
         icon: 'book'
       }
@@ -8367,6 +8541,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this._vtDashboardPanelId = null;
       this._vtDashboardChatOrigin = null;
       this._panelStates.delete(panelId);
+      this._stopAuthPolling(panelId);
       // Plan 27 §21.6c #11: the id is minted per open, so a persisted
       // `mysti.context:<panelId>` would outlive the panel — same as the chat tab.
       this._contextManager.clearPanelContext(panelId);
@@ -8708,6 +8883,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       mode: config.get<Settings['mode']>('defaultMode', 'default'),
       thinkingLevel: config.get<Settings['thinkingLevel']>('defaultThinkingLevel', 'none'),
       effortLevel: config.get<Settings['effortLevel']>('defaultEffortLevel', 'high'),
+      ultracode: config.get<boolean>('claudeUltracode', false),
       accessLevel: config.get<Settings['accessLevel']>('accessLevel', 'ask-permission'),
       contextMode: 'auto',
       // Autonomy is a per-panel RUNTIME toggle (`mysti.toggleAutonomous` ->
@@ -8946,6 +9122,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this._canvasToolServer = null;
       this._canvasMcpHttp = null;
       this._panelStates.delete(panelId);
+      this._stopAuthPolling(panelId);
       // Plan 27 §21.6c #11: release the per-open context key, as the chat tab does.
       this._contextManager.clearPanelContext(panelId);
     });
@@ -11491,6 +11668,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Install button for a failure installing cannot fix.
    */
   private _postProviderFailure(panelId: string, providerId: string, raw: string): boolean {
+    if (this._offerModelCliUpgrade(panelId, providerId, raw)) { return true; }
     const text = String(raw ?? '');
     const missing = /\bENOENT\b|command not found|is not recognized|no such file or directory/i.test(text);
     if (!missing) { return false; }
@@ -11510,6 +11688,76 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       },
     });
     return true;
+  }
+
+  private _offerModelCliUpgrade(panelId: string, providerId: string, raw: string): boolean {
+    const minimum = requiredCliVersion(providerId, raw);
+    if (!minimum || !this._cliUpdates) { return false; }
+    // One current offer per panel/provider. The client returns only this host ID,
+    // never a package, version, executable or command from the error message.
+    for (const [key, offer] of this._modelCliUpgrades) {
+      if (offer.panelId === panelId && offer.providerId === providerId) {
+        if (offer.state === 'installing') { return true; }
+        this._modelCliUpgrades.delete(key);
+      }
+    }
+    const id = crypto.randomUUID();
+    this._modelCliUpgrades.set(id, { panelId, providerId, minimum, state: 'available' });
+    this._postToPanel(panelId, {
+      type: 'modelCliUpgrade', payload: {
+        id, providerId, minimum, providerLabel: getProviderDisplayName(providerId) || providerId,
+        state: 'available', message: `This model requires ${getProviderDisplayName(providerId) || providerId} CLI ${minimum} or newer.`,
+      },
+    });
+    return true;
+  }
+
+  private async _upgradeModelCli(panelId: string, id: string): Promise<void> {
+    const offer = this._modelCliUpgrades.get(id);
+    if (!offer || offer.panelId !== panelId || offer.state === 'ready' || offer.state === 'installing') { return; }
+    const report = (state: ModelCliUpgradePayload['state'], message: string): void => {
+      offer.state = state;
+      this._postToPanel(panelId, { type: 'modelCliUpgrade', payload: {
+        id, providerId: offer.providerId, minimum: offer.minimum,
+        providerLabel: getProviderDisplayName(offer.providerId) || offer.providerId, state, message,
+      } });
+    };
+    if (this._upgradingClis.has(offer.providerId)) {
+      report('failed', 'An upgrade for this CLI is already running in another panel. Try again when it finishes.');
+      return;
+    }
+    this._upgradingClis.add(offer.providerId);
+    report('installing', 'Checking the installed CLI…');
+    try {
+      if (this._lifecycleManager.getSession(panelId)?.status === 'busy') {
+        throw new Error('Finish or stop the current response, then try the upgrade again.');
+      }
+      let status = await this._setupManager.refreshProviderStatus(offer.providerId);
+      if (!status?.found || !meetsCliVersion(status.version, offer.minimum)) {
+        if (!this._cliUpdates) { throw new Error('The CLI update service is unavailable.'); }
+        const plan = this._cliUpdates.getModelUpgradePlan(offer.providerId, offer.minimum, status?.path);
+        report('installing', `Installing CLI ${offer.minimum} or newer. Progress is shown in the upgrade terminal.`);
+        await runCliUpgradeTask(getProviderDisplayName(offer.providerId) || offer.providerId, plan);
+        report('installing', 'Verifying the installed CLI…');
+        status = await this._setupManager.refreshProviderStatus(offer.providerId);
+      }
+      if (!status?.found || !meetsCliVersion(status.version, offer.minimum)) {
+        throw new Error(`Mysti still detects ${status?.version || 'an unknown CLI version'}${status?.path ? ` at ${status.path}` : ''}. This model requires ${offer.minimum} or newer. Check the upgrade terminal and your configured CLI path, then try again.`);
+      }
+      // Retain native conversation IDs, but make the next turn spawn the new binary.
+      const provider = this._providerManager.getProviderInstance(offer.providerId);
+      if (this._lifecycleManager.getSession(panelId)?.status === 'busy') {
+        report('ready', `CLI ${status.version} is installed. Start a new conversation after the current response finishes to use it.`);
+      } else {
+        provider?.disposePersistentProcess?.(panelId);
+        report('ready', `CLI ${status.version} is ready. Send your message again.`);
+      }
+      this._broadcastCliUpdates();
+    } catch (error) {
+      report('failed', error instanceof Error ? error.message : 'Upgrade failed. See the upgrade terminal for details.');
+    } finally {
+      this._upgradingClis.delete(offer.providerId);
+    }
   }
 
   /**
@@ -11803,7 +12051,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Returns undefined ⇒ use the backend's own default (never forces a bad id).
    */
   private _resolveTierModel(agentId: AgentType, tier: 'fast' | 'strong'): string | undefined {
-    let models: { id: string; contextWindow?: number }[] = [];
+    let models: { id: string; contextWindow?: number }[];
     try { models = this._providerManager.getModels(agentId) ?? []; } catch { return undefined; }
     if (models.length === 0) { return undefined; }
     const FAST = /(haiku|flash|mini|small|lite|nano|8b|7b|turbo|fast|highspeed|high-speed)/i;
@@ -11840,7 +12088,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (!entry) { notes.push(`model "${d.model}" is not in the OpenRouter catalog; used the default`); }
         else { model = d.model; }
       } else {
-        let known = false;
+        let known: boolean;
         try { known = (this._providerManager.getModels(target) ?? []).some(m => m.id === d.model); } catch { known = false; }
         if (known) { model = d.model; } else { notes.push(`model "${d.model}" is not available on ${target}; used its default`); }
       }
@@ -13792,7 +14040,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const store = this._canvasStore;
     const executor = this._canvasExecutor;
     if (!store || !executor || this._canvasPanelId !== panelId) { return; }
-    let next: CanvasArtifact | null = null;
+    let next: CanvasArtifact | null;
     if (artifactId) {
       next = await store.load(artifactId).catch(() => null);
     } else {
@@ -14081,7 +14329,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     // Cleanup on dispose
     panel.onDidDispose(() => {
+      void this._dictationManager?.cancelPanel(panelId);
       this._panelStates.delete(panelId);
+      this._stopAuthPolling(panelId);
+      for (const [id, offer] of this._modelCliUpgrades) {
+        if (offer.panelId === panelId) { this._modelCliUpgrades.delete(id); }
+      }
       this._unbindHubFrom(panelId);
       this._cancelQueuedChannelTurn(panelId);
       this._cancelPendingSubAgentQuestions(panelId);
@@ -14579,7 +14832,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         payload: {
           providerId,
           displayName: provider?.displayName || providerId,
-          message: `To use ${provider?.displayName || providerId}, you need to sign in. This will open your browser.`
+          message: vscode.l10n.t('To use {0}, you need to sign in. This will open your browser.', provider?.displayName || providerId)
         }
       });
     } else {
@@ -14588,7 +14841,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         type: 'setupFailed',
         payload: {
           providerId,
-          error: result.error || 'Setup failed',
+          error: result.error ? vscode.l10n.t(result.error) : vscode.l10n.t('Setup failed'),
           canRetry: true,
           requiresManual: result.requiresManualStep === 'install'
         }
@@ -14627,100 +14880,106 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Handle user confirming authentication
    */
   private async _handleAuthConfirm(providerId: string, panelId: string): Promise<void> {
-    // Verify CLI is actually installed before attempting auth
-    const provider = this._providerManager.getProviderInstance(providerId);
-    if (!provider) {
-      this._postToPanel(panelId, {
-        type: 'setupFailed',
-        payload: {
-          providerId,
-          error: `Provider "${providerId}" not found`,
-          canRetry: true,
-          requiresManual: true
-        }
-      });
-      return;
-    }
-
-    const discovery = await provider.discoverCli();
-    if (!discovery.found) {
-      // CLI not installed - need to install first
-      this._postToPanel(panelId, {
-        type: 'setupFailed',
-        payload: {
-          providerId,
-          error: 'CLI is not installed. Please install it first before authenticating.',
-          canRetry: true,
-          requiresManual: true
-        }
-      });
-      return;
-    }
-
-    this._postToPanel(panelId, {
-      type: 'setupProgress',
-      payload: {
-        step: 'authenticating',
-        providerId,
-        message: 'Opening authentication...',
-        progress: 80
+    this._stopAuthPolling(panelId);
+    try {
+      // Verify CLI is actually installed before attempting auth
+      const provider = this._providerManager.getProviderInstance(providerId);
+      if (!provider) {
+        this._postToPanel(panelId, {
+          type: 'setupFailed',
+          payload: {
+            providerId,
+            error: `Provider "${providerId}" not found`,
+            canRetry: true,
+            requiresManual: true
+          }
+        });
+        return;
       }
-    });
 
-    // Start auth flow (opens terminal/browser)
-    await this._setupManager.authenticateProvider(providerId);
+      const discovery = await provider.discoverCli();
+      if (!discovery.found) {
+        // CLI not installed - need to install first
+        this._postToPanel(panelId, {
+          type: 'setupFailed',
+          payload: {
+            providerId,
+            error: 'CLI is not installed. Please install it first before authenticating.',
+            canRetry: true,
+            requiresManual: true
+          }
+        });
+        return;
+      }
 
-    // Poll for auth completion
-    this._pollAuthStatus(providerId, panelId);
+      this._postToPanel(panelId, {
+        type: 'setupProgress',
+        payload: {
+          step: 'authenticating',
+          providerId,
+          message: 'Opening authentication...',
+          progress: 80
+        }
+      });
+
+      // Start auth flow (opens terminal/browser)
+      await this._setupManager.authenticateProvider(providerId);
+
+      // Poll for auth completion
+      this._pollAuthStatus(providerId, panelId);
+    } catch (error) {
+      this._postToPanel(panelId, { type: 'setupFailed', payload: { providerId: providerId, error: error instanceof Error ? error.message : String(error), canRetry: true } });
+    }
   }
 
   /**
    * Poll for authentication status completion
    */
-  private async _pollAuthStatus(providerId: string, panelId: string): Promise<void> {
-    const maxAttempts = 60; // 2 minutes with 2-second intervals
+  private readonly _authPolls = new Map<string, { providerId: string; timer?: ReturnType<typeof setTimeout>; cancelled: boolean }>();
+
+  private _stopAuthPolling(panelId: string): void {
+    const run = this._authPolls?.get(panelId);
+    if (run) { run.cancelled = true; clearTimeout(run.timer); this._authPolls.delete(panelId); }
+  }
+
+  private _pollAuthStatus(providerId: string, panelId: string): void {
+    this._stopAuthPolling(panelId);
+    const run = { providerId, cancelled: false, timer: undefined as ReturnType<typeof setTimeout> | undefined };
+    this._authPolls.set(panelId, run);
     let attempts = 0;
-
-    const poll = async () => {
-      attempts++;
-      const provider = this._providerManager.getProviderInstance(providerId);
-      if (!provider) {return;}
-
-      const authStatus = await provider.checkAuthentication();
-
-      if (authStatus.authenticated) {
-        // Auth completed out-of-band — drop the cached status (it still says
-        // unauthenticated) so the next wizard/availability read re-probes
-        this._setupManager.invalidateProviderStatus(providerId);
-        this._postToPanel(panelId, {
-          type: 'setupComplete',
-          payload: { providerId }
-        });
-        return;
-      }
-
-      if (attempts < maxAttempts) {
-        setTimeout(poll, 2000);
-      } else {
-        // Timeout - user can retry
-        this._postToPanel(panelId, {
-          type: 'setupFailed',
-          payload: {
-            providerId,
-            error: 'Authentication timed out. Please try again.',
-            canRetry: true
-          }
-        });
+    const poll = async (): Promise<void> => {
+      if (run.cancelled) { return; }
+      if (!this._panelStates.has(panelId)) { this._stopAuthPolling(panelId); return; }
+      try {
+        const provider = this._providerManager.getProviderInstance(providerId);
+        if (!provider) { throw new Error('Provider is no longer available.'); }
+        const status = await provider.checkAuthentication();
+        if (run.cancelled) { return; }
+        if (status.authenticated) {
+          this._setupManager.invalidateProviderStatus(providerId);
+          this._postToPanel(panelId, { type: 'setupComplete', payload: { providerId } });
+          this._postToPanel(panelId, { type: 'providerSetupStep', payload: { providerId, step: 'complete', progress: 100, message: 'Ready to use!' } });
+          this._stopAuthPolling(panelId);
+          return;
+        }
+        if (++attempts >= 60) { throw new Error('Authentication timed out. Retry sign-in or refresh detection after completing it.'); }
+        run.timer = setTimeout(() => { void poll(); }, 2000);
+      } catch (error) {
+        if (run.cancelled) { return; }
+        const message = error instanceof Error ? error.message : String(error);
+        this._postToPanel(panelId, { type: 'setupFailed', payload: { providerId, error: message, canRetry: true } });
+        this._postToPanel(panelId, { type: 'providerSetupStep', payload: { providerId, step: 'failed', message, retryable: true } });
+        this._stopAuthPolling(panelId);
       }
     };
-
-    setTimeout(poll, 2000);
+    run.timer = setTimeout(() => { void poll(); }, 2000);
   }
 
   /**
    * Handle user skipping authentication for now
    */
   private async _handleAuthSkip(providerId: string, panelId: string): Promise<void> {
+    this._stopAuthPolling(panelId);
     // Check if any other provider is ready
     const statuses = await this._setupManager.getSetupStatus();
     const otherReady = statuses.find(s => s.providerId !== providerId && s.installed && s.authenticated);
@@ -14739,7 +14998,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         type: 'setupFailed',
         payload: {
           providerId,
-          error: 'Authentication skipped. You can configure providers manually in settings.',
+          error: vscode.l10n.t('Authentication skipped. You can configure providers manually in settings.'),
           canRetry: true,
           requiresManual: true
         }
@@ -14751,6 +15010,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Handle user choosing to skip setup entirely
    */
   private _handleSkipSetup(panelId: string): void {
+    this._stopAuthPolling(panelId);
     // User wants to configure manually - send initial state to show the chat interface
     this._sendInitialState(panelId);
   }
@@ -14778,210 +15038,170 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     panelId: string
   ): Promise<void> {
     const { providerId, autoInstall = true } = payload;
+    this._stopAuthPolling(panelId);
 
-    // Send initial checking step
-    this._postToPanel(panelId, {
-      type: 'providerSetupStep',
-      payload: {
-        providerId,
-        step: 'checking',
-        progress: 5,
-        message: 'Checking current status...'
-      }
-    });
-
-    const provider = this._providerManager.getProviderInstance(providerId);
-    if (!provider) {
+    try {
+      // Send initial checking step
       this._postToPanel(panelId, {
         type: 'providerSetupStep',
         payload: {
           providerId,
-          step: 'failed',
-          progress: 0,
-          message: `Provider "${providerId}" not found`
+          step: 'checking',
+          progress: 5,
+          message: 'Checking current status...'
         }
       });
-      return;
-    }
 
-    // Check if already installed
-    const discovery = await provider.discoverCli();
-
-    if (!discovery.found) {
-      if (autoInstall) {
-        // Try auto-install
-        this._postToPanel(panelId, {
-          type: 'providerSetupStep',
-          payload: {
-            providerId,
-            step: 'downloading',
-            progress: 15,
-            message: 'Checking system requirements and permissions...'
-          }
-        });
-
-        this._postToPanel(panelId, {
-          type: 'providerSetupStep',
-          payload: {
-            providerId,
-            step: 'installing',
-            progress: 30,
-            message: `Installing ${provider.displayName} CLI...`
-          }
-        });
-
-        const installResult = await this._setupManager.autoInstallCli(providerId);
-
-        if (!installResult.success) {
-          // Build alternative commands from provider's install methods, filtered
-          // to the current OS (the webview can't reliably know the host OS, so a
-          // Windows user must not be shown a macOS-only `brew`/`curl|bash`).
-          const alternativeCommands: Array<{ label: string; command: string }> = [];
-          if (provider.getInstallMethods) {
-            const methods = filterInstallMethodsForOS(provider.getInstallMethods());
-            methods.forEach(m => alternativeCommands.push({ label: m.label, command: m.command }));
-          }
-          if (alternativeCommands.length === 0) {
-            alternativeCommands.push({ label: 'Manual install', command: provider.getInstallCommand() });
-          }
-
-          this._postToPanel(panelId, {
-            type: 'providerSetupStep',
-            payload: {
-              providerId,
-              step: 'failed',
-              progress: 0,
-              message: installResult.error || 'Installation failed',
-              details: `Run: ${provider.getInstallCommand()}`,
-              errorCategory: installResult.errorCategory,
-              suggestedFix: installResult.suggestedFix,
-              retryable: installResult.retryable !== false,
-              alternativeCommands
-            }
-          });
-          return;
-        }
-
-        this._postToPanel(panelId, {
-          type: 'providerSetupStep',
-          payload: {
-            providerId,
-            step: 'verifying',
-            progress: 60,
-            message: 'Verifying installation...'
-          }
-        });
-      } else {
-        // Manual install needed
+      const provider = this._providerManager.getProviderInstance(providerId);
+      if (!provider) {
         this._postToPanel(panelId, {
           type: 'providerSetupStep',
           payload: {
             providerId,
             step: 'failed',
             progress: 0,
-            message: 'CLI not installed',
-            details: `Run: ${provider.getInstallCommand()}`
+            message: `Provider "${providerId}" not found`
           }
         });
         return;
       }
-    }
 
-    // CLI installed - check auth
-    this._postToPanel(panelId, {
-      type: 'providerSetupStep',
-      payload: {
-        providerId,
-        step: 'verifying',
-        progress: 70,
-        message: 'Checking authentication...'
-      }
-    });
+      // Check if already installed
+      const discovery = await provider.discoverCli();
 
-    const authStatus = await provider.checkAuthentication();
+      if (!discovery.found) {
+        if (autoInstall) {
+          // Try auto-install
+          this._postToPanel(panelId, {
+            type: 'providerSetupStep',
+            payload: {
+              providerId,
+              step: 'downloading',
+              progress: 15,
+              message: 'Checking system requirements and permissions...'
+            }
+          });
 
-    if (!authStatus.authenticated) {
-      // Check if provider has multiple auth options
-      const authOptions = this._setupManager.getAuthOptions(providerId);
+          this._postToPanel(panelId, {
+            type: 'providerSetupStep',
+            payload: {
+              providerId,
+              step: 'installing',
+              progress: 30,
+              message: `Installing ${provider.displayName} CLI...`
+            }
+          });
 
-      if (authOptions.length > 1) {
-        // Show auth options for providers like Gemini
-        this._postToPanel(panelId, {
-          type: 'authOptions',
-          payload: {
-            providerId,
-            displayName: provider.displayName,
-            options: authOptions
+          const installResult = await this._setupManager.autoInstallCli(providerId, (step, message, progress) => {
+            this._postToPanel(panelId, { type: 'providerSetupStep', payload: { providerId, step, message, progress } });
+          });
+
+          if (!installResult.success) {
+            // Build alternative commands from provider's install methods, filtered
+            // to the current OS (the webview can't reliably know the host OS, so a
+            // Windows user must not be shown a macOS-only `brew`/`curl|bash`).
+            const alternativeCommands: Array<{ label: string; command: string }> = [];
+            if (provider.getInstallMethods) {
+              const methods = filterInstallMethodsForOS(provider.getInstallMethods());
+              methods.forEach(m => alternativeCommands.push({ label: m.label, command: m.command }));
+            }
+            if (alternativeCommands.length === 0) {
+              alternativeCommands.push({ label: 'Manual install', command: provider.getInstallCommand() });
+            }
+
+            this._postToPanel(panelId, {
+              type: 'providerSetupStep',
+              payload: {
+                providerId,
+                step: 'failed',
+                progress: 0,
+                message: installResult.error || 'Installation failed',
+                details: `Run: ${provider.getInstallCommand()}`,
+                errorCategory: installResult.errorCategory,
+                suggestedFix: installResult.suggestedFix,
+                retryable: installResult.retryable !== false,
+                alternativeCommands
+              }
+            });
+            return;
           }
-        });
-      } else {
-        // Single auth method - prompt for auth
-        this._postToPanel(panelId, {
-          type: 'authPrompt',
-          payload: {
-            providerId,
-            displayName: provider.displayName,
-            message: `Sign in to ${provider.displayName} to continue`
-          }
-        });
+
+          this._postToPanel(panelId, {
+            type: 'providerSetupStep',
+            payload: {
+              providerId,
+              step: 'verifying',
+              progress: 60,
+              message: 'Verifying installation...'
+            }
+          });
+        } else {
+          // Manual install needed
+          this._postToPanel(panelId, {
+            type: 'providerSetupStep',
+            payload: {
+              providerId,
+              step: 'failed',
+              progress: 0,
+              message: 'CLI not installed',
+              details: `Run: ${provider.getInstallCommand()}`
+            }
+          });
+          return;
+        }
       }
-      return;
-    }
 
-    // Fully ready!
-    this._postToPanel(panelId, {
-      type: 'providerSetupStep',
-      payload: {
-        providerId,
-        step: 'complete',
-        progress: 100,
-        message: 'Ready to use!',
-        details: authStatus.user
+      // CLI installed - check auth
+      this._postToPanel(panelId, {
+        type: 'providerSetupStep',
+        payload: {
+          providerId,
+          step: 'verifying',
+          progress: 70,
+          message: 'Checking authentication...'
+        }
+      });
+
+      const authStatus = await provider.checkAuthentication();
+
+      if (!authStatus.authenticated) {
+        // Check if provider has multiple auth options
+        const authOptions = this._setupManager.getAuthOptions(providerId);
+
+        if (authOptions.length > 1) {
+          // Show auth options for providers like Gemini
+          this._postToPanel(panelId, {
+            type: 'authOptions',
+            payload: {
+              providerId,
+              displayName: provider.displayName,
+              options: authOptions
+            }
+          });
+        } else {
+          // Single auth method - prompt for auth
+          this._postToPanel(panelId, {
+            type: 'authPrompt',
+            payload: {
+              providerId,
+              displayName: provider.displayName,
+              message: `Sign in to ${provider.displayName} to continue`
+            }
+          });
+        }
+        return;
       }
-    });
 
-    // Refresh wizard status
-    const status = await this._setupManager.getWizardStatus();
-    this._postToPanel(panelId, {
-      type: 'wizardStatus',
-      payload: status
-    });
-  }
-
-  /**
-   * Handle auth method selection from wizard
-   */
-  private async _handleSelectAuthMethod(
-    payload: { providerId: string; method: string; apiKey?: string },
-    panelId: string
-  ): Promise<void> {
-    const { providerId, method, apiKey } = payload;
-
-    this._postToPanel(panelId, {
-      type: 'providerSetupStep',
-      payload: {
-        providerId,
-        step: 'authenticating',
-        progress: 80,
-        message: 'Authenticating...'
-      }
-    });
-
-    const result = await this._setupManager.authenticateWithMethod(
-      providerId,
-      method as AuthMethodType,
-      apiKey
-    );
-
-    if (result.authenticated) {
+      // Fully ready!
+      this._setupManager.invalidateProviderStatus(providerId);
       this._postToPanel(panelId, {
         type: 'providerSetupStep',
         payload: {
           providerId,
           step: 'complete',
           progress: 100,
-          message: 'Authentication successful!',
-          details: result.user
+          message: 'Ready to use!',
+          details: authStatus.user
         }
       });
 
@@ -14991,19 +15211,78 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         type: 'wizardStatus',
         payload: status
       });
-    } else if (method === 'oauth' || method === 'cli-login') {
-      // OAuth flow - poll for completion
-      this._pollAuthStatus(providerId, panelId);
-    } else {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this._postToPanel(panelId, { type: 'providerSetupStep', payload: { providerId, step: 'failed', progress: 0, message, retryable: true } });
+      this._postToPanel(panelId, { type: 'setupFailed', payload: { providerId, error: message, canRetry: true } });
+    }
+  }
+
+  /**
+   * Handle auth method selection from wizard
+   */
+  private async _handleSelectAuthMethod(
+    payload: { providerId: string; method: string; apiKey?: string },
+    panelId: string
+  ): Promise<void> {
+    this._stopAuthPolling(panelId);
+    try {
+      const { providerId, method, apiKey } = payload;
+
       this._postToPanel(panelId, {
         type: 'providerSetupStep',
         payload: {
           providerId,
-          step: 'failed',
-          progress: 0,
-          message: result.error || 'Authentication failed'
+          step: 'authenticating',
+          progress: 80,
+          message: 'Authenticating...'
         }
       });
+
+      const result = await this._setupManager.authenticateWithMethod(
+        providerId,
+        method as AuthMethodType,
+        apiKey
+      );
+
+      if (result.authenticated) {
+        this._setupManager.invalidateProviderStatus(providerId);
+        this._postToPanel(panelId, {
+          type: 'providerSetupStep',
+          payload: {
+            providerId,
+            step: 'complete',
+            progress: 100,
+            message: 'Authentication successful!',
+            details: result.user
+          }
+        });
+
+        this._postToPanel(panelId, { type: 'setupComplete', payload: { providerId } });
+
+        // Refresh wizard status
+        const status = await this._setupManager.getWizardStatus();
+        this._postToPanel(panelId, {
+          type: 'wizardStatus',
+          payload: status
+        });
+      } else if (method === 'oauth' || method === 'cli-login') {
+        // OAuth flow - poll for completion
+        this._pollAuthStatus(providerId, panelId);
+      } else {
+        this._postToPanel(panelId, {
+          type: 'providerSetupStep',
+          payload: {
+            providerId,
+            step: 'failed',
+            progress: 0,
+            message: result.error || 'Authentication failed'
+          }
+        });
+        this._postToPanel(panelId, { type: 'setupFailed', payload: { providerId, error: result.error || 'Authentication failed', canRetry: true } });
+      }
+    } catch (error) {
+      this._postToPanel(panelId, { type: 'setupFailed', payload: { providerId: payload.providerId, error: error instanceof Error ? error.message : String(error), canRetry: true } });
     }
   }
 
@@ -15081,20 +15360,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     // Force a full re-probe: resets the npm cache and bypasses the discovery
     // cache (and provider-side probe-failure TTLs) — Plan 03 Phase 3a.
-    const wizardStatus = await this._setupManager.refreshWizardStatus();
-    this._postToPanel(panelId, {
-      type: 'wizardStatus',
-      payload: wizardStatus
-    });
+    try {
+      const wizardStatus = await this._setupManager.refreshWizardStatus();
+      this._postToPanel(panelId, {
+        type: 'wizardStatus',
+        payload: wizardStatus
+      });
 
-    // Also update provider availability (same shape the webview consumes
-    // from initialState / the late providerAvailability message)
-    this._postToPanel(panelId, {
-      type: 'providerAvailability',
-      payload: { providerAvailability: this._buildProviderAvailability(wizardStatus) }
-    });
+      // Also update provider availability (same shape the webview consumes
+      // from initialState / the late providerAvailability message)
+      this._postToPanel(panelId, {
+        type: 'providerAvailability',
+        payload: { providerAvailability: this._buildProviderAvailability(wizardStatus) }
+      });
 
-    console.log('[Mysti] ChatViewProvider: Provider detection refreshed');
+      console.log('[Mysti] ChatViewProvider: Provider detection refreshed');
+        this._postToPanel(panelId, { type: 'providerDetectionComplete', payload: {} });
+    } catch (error) {
+      this._postToPanel(panelId, { type: 'providerDetectionComplete', payload: { error: error instanceof Error ? error.message : String(error) } });
+    }
   }
 
   /**
@@ -15140,10 +15424,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     const terminal = vscode.window.createTerminal({
       name: `Install ${payload.providerId}`,
-      shellPath: process.platform === 'win32' ? undefined : process.env.SHELL
+      shellPath: installerShell(payload.command)
     });
     terminal.show();
-    terminal.sendText(`# Run this command to install ${payload.providerId}:`);
     terminal.sendText(payload.command);
     console.log(`[Mysti] ChatViewProvider: Opened terminal for ${payload.providerId}`);
     // The install finishes in the terminal, out of Mysti's sight.
@@ -15154,34 +15437,46 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Handle request for provider install info (from install modal)
    */
   private async _handleRequestProviderInstallInfo(
-    payload: { providerId: string },
+    payload: { providerId: string; requestId?: number },
     panelId: string
   ): Promise<void> {
-    const info = this._setupManager.getProviderSetupInfo(payload.providerId);
-    const wizardStatus = await this._setupManager.getWizardStatus();
-    const providerStatus = wizardStatus.providers.find(p => p.providerId === payload.providerId);
+    try {
+      const info = this._setupManager.getProviderSetupInfo(payload.providerId);
+      if (!info) { throw new Error('Provider is not available. Reopen the provider menu and try again.'); }
+      const wizardStatus = this._setupManager.getWizardStatusCached();
+      const npmAvailable = await this._setupManager.checkNpmAvailable();
+      const providerStatus = wizardStatus.providers.find(p => p.providerId === payload.providerId);
 
-    // Get provider instance for capabilities and install methods
-    const providerInstance = this._providerManager.getProviderInstance(payload.providerId);
-    const supportsAutoInstall = providerInstance?.capabilities.supportsAutoInstall ?? true;
-    // Filter to the current OS — the webview renders these verbatim and can't tell
-    // the host platform, so a Windows user must never see a macOS-only command.
-    const installMethods = filterInstallMethodsForOS(providerInstance?.getInstallMethods?.() || []);
+      // Get provider instance for capabilities and install methods
+      const providerInstance = this._providerManager.getProviderInstance(payload.providerId);
+      const supportsAutoInstall = providerInstance?.capabilities.supportsAutoInstall === true;
+      // Filter to the current OS — the webview renders these verbatim and can't tell
+      // the host platform, so a Windows user must never see a macOS-only command.
+      const installMethods = filterInstallMethodsForOS(providerInstance?.getInstallMethods?.() || []);
 
-    this._postToPanel(panelId, {
-      type: 'providerInstallInfo',
-      payload: {
-        providerId: payload.providerId,
-        displayName: providerStatus?.displayName || payload.providerId,
-        installCommand: info?.installCommand || '',
-        authCommand: info?.authCommand || '',
-        authInstructions: info?.authInstructions || [],
-        docsUrl: info?.docsUrl,
-        npmAvailable: wizardStatus.npmAvailable,
-        supportsAutoInstall,
-        installMethods
-      }
-    });
+      this._postToPanel(panelId, {
+        type: 'providerInstallInfo',
+        payload: {
+          providerId: payload.providerId,
+          requestId: payload.requestId,
+          installed: providerStatus?.installed === true,
+          authenticated: providerStatus?.authenticated === true,
+          displayName: providerStatus?.displayName || payload.providerId,
+          installCommand: info?.installCommand || '',
+          authCommand: info?.authCommand || '',
+          authInstructions: info?.authInstructions || [],
+          docsUrl: info?.docsUrl,
+          npmAvailable,
+          supportsAutoInstall,
+          installMethods
+        }
+      });
+    } catch (error) {
+      this._postToPanel(panelId, { type: 'providerInstallInfo', payload: {
+        providerId: payload.providerId, requestId: payload.requestId,
+        error: error instanceof Error ? error.message : String(error)
+      } });
+    }
   }
 
   /**
@@ -15200,7 +15495,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       payload: {
         step: 'checking',
         providerId: 'claude-code',
-        message: 'DEBUG: Simulating setup flow...',
+        message: vscode.l10n.t('DEBUG: Simulating setup flow...'),
         progress: 10
       }
     });
@@ -15212,7 +15507,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         payload: {
           step: 'installing',
           providerId: 'claude-code',
-          message: 'DEBUG: Simulating installation...',
+          message: vscode.l10n.t('DEBUG: Simulating installation...'),
           progress: 40
         }
       });
@@ -15224,7 +15519,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         payload: {
           providerId: 'claude-code',
           displayName: 'Claude Code',
-          message: 'DEBUG: This is a test auth prompt. Click Sign In or Later to test the flow.'
+          message: vscode.l10n.t('DEBUG: This is a test auth prompt. Click Sign In or Later to test the flow.')
         }
       });
     }, 2500);
@@ -15241,7 +15536,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       type: 'setupFailed',
       payload: {
         providerId: 'claude-code',
-        error: 'DEBUG: Simulated failure - npm not available on your system.',
+        error: vscode.l10n.t('DEBUG: Simulated failure - npm not available on your system.'),
         canRetry: true,
         requiresManual: true
       }
@@ -15279,7 +15574,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this._postToPanel(panelId, { type: 'deskRosterUpdated', payload: { enabled: false, peers: [] } } as WebviewMessage);
       return;
     }
-    let identity: { peerId: string } | null = null;
+    let identity: { peerId: string } | null;
     try {
       identity = await this._desk.identity.ensure();
     } catch (err) {
@@ -15466,7 +15761,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   public dispose(): void {
+    this._dictationManager?.dispose();
     console.log('[Mysti] ChatViewProvider: Disposing and cleaning up resources');
+    for (const panelId of this._authPolls?.keys() || []) { this._stopAuthPolling(panelId); }
     this._nativeApprovalRegistration.dispose();
     this._nativeApprovalCards.dispose();
     this._subAgentQuestions.dispose();

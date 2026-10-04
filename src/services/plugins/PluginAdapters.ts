@@ -10,7 +10,7 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  *
- * Plan 39 — Manage Plugins: one adapter per backend that has a plugin system.
+ * Plan 45 — Manage Plugins: one adapter per backend that has a plugin system.
  *
  * Every adapter drives that backend's OWN CLI (execFile, no shell) and never
  * writes another tool's config. An operation is supported iff its method
@@ -498,6 +498,7 @@ export const PLUGIN_ADAPTERS: Record<ProviderType, PluginBackend> = {
   'ollama': null,
   'localai': null,
   'openrouter': null,
+  'minimax': null,
 };
 
 export function isAdapter(b: PluginBackend): b is PluginAdapter {

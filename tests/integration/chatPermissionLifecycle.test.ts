@@ -33,6 +33,7 @@ function createHarness() {
   const panels = new Map(['a', 'b'].map(id => [id, { id, currentConversationId: `conversation-${id}` }]));
   const jobs = new Map([['job-a', { id: 'job-a', panelId: 'a' }]]);
   const provider = Object.assign(Object.create(ChatViewProvider.prototype), {
+    _modelCliUpgrades: new Map(),
     _extensionUri: vscode.Uri.file('/mock'),
     _extensionContext: { extension: { packageJSON: { version: '0.0.0' } } },
     _sidebarId: 'a',

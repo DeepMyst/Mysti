@@ -267,7 +267,7 @@ export class McpConfigManager {
         : {};
     } catch (err) {
       // Don't silently overwrite a config we can't parse — surface it.
-      throw new Error(`Existing config at ${file} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`);
+      throw new Error(`Existing config at ${file} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
     }
   }
 

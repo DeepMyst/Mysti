@@ -88,8 +88,9 @@ export function classifyToolAction(toolName: string): PermissionActionType {
 /**
  * Determine if a tool_use should be gated with a permission card.
  * Returns true when mode/access settings require user approval for write operations.
- * All providers bypass CLI-level permissions (piped stdin can't prompt interactively).
- * This stream-level gate is the sole enforcement point.
+ * Native approval transports consult this policy before replying to the CLI.
+ * Legacy stream gates also use it, but notifications alone cannot guarantee
+ * that execution waited for host approval.
  *
  * Only tools on the explicit read-only allowlist skip the gate; unknown tools
  * are gated (fail-closed) whenever the mode/access combination requires approval.

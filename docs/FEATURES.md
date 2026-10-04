@@ -1,6 +1,8 @@
 # Mysti Features Guide
 
-Detailed documentation for all Mysti features.
+Feature reference for Mysti 2.0 BETA. Start with [Getting started](GETTING-STARTED.md); see [release notes](releases/2.0-beta/RELEASE-NOTES.md) for beta scope.
+
+Explicit agent assignments now honor every tagged provider. Independent advisory work can run in parallel; dependent handoffs and writers serialize. The [assignment guide](MENTIONS.md) is the authoritative syntax and behavior reference.
 
 ## Table of Contents
 
@@ -21,6 +23,14 @@ Detailed documentation for all Mysti features.
 
 ## Chat Interface
 
+### Dictation
+
+Click the microphone beside the message box to dictate a prompt with your editor's voice support. Mysti opens a temporary text editor for native dictation and previews its transcript in chat. Choose **Use dictation in Mysti** in the editor status bar (or **Use text** in chat) to insert it at the original cursor. Review the prompt and send it yourself. **Discard** cancels; Escape in Mysti cancels dictation without stopping a running agent.
+
+Dictation works independently of the selected provider, including Claude, Codex, Mysti, and brainstorm sessions. Existing drafts are preserved; if you edit a draft during dictation, the transcript is appended. A session ends after five minutes and inserts its transcript without sending. Switching conversations or closing the originating chat cancels dictation.
+
+Recent VS Code desktop versions include native voice support on supported platforms. Older editors may require the **VS Code Speech** extension; Mysti offers **Install speech support** when unavailable. Microphone permissions, recognition language, model downloads, and any cloud processing follow your editor's voice settings. Compatible VS Code forks must expose the native editor dictation commands. See [VS Code voice documentation](https://code.visualstudio.com/docs/configure/accessibility/voice) for host and platform requirements. Direct microphone recording inside Mysti's webview is not used.
+
 ### Basic Usage
 
 The Mysti chat interface is accessible from the Activity Bar sidebar or as a standalone editor tab.
@@ -33,6 +43,14 @@ The Mysti chat interface is accessible from the Activity Bar sidebar or as a sta
 **Opening in New Tab:**
 - Use keyboard shortcut: `Ctrl+Shift+N` (Windows/Linux) or `Cmd+Shift+N` (Mac)
 - Click the "Open in New Tab" button in the chat header
+
+### Model and Effort Menus
+
+Click the model pill below the composer to choose a model. Models show their available descriptions; the selected row uses the theme's selection color and a checkmark. The effort slider stays visible below the model list and exposes only the active provider's supported levels. Mysti's coordinator opens its full model catalog from the same menu. Claude also exposes an independent Ultracode switch in the model menu, actions menu and Settings. It requires Claude Code 2.1.284 or newer and a model/account supporting workflows. The `/` button beside the actions menu opens slash commands.
+
+The **⋯** button opens searchable Context, Tools and Model sections. Effort changes in either menu update the same setting. Use arrow keys to move between controls or change effort, Tab to move focus, and Escape to close the menu without interrupting a running response.
+
+If a model reports that it requires a newer CLI, an **Upgrade CLI** button appears beside the failure with the minimum version. Clicking it runs the provider's installer in a visible terminal. Mysti checks the detected CLI version afterward; when it is ready, send your message again. Failed or cancelled installs remain retryable. If an older copy is still selected by your CLI path setting, the card identifies that path instead of reporting success.
 
 ### Context Management
 
@@ -64,7 +82,7 @@ Each chat panel (sidebar or tab) maintains its own independent context. Adding a
 
 ## Providers
 
-Mysti supports 12 AI providers through their CLI interfaces. See [PROVIDERS.md](PROVIDERS.md) for complete setup guides.
+Mysti offers its coordinator plus 16 registered backends through CLI, ACP, WebSocket and HTTP transports. See [PROVIDERS.md](PROVIDERS.md) for complete setup guides.
 
 | Provider | Best For |
 |----------|----------|
@@ -75,7 +93,15 @@ Mysti supports 12 AI providers through their CLI interfaces. See [PROVIDERS.md](
 | **Cline** | Plan/Act workflow, structured tasks |
 | **Cursor** | Auto model selection, multi-model |
 | **OpenClaw** | WebSocket streaming, thinking levels |
-| **Manus** (experimental) | HTTP API-based, async tasks |
+| **Mysti** | Coordinator, local tools and delegated agents |
+| **OpenCode** | Configurable model backends |
+| **Qwen Code** | Coding CLI |
+| **Hermes** | ACP agent with native approval requests |
+| **Kimi Code** | ACP agent with native approval requests |
+| **Continue** | Configurable CLI workflows |
+| **Ollama** | Local inference; tool proposals are displayed, not executed |
+| **LocalAI** | Self-hosted inference; tool proposals are displayed, not executed |
+| **OpenRouter** | HTTP chat with a selected OpenRouter model |
 
 **Switching Providers:**
 - Use the `/agent` slash command
@@ -169,7 +195,7 @@ Adds the file as transient context (not persisted).
 @claude Write tests, then @gemini review them
 ```
 
-Routes tasks to specific agents. Later agents receive earlier agents' responses as context.
+Each tagged provider receives its assignment, including the selected provider. Independent advisory work can run concurrently. Use **then** for a dependent handoff; only dependent assignments receive previous results. File writers serialize. See [MENTIONS.md](MENTIONS.md).
 
 ### Switching Providers
 
@@ -328,7 +354,7 @@ Type `/` in the chat to access slash commands organized by section.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `mysti.defaultProvider` | `"claude-code"` | Default AI provider |
-| `mysti.claudePath` | `"claude"` | Path to Claude CLI |
+| `mysti.claudeCodePath` | `"claude"` | Path to Claude CLI |
 | `mysti.codexPath` | `"codex"` | Path to Codex CLI |
 | `mysti.geminiPath` | `"gemini"` | Path to Gemini CLI |
 | `mysti.copilotPath` | `"copilot"` | Path to Copilot CLI |
@@ -395,3 +421,7 @@ Type `/` in the chat to access slash commands organized by section.
 |---------|---------|-------------|
 | `mysti.permission.timeout` | `30` | Timeout seconds (0 = none) |
 | `mysti.permission.timeoutBehavior` | `"auto-reject"` | Timeout behavior |
+
+## Proactive inbox
+
+Opt in to local Git monitoring and selected GitHub/Slack topics through DeepMyst. Review evidence, pause watches, and enable quiet-hour-aware VS Code notifications. Cloud monitoring requires the new DeepMyst backend deployment. See [setup, coverage, and current limits](PROACTIVE.md).

@@ -539,7 +539,7 @@ export class ArtifactStore {
       if (!entry.isDirectory()) { continue; }
       const dirName = entry.name;
       const filePath = path.join(canvasDir, dirName, ARTIFACT_FILE);
-      let stat: fsSync.Stats | null = null;
+      let stat: fsSync.Stats | null;
       try {
         stat = await fs.stat(filePath);
       } catch {

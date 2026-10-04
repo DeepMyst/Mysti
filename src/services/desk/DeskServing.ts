@@ -894,7 +894,7 @@ export async function serve(
   const required = retentionRank(minRetention);
   // An unrecognized policy value is not a permissive one.
   if (required === null) { return fail(state, 'retention_refused'); }
-  let actual: number | null = null;
+  let actual: number | null;
   try { actual = retentionRank(model.retentionClass()); } catch { actual = null; }
   if (actual === null || actual < required) { return fail(state, 'retention_refused'); }
 

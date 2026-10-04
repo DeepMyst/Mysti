@@ -206,7 +206,7 @@ describe('Plan 31 — the Mysti tab', () => {
       await pg.click('.hub-nav-item[data-hub-connections]');
       expect((await posted(pg)).map((m) => m.type)).toContain('openConnections');
       expect(await visiblePanels(pg)).toEqual(['agent-config-panel']);
-      // Plan 39: Plugins, like Connections, is its own tab.
+      // Plan 45: Plugins, like Connections, is its own tab.
       await clearPosted(pg);
       await pg.click('.hub-nav-item[data-hub-plugins]');
       expect((await posted(pg)).map((m) => m.type)).toContain('openPlugins');

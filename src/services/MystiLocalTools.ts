@@ -166,7 +166,7 @@ export class MystiLocalTools {
    * escapes, `..` traversal, and symlinks pointing outside. Returns the real
    * absolute path, or null when the path is not safely inside the workspace.
    */
-  private async _safeResolve(rel: string): Promise<{ abs: string; root: string; real: string } | null> {
+  private async _safeResolve(rel: string): Promise<{ abs: string; root: string; real: string; lexicalRoot: string } | null> {
     const root = this._root();
     if (!root) { return null; }
     const cleaned = rel.replace(/^["']|["']$/g, '').trim();
@@ -187,8 +187,10 @@ export class MystiLocalTools {
     // `real` = realpath of the TARGET when it exists (so a symlink resolves to
     // its true path) — the secret-file filter must run on this, not the lexical
     // abs, or `notes.txt -> .env` bypasses it (re-review MEDIUM).
-    const real = probe === abs ? realProbe : abs;
-    return { abs, root: realRoot, real };
+    // Use one canonical spelling for both sides of relative paths. Windows
+    // short (8.3) temp paths and symlinked parents can differ from realRoot.
+    const canonical = path.join(realProbe, path.relative(probe, abs));
+    return { abs, root: realRoot, real: canonical, lexicalRoot: root };
   }
 
   /** Workspace-relative POSIX path (for secret-file matching, stable across OS). */
@@ -222,7 +224,7 @@ export class MystiLocalTools {
     if (linkStat?.isSymbolicLink()) {
       return { ok: false, output: `"${relPath}" is a symlink — refusing to write through it.` };
     }
-    const relAbs = this._relPosix(r.root, r.abs);
+    const relAbs = this._relPosix(r.lexicalRoot, r.abs);
     // Check both the lexical path and the symlink-resolved real path so a
     // `notes.txt -> .env` target can't smuggle a secret write past the filter.
     if (looksLikeSecret(relAbs) || looksLikeSecret(this._relPosix(r.root, r.real))) {
@@ -236,14 +238,14 @@ export class MystiLocalTools {
     if (protectedReason) {
       return { ok: false, output: protectedReason };
     }
-    return { ok: true, abs: r.abs, relPosix: relAbs };
+    return { ok: true, abs: r.abs, relPosix: this._relPosix(r.root, r.real) };
   }
 
   /** read — file contents with line numbers; optional 1-based inclusive range. */
   async read(relPath: string, startLine?: number, endLine?: number): Promise<LocalToolResult> {
     const r = await this._safeResolve(relPath);
     if (!r) { return { ok: false, output: `read: "${relPath}" is not inside the workspace (or no workspace is open).` }; }
-    if (looksLikeSecret(this._relPosix(r.root, r.real)) || looksLikeSecret(this._relPosix(r.root, r.abs))) {
+    if (looksLikeSecret(this._relPosix(r.root, r.real)) || looksLikeSecret(this._relPosix(r.lexicalRoot, r.abs))) {
       return { ok: false, output: `read: "${relPath}" looks like a credentials/secret file — blocked. Ask the user to paste only what's needed.` };
     }
     let stat: fs.Stats;
@@ -337,7 +339,7 @@ export class MystiLocalTools {
         // the fuel a backtracking pattern needs (review [1]).
         const probe = lines[i].length > GREP_PROBE_CHARS ? lines[i].slice(0, GREP_PROBE_CHARS) : lines[i];
         if (re.test(probe)) {
-          const rel = path.relative(root, f);
+          const rel = this._relPosix(realRoot, real);
           hits.push(`${rel}:${i + 1}: ${lines[i].trim().slice(0, GREP_LINE_CLAMP)}`);
         }
       }

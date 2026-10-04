@@ -10,7 +10,7 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  *
- * Plan 39: the Manage Plugins template. Its CSP nonce must come from a CSPRNG
+ * Plan 45: the Manage Plugins template. Its CSP nonce must come from a CSPRNG
  * (18 random bytes, base64) — a Math.random() nonce is predictable — and the
  * same value must reach both the policy and the script tag.
  */
@@ -21,7 +21,7 @@ import { getPluginsContent } from '../../src/webview/pluginsContent';
 const ROOT = path.resolve(__dirname, '../..');
 const webview = { cspSource: 'vscode-resource:', asWebviewUri: (u: unknown) => u } as never;
 
-describe('Manage Plugins template (Plan 39)', () => {
+describe('Manage Plugins template (Plan 45)', () => {
   it('fills one cryptographic nonce into the policy and the script tag', () => {
     const html = getPluginsContent(webview, { fsPath: ROOT } as never);
     const policy = /script-src 'nonce-([^']+)'/.exec(html)?.[1];

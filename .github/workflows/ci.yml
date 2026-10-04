@@ -21,8 +21,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -51,8 +51,8 @@ jobs:
       # Fail at collection if Chromium is missing; run each browser suite once.
       MYSTI_REQUIRE_CHROMIUM: '1'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -61,15 +61,19 @@ jobs:
       - name: Install Chromium for the browser suites
         run: npm exec --no -- playwright install --with-deps chromium
       - name: Test
-        run: npm test
+        run: npm test -- --exclude tests/webview/canvasPerfBrowser.test.ts
+      # Frame timing is not meaningful while hundreds of unrelated suites compete
+      # for the runner's CPU. Run the same performance assertions in isolation.
+      - name: Canvas performance
+        run: npm test -- tests/webview/canvasPerfBrowser.test.ts
 
   lint:
     name: lint
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -83,8 +87,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -94,7 +98,7 @@ jobs:
         run: node scripts/build-runtime-fixture.js
       # VS Code 1.86.0 embeds Node 18.17.1. This checks bundled runtime paths;
       # the separate VS Code integration workflow exercises the editor UI.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '18.17.1'
       - name: Exercise the minimum supported runtime
@@ -106,8 +110,8 @@ jobs:
     timeout-minutes: 30
     needs: [gates, test, lint, minimum-runtime]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -115,12 +119,46 @@ jobs:
         run: npm ci
       # Use the lockfile-pinned packager and dependency flag from package.json.
       - name: Package
-        run: npm run package -- --out mysti-ci.vsix
+        # Mysti 2.0 BETA artifacts must carry the Marketplace pre-release flag.
+        run: npm run package:pre-release -- --out mysti-ci.vsix
       - name: Check package shape
         run: npm run check:package -- mysti-ci.vsix
       - name: Upload verified VSIX
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mysti-vsix
           path: mysti-ci.vsix
           if-no-files-found: error
+
+
+  packaged-vscode:
+    name: packaged VS Code (${{ matrix.version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: package-shape
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['1.86.0', stable]
+    env:
+      MYSTI_TEST_VSCODE_VERSION: ${{ matrix.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v8
+        with:
+          name: mysti-vsix
+          path: ${{ runner.temp }}/mysti-package
+      - name: Extract the verified release payload
+        run: unzip -q "$RUNNER_TEMP/mysti-package/mysti-ci.vsix" -d "$RUNNER_TEMP/mysti-packaged"
+      - name: Test the packaged extension in the real editor
+        env:
+          MYSTI_TEST_EXTENSION_PATH: ${{ runner.temp }}/mysti-packaged/extension
+        run: |
+          npm exec --no -- tsc -p tsconfig.vscode-test.json
+          node scripts/prepare-vscode-fixture.js
+          xvfb-run -a npm exec --no -- vscode-test

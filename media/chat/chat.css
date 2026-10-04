@@ -609,6 +609,8 @@
 
     /* Recommendation Chips */
     .recommendation-chip {
+      color: inherit;
+      font-family: inherit;
       display: inline-flex;
       align-items: center;
       gap: 4px;
@@ -2212,10 +2214,8 @@
     .input-status-line .status-select:hover { color: var(--mysti-fg); background: var(--mysti-surface-2); }
     .input-status-line .status-select:focus { outline: 1px solid var(--vscode-focusBorder); }
     .input-status-line .status-select.hidden { display: none; }
-    /* Model + effort read as ONE pill, like Claude's "Opus 5.5  Extra high":
-       model in the foreground, effort dimmed. Each half is still its own
-       native select; `field-sizing` sizes it to the chosen option, not the
-       longest one. The pill disappears when both halves are hidden. */
+    /* Model and effort share one menu trigger: model in the foreground,
+       effort dimmed. The native selects remain as settings/palette adapters. */
     .input-status-line .model-pill {
       display: inline-flex;
       align-items: center;
@@ -2257,6 +2257,20 @@
     .input-status-line .context-pie { width: 14px; height: 14px; }
 
     /* Tools menu (⋯) — secondary actions, opened from the status line. */
+    .cli-model-upgrade {
+      margin: 12px 0;
+      padding: 14px;
+      border: 1px solid var(--mysti-border);
+      border-left: 3px solid var(--mysti-warn);
+      border-radius: 8px;
+      background: var(--mysti-surface);
+    }
+    .cli-model-upgrade[data-state="ready"] { border-left-color: var(--mysti-ok); }
+    .cli-model-upgrade[data-state="failed"] { border-left-color: var(--mysti-err); }
+    .cli-upgrade-status { margin: 8px 0 12px; color: var(--mysti-dim); overflow-wrap: anywhere; }
+    .cli-upgrade-button { padding: 7px 12px; border: 1px solid var(--vscode-contrastBorder, transparent); border-radius: 5px; color: var(--vscode-button-foreground); background: var(--vscode-button-background); font: inherit; cursor: pointer; }
+    .cli-upgrade-button:disabled { opacity: .65; cursor: default; }
+    .cli-upgrade-button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
     .tools-menu {
       position: absolute;
       bottom: calc(100% + 4px);
@@ -2296,6 +2310,128 @@
     .tools-menu-item:disabled:hover,
     .tools-menu-item[disabled]:hover { background: transparent; }
     .tools-menu-divider { height: 1px; background: var(--mysti-border); margin: 4px 0; }
+
+    /* Composer menus: selection is blue; effort fills only the supported steps.
+       Text, checkmarks and slider semantics also carry the state without color. */
+    #model-select-inline, #effort-select-inline, #mysti-model-btn { display: none !important; }
+    #model-menu-btn { display: inline-flex; align-items: center; gap: 5px; max-width: 230px; }
+    #model-menu-btn.hidden { display: none; }
+    #model-menu-label { overflow: hidden; text-overflow: ellipsis; }
+    #model-menu-effort { color: var(--mysti-dim); font-weight: normal; }
+    #model-menu-effort:empty { display: none; }
+    .composer-menu {
+      --menu-accent: var(--vscode-progressBar-background, #238bda);
+      --menu-track: var(--vscode-input-background, #454545);
+      position: absolute;
+      bottom: calc(100% + 6px);
+      left: 12px;
+      right: 12px;
+      min-width: 0;
+      max-height: min(480px, 60vh);
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      padding: 8px;
+      background: var(--vscode-menu-background, var(--mysti-surface));
+      color: var(--vscode-menu-foreground, var(--mysti-fg));
+      border: 1px solid var(--vscode-menu-border, var(--mysti-border));
+      border-radius: 10px;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, .24);
+      z-index: 101;
+    }
+    .composer-menu.hidden, .composer-menu .hidden, .composer-menu .action-filtered { display: none; }
+    .model-menu { display: flex; flex-direction: column; overflow: hidden; }
+    .model-menu > .composer-menu-heading, .model-menu > .composer-effort, .model-menu > .composer-ultracode { flex-shrink: 0; }
+    .composer-ultracode { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px; }
+    .composer-ultracode.hidden { display: none; }
+    .composer-switch { flex: 0 0 42px; width: 42px; height: 24px; padding: 2px; border: 1px solid var(--vscode-contrastBorder, transparent); border-radius: 20px; background: var(--vscode-input-background, #454545); cursor: pointer; }
+    .composer-switch span { display: block; height: 18px; width: 18px; border-radius: 50%; background: #e4e4e4; }
+    .composer-switch[aria-checked="true"] { background: var(--vscode-progressBar-background, #238bda); }
+    .composer-switch[aria-checked="true"] span { transform: translateX(17px); }
+    .composer-switch:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
+    #model-menu-options { overflow-y: auto; min-height: 0; overscroll-behavior: contain; }
+    .composer-menu-heading { padding: 7px 10px; color: var(--mysti-dim); font-size: 12px; }
+    .composer-menu-filter {
+      display: block;
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      padding: 9px 10px;
+      margin-bottom: 4px;
+      background: var(--vscode-input-background, var(--mysti-surface-2));
+      color: var(--vscode-input-foreground, var(--mysti-fg));
+      font: inherit;
+    }
+    .composer-menu .tools-menu-item { min-height: 34px; padding: 8px 10px; font: inherit; }
+    .composer-menu-value { margin-left: auto; color: var(--mysti-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 50%; }
+    .composer-model-option {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      width: 100%;
+      padding: 9px 10px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      background: transparent;
+      color: inherit;
+      text-align: left;
+      font: inherit;
+      cursor: pointer;
+    }
+    .composer-model-option:hover { background: var(--vscode-list-hoverBackground, var(--mysti-surface-2)); }
+    .composer-model-option[aria-pressed="true"] {
+      background: var(--vscode-list-activeSelectionBackground, #063e60);
+      color: var(--vscode-list-activeSelectionForeground, #fff);
+      border-color: var(--vscode-contrastActiveBorder, transparent);
+    }
+    .composer-model-name, .composer-model-description { display: block; overflow-wrap: anywhere; }
+    .composer-model-description { margin-top: 3px; font-size: 12px; color: var(--mysti-dim); line-height: 1.4; }
+    .composer-model-option[aria-pressed="true"] .composer-model-description { color: inherit; opacity: .8; }
+    .composer-model-check { flex: 0 0 16px; font-size: 16px; }
+    .composer-menu :is(button, input):focus-visible { outline: 1px solid var(--vscode-focusBorder, #238bda); outline-offset: -1px; }
+    .composer-effort {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 10px 6px;
+      margin-top: 5px;
+      border-top: 1px solid var(--mysti-border);
+    }
+    .composer-effort-label { white-space: nowrap; }
+    .composer-effort-label span { color: var(--mysti-dim); }
+    .composer-effort-track {
+      position: relative;
+      flex: 0 0 112px;
+      height: 26px;
+      border-radius: 20px;
+      background: linear-gradient(to right, var(--menu-accent) 0%, var(--menu-accent) var(--effort-fill), var(--menu-track) var(--effort-fill), var(--menu-track) 100%);
+      border: 1px solid var(--vscode-contrastBorder, transparent);
+    }
+    .composer-effort-dots { position: absolute; inset: 0 11px; display: flex; justify-content: space-between; align-items: center; pointer-events: none; }
+    .composer-effort-dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--vscode-descriptionForeground, #b0b0b0); }
+    .composer-effort-track input {
+      position: absolute;
+      inset: 0;
+      appearance: none;
+      -webkit-appearance: none;
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      background: transparent;
+      border: 0;
+      border-radius: inherit;
+      cursor: pointer;
+    }
+    .composer-effort-track input::-webkit-slider-runnable-track { height: 24px; background: transparent; }
+    .composer-effort-track input::-webkit-slider-thumb { appearance: none; -webkit-appearance: none; width: 24px; height: 24px; background: #e4e4e4; border: 2px solid var(--menu-accent); border-radius: 50%; }
+    @media (max-width: 340px) {
+      #model-menu-btn { max-width: 170px; }
+      .composer-effort { gap: 6px; padding-inline: 4px; }
+      .composer-effort-track { flex-basis: 96px; }
+    }
 
     /* Plan 07: context files panel (above the input) */
     .context-panel {
@@ -7823,6 +7959,11 @@
     }
 
     .auth-option {
+      width: 100%;
+      text-align: left;
+      color: var(--vscode-foreground);
+      background: var(--vscode-editor-background);
+      font: inherit;
       display: flex;
       align-items: center;
       gap: 12px;
@@ -7889,6 +8030,7 @@
       z-index: 100002;
     }
 
+    .install-section.hidden,
     .install-provider-modal.hidden {
       display: none;
     }
@@ -9827,8 +9969,6 @@
        the DOM, still synced by syncInlineSelectors, and the palette drives
        them. Hiding rather than removing is what keeps the palette a router
        over real controls instead of a second implementation of them. */
-    .input-status-line #slash-cmd-btn,
-    .input-status-line #tools-menu-btn,
     .input-status-line #strategy-indicator { display: none !important; }
 
     /* The overflow menu that took the eight header buttons. */
@@ -10473,3 +10613,31 @@
       .agent-map .agent-map-glyph { animation: none; }
     }
     /* ── end Plan 32 agent map ─────────────────────────────────────────── */
+
+/* Voice input uses the host editor's speech support for every agent. */
+.dictation-panel { margin: 8px 0; padding: 10px; border: 1px solid var(--vscode-focusBorder); border-radius: 8px; font-size: 12px; }
+.dictation-preview { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 100px; overflow-y: auto; margin: 8px 0; user-select: text; }
+.dictation-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.dictation-actions button { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border: 0; border-radius: 4px; padding: 5px 8px; cursor: pointer; }
+.dictation-actions button:focus-visible, .dictation-btn:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
+.dictation-actions button:disabled { opacity: .5; cursor: default; }
+.dictation-btn[aria-pressed="true"] { color: var(--vscode-button-foreground); background: var(--vscode-button-background); border-radius: 6px; }
+.dictation-panel.hidden, .dictation-panel .hidden { display: none; }
+
+/* Explicit agent assignments: identity, status and output stay together. */
+.collaboration-group { margin: 16px 0; padding: 14px; border: 1px solid var(--vscode-panel-border); border-radius: 14px; background: var(--vscode-editor-background); }
+.collaboration-group h3 { margin: 0 0 12px; font-size: 12px; font-weight: 500; color: var(--vscode-descriptionForeground); }
+.collaboration-card { border: 1px solid var(--vscode-panel-border); border-left: 3px solid var(--agent-color); border-radius: 9px; margin: 10px 0; min-width: 0; overflow-wrap: anywhere; }
+.collaboration-card summary { padding: 12px; display: flex; gap: 10px; align-items: center; justify-content: space-between; cursor: pointer; font-weight: 600; }
+.collaboration-card summary:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 2px; }
+.collaboration-status { font-size: 11px; font-weight: 400; color: var(--vscode-descriptionForeground); }
+.collaboration-progress { display: flex; gap: 8px; align-items: center; }
+.collaboration-elapsed { font-size: 11px; font-weight: normal; font-variant-numeric: tabular-nums; color: var(--vscode-descriptionForeground); }
+.collaboration-wait, .collaboration-next { margin: 0; padding: 0 12px 12px; color: var(--vscode-descriptionForeground); font-size: 12px; line-height: 1.5; }
+.collaboration-wait:empty { display: none; }
+.collaboration-status[data-state="running"] { color: var(--vscode-textLink-foreground); }
+.collaboration-status[data-state="complete"] { color: var(--vscode-testing-iconPassed, #69c8a1); }
+.collaboration-status[data-state="error"], .collaboration-error { color: var(--vscode-errorForeground); }
+.collaboration-output, .collaboration-card .mysti-node-activity { padding: 0 12px 12px; }
+.collaboration-output:empty, .collaboration-card .mysti-node-activity:empty { display: none; }
+@media (max-width: 420px) { .collaboration-card summary { flex-wrap: wrap; } }

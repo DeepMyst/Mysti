@@ -1,0 +1,63 @@
+{
+  "platform": "darwin",
+  "arch": "arm64",
+  "node": "v22.20.0",
+  "root": "/var/folders/_g/_7swhqxx151d577p5xhmmp0m0000gn/T/mysti-other-installers-gGF3fs",
+  "scope": "Isolated npm installs and --version only; no account setup or model inference",
+  "results": [
+    {
+      "package": "@google/gemini-cli",
+      "version": "0.62.0",
+      "installed": true,
+      "installExitCode": 0,
+      "launched": true,
+      "versionOutput": "0.62.0"
+    },
+    {
+      "package": "@github/copilot",
+      "version": "1.0.90",
+      "installed": true,
+      "installExitCode": 0,
+      "launched": true,
+      "versionOutput": "GitHub Copilot CLI 1.0.90.\nRun 'copilot update' to check for updates."
+    },
+    {
+      "package": "opencode-ai",
+      "version": "1.18.34",
+      "installed": true,
+      "installExitCode": 0,
+      "launched": true,
+      "versionOutput": "1.18.34"
+    },
+    {
+      "package": "cline",
+      "version": "3.0.67",
+      "installed": true,
+      "installExitCode": 0,
+      "launched": true,
+      "versionOutput": "3.0.67",
+      "initialLocalLayout": {
+        "installed": true,
+        "launched": false,
+        "error": "Missing node_modules/.bin/cline (ENOENT)"
+      },
+      "layout": "global npm layout in isolated writable prefix"
+    },
+    {
+      "package": "@qwen-code/qwen-code",
+      "version": "0.24.7",
+      "installed": true,
+      "installExitCode": 0,
+      "launched": true,
+      "versionOutput": "0.24.7"
+    },
+    {
+      "package": "@continuedev/cli",
+      "version": "1.5.47",
+      "installed": true,
+      "installExitCode": 0,
+      "launched": true,
+      "versionOutput": "1.5.47"
+    }
+  ]
+}

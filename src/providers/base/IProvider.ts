@@ -183,6 +183,8 @@ export interface ProviderCapabilities {
   effortLevels?: EffortLevel[];
   /** The backend's default effort tier when the setting is unset (e.g. Claude 'high'). */
   effortDefault?: EffortLevel;
+  /** Supports Claude's independent Ultracode workflow setting. */
+  supportsUltracode?: boolean;
   /** Plan-mode support level */
   planMode: PlanModeSupport;
   /** Honest session/continuity semantics */
@@ -497,7 +499,7 @@ export interface ICliProvider {
   setNativeApprovalHost?(host: NativeApprovalHost | undefined): void;
 
   // CLI Discovery
-  discoverCli(): Promise<CliDiscoveryResult>;
+  discoverCli(force?: boolean): Promise<CliDiscoveryResult>;
   getCliPath(): string;
 
   /**
@@ -526,6 +528,8 @@ export interface ICliProvider {
   // Authentication & Setup
   getAuthConfig(): Promise<AuthConfig>;
   checkAuthentication(): Promise<AuthStatus>;
+  /** Interactive host-owned API setup; credentials never pass through the webview. */
+  configureAuthentication?(): Promise<AuthStatus>;
   getAuthCommand(): string;
   getInstallCommand(): string;
 
@@ -595,7 +599,7 @@ export interface ICliProvider {
   // Persistent process management
   preSpawnPersistentProcess?(panelId: string, settings: Settings): Promise<void>;
   disposePersistentProcess?(panelId?: string): void;
-  /** Plan 39: plugins changed through this backend's CLI; respawn persistent processes on their next turn. */
+  /** Plan 45: plugins changed through this backend's CLI; respawn persistent processes on their next turn. */
   markPluginsChanged?(): void;
 }
 

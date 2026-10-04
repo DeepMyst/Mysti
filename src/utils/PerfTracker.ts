@@ -77,7 +77,7 @@ const now: () => number = (() => {
     return () => globalPerf.now!.call(globalPerf);
   }
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const perfHooks = require('perf_hooks') as { performance: { now: () => number } };
     return () => perfHooks.performance.now();
   } catch {

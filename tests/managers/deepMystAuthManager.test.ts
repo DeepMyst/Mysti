@@ -212,6 +212,14 @@ describe('DeepMystAuthManager', () => {
     mgr.dispose();
   });
 
+  it('explains a generic browser 403 without claiming the key is invalid', () => {
+    const errorSpy = vi.spyOn(mockWindow, 'showErrorMessage');
+    const mgr = new DeepMystAuthManager(makeContext().context);
+    mgr.failSignIn('Request failed with status code 403');
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('active organization and API-key permissions'));
+    mgr.dispose();
+  });
+
   it('rejects a link-back whose state does not match the in-flight sign-in', async () => {
     const openSpy = vi.spyOn(mockEnv, 'openExternal').mockResolvedValue(true);
     const { context } = makeContext();

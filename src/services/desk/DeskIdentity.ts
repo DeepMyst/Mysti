@@ -515,7 +515,7 @@ export class DeskIdentity {
     // the symptom would be every peer rejecting every call for no stated
     // reason. One signature is a cheap price for a legible failure.
     const probe = Buffer.from('mysti.desk/keypair-probe/1', 'utf8');
-    let paired = false;
+    let paired: boolean;
     try {
       paired = crypto.verify(null, probe, publicKey, crypto.sign(null, probe, privateKey));
     } catch {

@@ -79,7 +79,7 @@ interface Harness {
   queueDuringResponse(messages: QueuedChannelMessage[]): void;
   queueDuringDelay(messages: QueuedChannelMessage[]): void;
   replaceWithManualMessage(): Promise<void>;
-  dispose(): void;
+  dispose(): Promise<void>;
 }
 
 /**
@@ -289,7 +289,8 @@ function createHarness(options: { passThroughFirstSend?: boolean; visibleConvers
         getAuditLog: () => [],
       };
     },
-    dispose() {
+    async dispose() {
+      await (provider as any)._agentInitPromise;
       (provider as any)._channelBridge?.dispose?.();
       (provider as any)._delayedChannelTurns.dispose();
       permissionManager.dispose();
@@ -303,7 +304,7 @@ function createHarness(options: { passThroughFirstSend?: boolean; visibleConvers
 describe('B-1: the configured access level survives every rebuild of Settings', () => {
   let h: Harness;
   beforeEach(() => { clearMockConfig(); h = createHarness({ visibleConversation: true }); });
-  afterEach(() => { h.dispose(); clearMockConfig(); });
+  afterEach(async () => { await h.dispose(); clearMockConfig(); });
 
   it('permissionCustomInstruction resends at the user\'s accessLevel, not ask-permission', async () => {
     setMockConfig('accessLevel', 'read-only');
@@ -347,7 +348,7 @@ describe('B-1: the configured access level survives every rebuild of Settings', 
 describe('B-1: the autonomous continuation carries the configured mode', () => {
   let h: Harness;
   beforeEach(() => { vi.useFakeTimers(); clearMockConfig(); h = createHarness({ passThroughFirstSend: true }); });
-  afterEach(() => { h.dispose(); clearMockConfig(); vi.useRealTimers(); });
+  afterEach(async () => { await h.dispose(); clearMockConfig(); vi.useRealTimers(); });
 
   it('builds the follow-up turn at mysti.defaultMode, not a hardcoded "default"', async () => {
     setMockConfig('defaultMode', 'detailed-plan');
@@ -430,7 +431,7 @@ describe('queued channel turns', () => {
     h.setStream([{ type: 'text', content: 'finished original work' }, { type: 'done' }]);
     h.queueDuringResponse([...queued]);
   });
-  afterEach(() => { h.dispose(); clearMockConfig(); vi.useRealTimers(); });
+  afterEach(async () => { await h.dispose(); clearMockConfig(); vi.useRealTimers(); });
 
   const finishOriginal = () => (h.provider as any)._handleSendMessage(
     { content: 'start', context: [], settings: { ...BASE_SETTINGS } }, 'sidebar'
@@ -610,7 +611,7 @@ describe('B-2: repo-authored skill categories are clamped before the system prom
   }
 
   beforeEach(() => { clearMockConfig(); h = createHarness(); });
-  afterEach(() => { h.dispose(); clearMockConfig(); });
+  afterEach(async () => { await h.dispose(); clearMockConfig(); });
 
   function seedLoader(hostileCount: number) {
     const hostile = Array.from({ length: hostileCount }, (_, i) =>

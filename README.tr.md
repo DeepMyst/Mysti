@@ -1,3 +1,5 @@
+> **Mysti 2.0 BETA:** This community translation may describe an earlier release. See the [current English README](README.md) and [2.0 BETA release notes](docs/releases/2.0-beta/RELEASE-NOTES.md) for current behavior. Translation updates are welcome.
+
 <p align="center">
   <a href="README.md">English</a> | <a href="README.zh-CN.md">简体中文</a> | <a href="README.ja.md">日本語</a> | <a href="README.ko.md">한국어</a> | <a href="README.es.md">Español</a> | <a href="README.pt-BR.md">Português</a> | <a href="README.ar.md">العربية</a> | <a href="README.de.md">Deutsch</a> | <a href="README.fr.md">Français</a> | Türkçe | <a href="README.ru.md">Русский</a>
 </p>
@@ -332,7 +334,7 @@ Mysti mevcut aboneliklerinizle çalışır — ek maliyet yok!
 | CLI Aracı | Abonelik | Kurulum |
 |-----------|----------|--------|
 | **Claude Code** (önerilen) | Anthropic API veya Claude Pro/Max | `npm install -g @anthropic-ai/claude-code` |
-| **GitHub Copilot CLI** | GitHub Copilot Pro/Pro+/Business | `npm install -g @github/copilot-cli` |
+| **GitHub Copilot CLI** | GitHub Copilot Pro/Pro+/Business | `npm install -g @github/copilot` |
 | **Gemini CLI** | Google AI API veya Gemini Advanced | `npm install -g @google/gemini-cli` |
 | **Codex CLI** | OpenAI API | OpenAI kurulum kılavuzunu takip edin |
 | **Cline** | Model sağlayıcısına bağlı | `npm install -g cline` |
@@ -366,12 +368,12 @@ npm install -g @anthropic-ai/claude-code
 claude auth login
 
 # Veya GitHub Copilot CLI (GitHub üzerinden Claude, GPT-5, Gemini'ye erişin)
-npm install -g @github/copilot-cli
+npm install -g @github/copilot
 copilot  # sonra /login komutunu kullanın
 
 # Veya Gemini CLI
 npm install -g @google/gemini-cli
-gemini auth login
+gemini
 
 # Veya Cursor
 curl https://cursor.com/install -fsS | bash
@@ -379,7 +381,7 @@ agent login
 
 # Veya OpenClaw
 npm install -g openclaw@latest && openclaw onboard --install-daemon
-openclaw login
+openclaw onboard
 
 # Veya OpenCode
 npm i -g opencode-ai@latest
@@ -460,7 +462,7 @@ Yapay zekanın yapabileceklerini kontrol altında tutun:
 | Ayar | Varsayılan | Açıklama |
 |------|-----------|----------|
 | `mysti.defaultProvider` | `claude-code` | Birincil yapay zeka sağlayıcısı |
-| `mysti.claudePath` | `claude` | Claude CLI yolu |
+| `mysti.claudeCodePath` | `claude` | Claude CLI yolu |
 | `mysti.codexPath` | `codex` | Codex CLI yolu |
 | `mysti.geminiPath` | `gemini` | Gemini CLI yolu |
 | `mysti.copilotPath` | `copilot` | Copilot CLI yolu |
@@ -582,8 +584,8 @@ Mysti işinize yaradıysa, bir star vermeyi düşünün — başkalarının proj
 </p>
 
 <p align="center">
-  <a href="https://star-history.com/#DeepMyst/Mysti&Date">
-    <img src="https://api.star-history.com/svg?repos=DeepMyst/Mysti&type=Date" width="600" alt="Star Geçmişi Grafiği" />
+  <a href="https://www.star-history.com/?repos=DeepMyst%2FMysti&type=date">
+    Star Geçmişi Grafiği ↗
   </a>
 </p>
 

@@ -10,7 +10,7 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  *
- * Plan 39: the Claude Code plugin adapter. The fixture is real
+ * Plan 45: the Claude Code plugin adapter. The fixture is real
  * `claude plugin list --json --available` output (2.1.278), trimmed and with
  * the home directory scrubbed. The two exit-code facts below were observed on
  * the same CLI: a failed install exits 0, an already-disabled disable exits 1.
@@ -44,7 +44,7 @@ function fakeRun(answers: Record<string, RunResult>): Run & { calls: string[][] 
 
 const ID = 'commit-commands@claude-plugins-official';
 
-describe('Claude Code plugin adapter (Plan 39)', () => {
+describe('Claude Code plugin adapter (Plan 45)', () => {
   it('lists installed and available plugins from the real JSON shape', async () => {
     const listing = await claude.list(fakeRun({ 'plugin list --json --available': ok(FIXTURE) }));
     const sp = listing.installed.find((p) => p.name === 'superpowers');

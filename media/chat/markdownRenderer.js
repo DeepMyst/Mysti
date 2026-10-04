@@ -187,7 +187,7 @@
       var lines = content.split('\n');
       var additions = 0;
       var deletions = 0;
-      var fileName = '';
+      var fileName;
       var filePath = '';
       var diffLines = [];
       var lineNum = 1;
@@ -221,7 +221,7 @@
         }
 
         var lineClass = 'file-edit-line';
-        var lineNumDisplay = '';
+        var lineNumDisplay;
 
         if (line.startsWith('+')) {
           lineClass += ' addition';

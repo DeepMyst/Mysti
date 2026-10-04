@@ -1,3 +1,5 @@
+> **Mysti 2.0 BETA:** This community translation may describe an earlier release. See the [current English README](README.md) and [2.0 BETA release notes](docs/releases/2.0-beta/RELEASE-NOTES.md) for current behavior. Translation updates are welcome.
+
 <p align="center">
   <a href="README.md">English</a> | <a href="README.zh-CN.md">简体中文</a> | <a href="README.ja.md">日本語</a> | <a href="README.ko.md">한국어</a> | Español | <a href="README.pt-BR.md">Português</a> | <a href="README.ar.md">العربية</a> | <a href="README.de.md">Deutsch</a> | <a href="README.fr.md">Français</a> | <a href="README.tr.md">Türkçe</a> | <a href="README.ru.md">Русский</a>
 </p>
@@ -332,7 +334,7 @@ Mysti funciona con tus suscripciones existentes — ¡sin costos adicionales!
 | Herramienta CLI | Suscripción | Instalación |
 |----------------|-------------|-------------|
 | **Claude Code** (recomendado) | Anthropic API o Claude Pro/Max | `npm install -g @anthropic-ai/claude-code` |
-| **GitHub Copilot CLI** | GitHub Copilot Pro/Pro+/Business | `npm install -g @github/copilot-cli` |
+| **GitHub Copilot CLI** | GitHub Copilot Pro/Pro+/Business | `npm install -g @github/copilot` |
 | **Gemini CLI** | Google AI API o Gemini Advanced | `npm install -g @google/gemini-cli` |
 | **Codex CLI** | OpenAI API | Sigue la guía de instalación de OpenAI |
 | **Cline** | Depende del proveedor de modelo | `npm install -g cline` |
@@ -366,12 +368,12 @@ npm install -g @anthropic-ai/claude-code
 claude auth login
 
 # O GitHub Copilot CLI (accede a Claude, GPT-5, Gemini vía GitHub)
-npm install -g @github/copilot-cli
+npm install -g @github/copilot
 copilot  # luego usa el comando /login
 
 # O Gemini CLI
 npm install -g @google/gemini-cli
-gemini auth login
+gemini
 
 # O Cursor
 curl https://cursor.com/install -fsS | bash
@@ -379,7 +381,7 @@ agent login
 
 # O OpenClaw
 npm install -g openclaw@latest && openclaw onboard --install-daemon
-openclaw login
+openclaw onboard
 
 # O OpenCode
 npm i -g opencode-ai@latest
@@ -460,7 +462,7 @@ Mantén el control de lo que la IA puede hacer:
 | Configuración | Predeterminado | Descripción |
 |--------------|----------------|-------------|
 | `mysti.defaultProvider` | `claude-code` | Proveedor de IA principal |
-| `mysti.claudePath` | `claude` | Ruta al CLI de Claude |
+| `mysti.claudeCodePath` | `claude` | Ruta al CLI de Claude |
 | `mysti.codexPath` | `codex` | Ruta al CLI de Codex |
 | `mysti.geminiPath` | `gemini` | Ruta al CLI de Gemini |
 | `mysti.copilotPath` | `copilot` | Ruta al CLI de Copilot |
@@ -582,8 +584,8 @@ Si Mysti te ha sido útil, considera darle una estrella — ¡ayuda a otros a de
 </p>
 
 <p align="center">
-  <a href="https://star-history.com/#DeepMyst/Mysti&Date">
-    <img src="https://api.star-history.com/svg?repos=DeepMyst/Mysti&type=Date" width="600" alt="Gráfico de Historial de Stars" />
+  <a href="https://www.star-history.com/?repos=DeepMyst%2FMysti&type=date">
+    Gráfico de Historial de Stars ↗
   </a>
 </p>
 

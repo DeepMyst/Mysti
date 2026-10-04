@@ -19,15 +19,16 @@ import { BaseCliProvider, type PanelSessionState } from '../base/BaseCliProvider
 import type {
   CliDiscoveryResult,
   AuthConfig,
-  ProviderCapabilities
+  ProviderCapabilities, PersonaConfig, NativeApprovalHost
 } from '../base/IProvider';
 import type {
   Settings,
   StreamChunk,
   ProviderConfig,
   AuthStatus,
-  ModelInfo
+  ModelInfo, ContextItem, Conversation, AgentConfiguration, Attachment
 } from '../../types';
+import { OpenCodeRemote, remoteConnection, remoteSecretKey } from './OpenCodeRemote';
 import { validateModelName } from '../../utils/validation';
 import { normalizeToolName, toolKind } from '../../utils/toolNames';
 
@@ -94,7 +95,7 @@ export class OpenCodeProvider extends BaseCliProvider {
     defaultModel: 'default'
   };
 
-  readonly capabilities: ProviderCapabilities = {
+  private readonly _cliCapabilities: ProviderCapabilities = {
     supportsStreaming: true,
     supportsThinking: true,
     supportsToolUse: true,
@@ -103,6 +104,7 @@ export class OpenCodeProvider extends BaseCliProvider {
     // by PATH (BaseCliProvider.prepareAttachments). This backend has file-read
     // tools, so it can open what it is given.
     supportsImages: true,
+    supportsFileAttachments: true,
     supportsAutoInstall: true,
     supportsPromptEnhancement: false,
     // Plan 02 Phase 1 capability matrix
@@ -116,6 +118,46 @@ export class OpenCodeProvider extends BaseCliProvider {
     usageConvention: 'none',   // step-finish tokens are flat input/output.
     modelSelection: 'custom-only'  // provider/model free-form — no meaningful static dropdown
   };
+
+  private readonly _remote = new OpenCodeRemote(this._extensionContext.secrets);
+  private _remoteHost?: NativeApprovalHost;
+  private get remoteEnabled(): boolean { return !!vscode.workspace.getConfiguration('mysti').get<string>('opencodeEndpoint', '').trim(); }
+  private connection() {
+    const config = vscode.workspace.getConfiguration('mysti');
+    return remoteConnection(config.get<string>('opencodeEndpoint', ''), config.get<string>('opencodeRemoteDirectory', ''), config.get<string>('opencodeRemoteUsername', 'opencode'));
+  }
+  get capabilities(): ProviderCapabilities {
+    return this.remoteEnabled ? { ...this._cliCapabilities, supportsAutoInstall: false, supportsNativeApproval: true,
+      supportsImages: false, supportsFileAttachments: false, supportsSessions: false, sessionKind: 'prompt-history',
+      modelSelection: 'full', thinkingStyle: 'streamed', emitsUsage: false } : this._cliCapabilities;
+  }
+  override setNativeApprovalHost(host: NativeApprovalHost | undefined): void { super.setNativeApprovalHost(host); this._remoteHost = host; }
+  get configureAuthentication(): (() => Promise<AuthStatus>) | undefined {
+    if (!this.remoteEnabled) { return undefined; }
+    return async () => {
+      const c = this.connection();
+      const password = await vscode.window.showInputBox({ title: 'OpenCode server password', password: true,
+        prompt: 'OPENCODE_SERVER_PASSWORD for ' + c.endpoint + '. Leave empty for a server without authentication.', ignoreFocusOut: true });
+      if (password === undefined) { return { authenticated: false, error: 'Setup cancelled.' }; }
+      if (password) { await this._extensionContext.secrets.store(remoteSecretKey(c), password); }
+      else { await this._extensionContext.secrets.delete(remoteSecretKey(c)); }
+      return this.checkAuthentication();
+    };
+  }
+  override getSlashCommands(panelId?: string) { return this.remoteEnabled ? [] : super.getSlashCommands(panelId); }
+  override cancelCurrentRequest(panelId?: string): void { this._remote.cancel(panelId); super.cancelCurrentRequest(panelId); }
+  override dispose(): void { this._remote.cancel(); super.dispose(); }
+  override async *sendMessage(content: string, context: ContextItem[], settings: Settings, conversation: Conversation | null,
+    persona?: PersonaConfig, panelId?: string, providerManager?: unknown, agentConfig?: AgentConfiguration, attachments?: Attachment[]): AsyncGenerator<StreamChunk> {
+    if (!this.remoteEnabled) { yield* super.sendMessage(content, context, settings, conversation, persona, panelId, providerManager, agentConfig, attachments); return; }
+    try {
+      if (attachments?.length) { throw new Error('OpenCode remote mode supports text context, but not local file or image attachments.'); }
+      const session = this._getSession(panelId);
+      const model = this._getEffectiveModel(settings);
+      yield* this._remote.send(this.connection(), session.panelId, settings,
+        () => this.buildPromptAsync(content, context, conversation, settings, persona, agentConfig, undefined, session.channelSystemContext), model, this._remoteHost);
+    } catch (error) { yield { type: 'error', content: error instanceof Error ? error.message : String(error) }; }
+  }
 
   protected _createSession(panelId: string): OpenCodeSessionState {
     return {
@@ -134,10 +176,12 @@ export class OpenCodeProvider extends BaseCliProvider {
   }
 
   async discoverCli(): Promise<CliDiscoveryResult> {
+    if (this.remoteEnabled) { return { found: true, path: this.connection().endpoint }; }
     return this._discoverCliCommon();
   }
 
   getCliPath(): string {
+    if (this.remoteEnabled) { return this.connection().endpoint; }
     return this._getCliPathCommon();
   }
 
@@ -151,6 +195,7 @@ export class OpenCodeProvider extends BaseCliProvider {
    * Never throws.
    */
   async discoverModels(timeoutMs: number): Promise<ModelInfo[] | null> {
+    if (this.remoteEnabled) { try { return (await this._remote.probe(this.connection())).models; } catch { return null; } }
     const raw = await this._runCliForDiscovery(['models', '--verbose'], timeoutMs)
       ?? await this._runCliForDiscovery(['models'], timeoutMs);
     if (!raw) { return null; }
@@ -197,6 +242,7 @@ export class OpenCodeProvider extends BaseCliProvider {
   }
 
   async getAuthConfig(): Promise<AuthConfig> {
+    if (this.remoteEnabled) { return { type: 'api-key', isAuthenticated: (await this.checkAuthentication()).authenticated }; }
     const envKey = this._ocEnvKey();
     const authPath = this._ocAuthPath();
     const hasAuth = fs.existsSync(authPath);
@@ -210,6 +256,12 @@ export class OpenCodeProvider extends BaseCliProvider {
   }
 
   async checkAuthentication(): Promise<AuthStatus> {
+    if (this.remoteEnabled) {
+      try { const status = await this._remote.probe(this.connection());
+        return status.connected.length ? { authenticated: true, user: 'OpenCode server ' + status.version }
+          : { authenticated: false, error: 'Server connected. Run opencode auth login on the server to connect a model provider.' };
+      } catch (error) { return { authenticated: false, error: error instanceof Error ? error.message : String(error) }; }
+    }
     // Any provider API key OpenCode reads from the environment.
     const envKey = this._ocEnvKey();
     if (envKey) {
@@ -242,11 +294,11 @@ export class OpenCodeProvider extends BaseCliProvider {
   }
 
   getAuthCommand(): string {
-    return 'opencode auth login';
+    return this.remoteEnabled ? 'Configure the OpenCode server password in provider setup' : 'opencode auth login';
   }
 
   getInstallCommand(): string {
-    return 'npm i -g opencode-ai@latest';
+    return this.remoteEnabled ? 'https://opencode.ai/docs/server/' : 'npm i -g opencode-ai@latest';
   }
 
   protected buildCliArgs(settings: Settings, session: PanelSessionState): string[] {

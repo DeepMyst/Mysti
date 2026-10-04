@@ -5,7 +5,7 @@
  * This file is part of Mysti, licensed under the Apache License, Version 2.0.
  * SPDX-License-Identifier: Apache-2.0
  *
- * Plan 39 — Manage Plugins webview. Renders the `state` the host posts and
+ * Plan 45 — Manage Plugins webview. Renders the `state` the host posts and
  * posts the user's clicks back. It decides nothing: the host checks every id,
  * scope and source against what the CLI reported, and asks before anything
  * that runs code is installed. Strings from a CLI or a marketplace are
@@ -189,7 +189,7 @@
     const installedIds = {};
     installedAll.forEach(function (p) { installedIds[p.id] = true; });
     let available;
-    let empty = '';
+    let empty;
     if (can.search) {
       const results = s.search && s.search.query.toLowerCase() === query ? s.search.results : [];
       available = query ? results : [];

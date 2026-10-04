@@ -69,7 +69,8 @@
         'icons/hermes.png': HERMES_LOGO,
         'icons/continue.png': CONTINUE_LOGO,
         'icons/openrouter.png': OPENROUTER_LOGO,
-        'icons/kimi.png': KIMI_LOGO
+        'icons/kimi.png': KIMI_LOGO,
+        'icons/minimax.svg': window.__MYSTI_BOOT__.minimaxLogoUri
       };
 
 
@@ -80,6 +81,7 @@
           mode: 'ask-before-edit',
           thinkingLevel: 'none',
           effortLevel: 'high',
+          ultracode: false,
           accessLevel: 'ask-permission',
           contextMode: 'auto',
           model: 'claude-sonnet-4-5-20250929',
@@ -1568,6 +1570,93 @@
         console.error('[Mysti Webview] sendBtn not found!');
       }
 
+      var dictationRequest = null;
+      var dictationSequence = 0;
+      var dictationBtn = document.getElementById('dictation-btn');
+      var dictationPanel = document.getElementById('dictation-panel');
+      var dictationStatus = document.getElementById('dictation-status');
+      var dictationPreview = document.getElementById('dictation-preview');
+      var dictationFinish = document.getElementById('dictation-finish');
+      var dictationSetup = document.getElementById('dictation-setup');
+      function resetDictation() {
+        dictationRequest = null;
+        dictationPanel.classList.add('hidden');
+        dictationBtn.setAttribute('aria-pressed', 'false');
+        dictationBtn.setAttribute('aria-label', 'Start dictation');
+      }
+      function cancelDictation() {
+        if (dictationRequest) {
+          postMessageWithPanelId({ type: 'cancelDictation', payload: { requestId: dictationRequest.id } });
+        }
+        resetDictation();
+      }
+      function finishDictation() {
+        if (!dictationRequest || dictationRequest.finishing) { return; }
+        dictationRequest.finishing = true;
+        dictationFinish.disabled = true;
+        dictationStatus.textContent = 'Finishing dictation…';
+        postMessageWithPanelId({ type: 'finishDictation', payload: { requestId: dictationRequest.id } });
+      }
+      function insertDictation(text, request) {
+        if (!text || !text.trim()) { return; }
+        text = text.trim();
+        var unchanged = inputEl.value === request.draft;
+        var start = unchanged ? request.start : inputEl.value.length;
+        var end = unchanged ? request.end : start;
+        var before = inputEl.value.slice(0, start);
+        var after = inputEl.value.slice(end);
+        var inserted = (before && !/\s$/.test(before) ? ' ' : '') + text + (after && !/^\s/.test(after) ? ' ' : '');
+        inputEl.value = before + inserted + after;
+        inputEl.setSelectionRange(start + inserted.length, start + inserted.length);
+        inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      function handleDictation(event) {
+        if (!event || !dictationRequest || event.requestId !== dictationRequest.id) { return; }
+        if (event.state === 'complete') {
+          insertDictation(event.text, dictationRequest);
+          resetDictation(); inputEl.focus();
+        } else if (event.state === 'cancelled') {
+          resetDictation();
+        } else if (event.state === 'error') {
+          // Preserve any partial transcript if the host fails after speech began.
+          insertDictation(event.text, dictationRequest);
+          resetDictation();
+          dictationPanel.classList.remove('hidden');
+          dictationStatus.textContent = event.error || 'Editor dictation could not start.';
+          dictationPreview.textContent = '';
+          dictationFinish.disabled = true;
+          dictationSetup.classList.toggle('hidden', !event.needsSetup);
+        } else {
+          dictationStatus.textContent = event.state === 'opening' ? 'Opening editor dictation…' : 'Dictation editor open. Use its voice controls, then choose Use text. Nothing is sent automatically.';
+          dictationFinish.disabled = event.state !== 'active' || dictationRequest.finishing;
+          if (typeof event.text === 'string') { dictationPreview.textContent = event.text; }
+        }
+      }
+      if (dictationBtn) {
+        dictationBtn.addEventListener('click', function() {
+          if (dictationRequest) { finishDictation(); return; }
+          dictationRequest = { id: 'voice-' + Date.now() + '-' + (++dictationSequence), draft: inputEl.value,
+            start: inputEl.selectionStart, end: inputEl.selectionEnd, finishing: false };
+          dictationPanel.classList.remove('hidden');
+          dictationStatus.textContent = 'Opening editor dictation…';
+          dictationPreview.textContent = '';
+          dictationFinish.disabled = true;
+          dictationSetup.classList.add('hidden');
+          dictationBtn.setAttribute('aria-pressed', 'true');
+          dictationBtn.setAttribute('aria-label', 'Finish dictation');
+          postMessageWithPanelId({ type: 'startDictation', payload: { requestId: dictationRequest.id } });
+        });
+        dictationFinish.addEventListener('click', finishDictation);
+        document.getElementById('dictation-cancel').addEventListener('click', cancelDictation);
+        dictationSetup.addEventListener('click', function() { postMessageWithPanelId({ type: 'installDictationSupport' }); });
+        document.getElementById('dictation-settings').addEventListener('click', function() { postMessageWithPanelId({ type: 'dictationSettings' }); });
+        document.addEventListener('keydown', function(event) {
+          if (event.key === 'Escape' && dictationRequest) {
+            event.preventDefault(); event.stopImmediatePropagation(); cancelDictation(); inputEl.focus();
+          }
+        }, true);
+      }
+
       var attachBtn = document.getElementById('attach-btn');
       if (attachBtn) {
         attachBtn.addEventListener('click', function() {
@@ -2164,7 +2253,7 @@
               postMessageWithPanelId({ type: 'openConnections' });
               return;
             }
-            // Plan 39: Manage Plugins is its own tab, like Connections.
+            // Plan 45: Manage Plugins is its own tab, like Connections.
             if (item.hasAttribute('data-hub-plugins')) {
               postMessageWithPanelId({ type: 'openPlugins' });
               return;
@@ -2461,22 +2550,12 @@
             if (e.target.closest('.toolbar-persona-clear')) return;
 
             var widget = document.getElementById('inline-suggestions');
-            var inputEl = document.getElementById('message-input');
 
             if (!widget) return;
 
             if (widget.classList.contains('hidden')) {
-              // Request recommendations based on current input
-              var query = inputEl ? inputEl.value.trim() : '';
-              if (query.length > 3) {
-                postMessageWithPanelId({
-                  type: 'getAgentRecommendations',
-                  payload: { query: query }
-                });
-              } else {
-                // Show all personas if no meaningful input
-                showAllPersonaSuggestions();
-              }
+              // Selection must work immediately, including offline and while drafting.
+              showAllPersonaSuggestions();
             } else {
               widget.classList.add('hidden');
             }
@@ -2624,13 +2703,13 @@
           autoSuggestCheck.checked = state.agentSettings && state.agentSettings.autoSuggest;
         }
 
-        var chipsHtml = state.availablePersonas.map(function(p) {
+        var chipsHtml = '<button type="button" class="recommendation-chip" data-agent-id="" data-agent-type="persona">No persona</button>' + state.availablePersonas.map(function(p) {
           var isSelected = state.agentConfig.personaId === p.id;
-          return '<div class="recommendation-chip' + (isSelected ? ' selected' : '') + '" ' +
-                 'data-agent-id="' + p.id + '" data-agent-type="persona" ' +
+          return '<button type="button" class="recommendation-chip' + (isSelected ? ' selected' : '') + '" ' +
+                 'data-agent-id="' + escapeHtml(p.id) + '" data-agent-type="persona" ' +
                  'title="' + escapeHtml(p.description || '') + '">' +
                  '<span class="chip-name">' + escapeHtml(p.name) + '</span>' +
-                 '</div>';
+                 '</button>';
         }).join('');
 
         chipsContainer.innerHTML = chipsHtml;
@@ -2639,7 +2718,7 @@
         // Add click handlers
         chipsContainer.querySelectorAll('.recommendation-chip').forEach(function(chip) {
           chip.addEventListener('click', function() {
-            selectPersona(chip.dataset.agentId);
+            selectPersona(chip.dataset.agentId || null);
             widget.classList.add('hidden');
           });
         });
@@ -2667,6 +2746,11 @@
         connectionsBtn.addEventListener('click', function() {
           postMessageWithPanelId({ type: 'openConnections' });
         });
+      }
+
+      var proactiveBtn = document.getElementById('proactive-btn');
+      if (proactiveBtn) {
+        proactiveBtn.addEventListener('click', function() { postMessageWithPanelId({ type: 'openProactive' }); });
       }
 
       // Export conversation button
@@ -2858,7 +2942,212 @@
         }
         // A different agent or model has a different cache.
         renderPromptCache();
+        renderComposerMenus();
       }
+
+      // The rich menus share the same writers as settings and the palette.
+      // A provider's capability list determines both the steps and their values.
+      function renderComposerMenus() {
+        var trigger = document.getElementById('model-menu-btn');
+        if (!trigger || !modelSelectInline || !effortSelectInline) { return; }
+        var hasModels = !modelSelectInline.classList.contains('hidden');
+        var hasEffort = !effortSelectInline.classList.contains('hidden');
+        var coordinator = state.activeAgent === 'mysti';
+        var manifest = getManifestEntry(state.activeAgent);
+        var supportsUltracode = !!(manifest && manifest.capabilities && manifest.capabilities.supportsUltracode);
+        var modelMode = manifest && manifest.capabilities && manifest.capabilities.modelSelection || 'full';
+        var canPickModel = coordinator || (state.activeAgent !== 'brainstorm' && modelMode !== 'none' && (!!manifest || hasModels));
+        hasModels = hasModels && canPickModel;
+        var attachmentCaps = manifest && manifest.capabilities;
+        var attachmentsSupported = attachmentCaps ? !!(attachmentCaps.supportsImages || attachmentCaps.supportsFileAttachments) : !coordinator && state.activeAgent !== 'brainstorm';
+        ['#attach-btn', '[data-composer-action="attach-btn"]'].forEach(function(selector) {
+          var button = document.querySelector(selector);
+          if (!button) { return; }
+          button.disabled = !attachmentsSupported;
+          button.title = attachmentsSupported ? 'Attach files supported by this provider' : 'This agent does not accept attachments. Add files through Context instead.';
+        });
+        document.querySelectorAll('[data-ultracode-control]').forEach(function(row) {
+          row.classList.toggle('hidden', !supportsUltracode);
+          var toggle = row.querySelector('[data-ultracode-toggle]');
+          toggle.setAttribute('aria-checked', String(!!state.settings.ultracode));
+          toggle.title = state.settings.ultracode ? 'Ultracode on' : 'Ultracode off';
+        });
+        var selected = modelSelectInline.selectedOptions[0];
+        var modelLabel = coordinator ? 'Coordinator model' : (hasModels && selected ? selected.text : 'Model');
+        var effortLabel = hasEffort && effortSelectInline.selectedOptions[0] ? effortSelectInline.selectedOptions[0].text : '';
+        trigger.classList.toggle('hidden', !canPickModel && !hasEffort);
+        document.getElementById('model-menu-label').textContent = modelLabel;
+        document.getElementById('model-menu-effort').textContent = effortLabel + (supportsUltracode && state.settings.ultracode ? ' · Ultracode' : '');
+        document.getElementById('actions-model-label').textContent = modelLabel;
+        var actionsModel = document.getElementById('actions-model-btn');
+        actionsModel.classList.toggle('hidden', state.activeAgent === 'brainstorm');
+        actionsModel.disabled = !canPickModel;
+        actionsModel.firstChild.textContent = canPickModel ? 'Switch model…' : 'Model configured in CLI';
+        actionsModel.title = canPickModel ? 'Choose a model' : 'This provider manages its model in its own CLI configuration.';
+        var options = document.getElementById('model-menu-options');
+        options.replaceChildren();
+        var provider = (state.providers || []).find(function(p) { return p.name === state.activeAgent; });
+        function addModel(value, label, description, active) {
+          var button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'composer-model-option';
+          button.dataset.model = value;
+          button.setAttribute('aria-pressed', String(active));
+          var copy = document.createElement('span');
+          var name = document.createElement('span');
+          name.className = 'composer-model-name';
+          name.textContent = label;
+          copy.appendChild(name);
+          if (description) {
+            var detail = document.createElement('span');
+            detail.className = 'composer-model-description';
+            detail.textContent = description;
+            copy.appendChild(detail);
+          }
+          button.appendChild(copy);
+          var check = document.createElement('span');
+          check.className = 'composer-model-check';
+          check.textContent = active ? '✓' : '';
+          check.setAttribute('aria-hidden', 'true');
+          button.appendChild(check);
+          options.appendChild(button);
+        }
+        if (coordinator) {
+          addModel('__coordinator__', 'Choose coordinator model…', 'Browse your available models', false);
+        } else if (canPickModel) {
+          if (modelMode === 'full') Array.prototype.forEach.call(modelSelectInline.options, function(option) {
+            var model = provider && provider.models && provider.models.find(function(m) { return m.id === option.value; });
+            if (option.value !== '__custom__') addModel(option.value, option.text, model && model.description, option.selected);
+          });
+          addModel('__custom__', 'Custom model…', 'Enter a model ID from your provider or local server', modelSelect.value === '__custom__');
+        }
+        document.querySelectorAll('[data-effort-control]').forEach(function(row) {
+          row.classList.toggle('hidden', !hasEffort);
+          if (!hasEffort) { return; }
+          var levels = Array.from(effortSelectInline.options);
+          var signature = levels.map(function(o) { return o.value; }).join(',');
+          if (row.dataset.levels !== signature) {
+            row.dataset.levels = signature;
+            row.innerHTML = '<label class="composer-effort-label">Effort <span></span></label>' +
+              '<div class="composer-effort-track"><div class="composer-effort-dots" aria-hidden="true"></div>' +
+              '<input type="range" min="0" step="1" aria-label="Reasoning effort" /></div>';
+            var dots = row.querySelector('.composer-effort-dots');
+            levels.forEach(function() { dots.appendChild(document.createElement('i')); });
+          }
+          var slider = row.querySelector('input');
+          slider.id = row.closest('.composer-menu').id + '-effort-slider';
+          row.querySelector('label').htmlFor = slider.id;
+          var index = Math.max(0, effortSelectInline.selectedIndex);
+          slider.max = String(levels.length - 1);
+          slider.value = String(index);
+          slider.disabled = levels.length < 2;
+          slider.setAttribute('aria-valuetext', effortLabel);
+          row.querySelector('.composer-effort-label span').textContent = '(' + effortLabel + ')';
+          row.style.setProperty('--effort-fill', (levels.length > 1 ? index / (levels.length - 1) * 100 : 0) + '%');
+        });
+        filterComposerActions();
+      }
+
+      function closeComposerMenus(restoreFocus) {
+        ['model', 'tools'].forEach(function(kind) {
+          var menu = document.getElementById(kind + '-menu');
+          var button = document.getElementById(kind + '-menu-btn');
+          if (restoreFocus && !menu.classList.contains('hidden')) { button.focus(); }
+          menu.classList.add('hidden');
+          button.setAttribute('aria-expanded', 'false');
+        });
+      }
+
+      function openModelMenu() {
+        closeComposerMenus(false);
+        renderComposerMenus();
+        document.getElementById('model-menu').classList.remove('hidden');
+        document.getElementById('model-menu-btn').setAttribute('aria-expanded', 'true');
+        var target = document.querySelector('#model-menu [aria-pressed="true"]') ||
+          document.querySelector('#model-menu button, #model-menu input');
+        if (target) { target.focus(); }
+      }
+
+      function filterComposerActions() {
+        var filter = document.getElementById('tools-menu-filter');
+        if (!filter) { return; }
+        var query = filter.value.trim().toLowerCase();
+        var count = 0;
+        document.querySelectorAll('#tools-menu .action-group').forEach(function(group) {
+          var matches = 0;
+          group.querySelectorAll('.tools-menu-item, [data-effort-control], [data-ultracode-control]').forEach(function(row) {
+            var match = !row.classList.contains('hidden') && (!query || row.textContent.toLowerCase().includes(query));
+            row.classList.toggle('action-filtered', !match);
+            if (match) { matches++; }
+          });
+          group.classList.toggle('action-filtered', !matches);
+          count += matches;
+        });
+        document.getElementById('tools-menu-empty').classList.toggle('hidden', count > 0);
+      }
+
+      document.getElementById('model-menu-btn').addEventListener('click', function() {
+        if (document.getElementById('model-menu').classList.contains('hidden')) { openModelMenu(); }
+        else { closeComposerMenus(true); }
+      });
+      document.getElementById('actions-model-btn').addEventListener('click', openModelMenu);
+      document.getElementById('model-menu-options').addEventListener('click', function(e) {
+        var option = e.target.closest('[data-model]');
+        if (!option) { return; }
+        closeComposerMenus(true);
+        if (option.dataset.model === '__coordinator__') {
+          mystiModelBtn.click();
+        } else if (option.dataset.model === '__custom__') {
+          postMessageWithPanelId({ type: 'requestCustomModel' });
+        } else {
+          modelSelectInline.value = option.dataset.model;
+          modelSelectInline.dispatchEvent(new Event('change'));
+        }
+      });
+      document.querySelectorAll('[data-effort-control]').forEach(function(row) {
+        row.addEventListener('input', function(e) {
+          if (!e.target.matches('input[type="range"]')) { return; }
+          var option = effortSelectInline.options[Number(e.target.value)];
+          if (!option) { return; }
+          effortSelectInline.value = option.value;
+          effortSelectInline.dispatchEvent(new Event('change'));
+        });
+      });
+      document.getElementById('tools-menu-filter').addEventListener('input', filterComposerActions);
+      document.querySelectorAll('[data-ultracode-toggle]').forEach(function(toggle) {
+        toggle.addEventListener('click', function() {
+          state.settings.ultracode = !state.settings.ultracode;
+          postMessageWithPanelId({ type: 'updateSettings', payload: { ultracode: state.settings.ultracode } });
+          renderComposerMenus();
+        });
+      });
+      document.querySelectorAll('[data-composer-action]').forEach(function(button) {
+        button.addEventListener('click', function() {
+          document.getElementById(button.dataset.composerAction).click();
+        });
+      });
+      ['click', 'focusin'].forEach(function(eventName) {
+        document.addEventListener(eventName, function(e) {
+          if (!e.target.closest('#model-menu, #tools-menu, #model-menu-btn, #tools-menu-btn')) { closeComposerMenus(false); }
+        }, true);
+      });
+      // Consume Escape before the composer sees it as a request to stop a turn.
+      document.addEventListener('keydown', function(e) {
+        var menu = document.querySelector('.composer-menu:not(.hidden)');
+        if (!menu) { return; }
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          closeComposerMenus(true);
+        } else if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && e.target.type !== 'range') {
+          var items = Array.from(menu.querySelectorAll('button:not(:disabled), input:not(:disabled)'))
+            .filter(function(el) { return el.getClientRects().length; });
+          if (!items.length) { return; }
+          e.preventDefault();
+          var index = items.indexOf(document.activeElement);
+          items[(index + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length].focus();
+        }
+      }, true);
 
       modelSelect.addEventListener('change', function() {
         if (modelSelect.value === '__custom__') {
@@ -3386,7 +3675,9 @@
           }).join('');
           // Keep the current selection if the backend supports it, else fall
           // back to the backend's default (or the closest supported tier).
-          effortSelect.value = levels.indexOf(current) >= 0 ? current : (effortDefault || levels[levels.length - 1]);
+          var order = ['low', 'medium', 'high', 'xhigh', 'max'];
+          var below = levels.filter(function(level) { return order.indexOf(level) <= order.indexOf(current); });
+          effortSelect.value = levels.indexOf(current) >= 0 ? current : (below[below.length - 1] || levels[0]);
         }
         syncInlineSelectors();
       }
@@ -3656,24 +3947,20 @@
       if (toolsMenuBtn && toolsMenu) {
         toolsMenuBtn.addEventListener('click', function(e) {
           e.stopPropagation();
-          toolsMenu.classList.toggle('hidden');
+          var opening = toolsMenu.classList.contains('hidden');
+          closeComposerMenus(false);
+          if (opening) {
+            document.getElementById('tools-menu-filter').value = '';
+            renderComposerMenus();
+            toolsMenu.classList.remove('hidden');
+            toolsMenuBtn.setAttribute('aria-expanded', 'true');
+            document.getElementById('tools-menu-filter').focus();
+          }
         });
         toolsMenu.addEventListener('click', function(e) {
           // Close after an action runs; keep open when clearing the persona.
-          if (e.target.closest('.tools-menu-item') && !e.target.closest('#toolbar-persona-clear')) {
-            toolsMenu.classList.add('hidden');
-          }
-        });
-        document.addEventListener('click', function(e) {
-          if (!toolsMenu.classList.contains('hidden') &&
-              !toolsMenu.contains(e.target) &&
-              e.target !== toolsMenuBtn && !toolsMenuBtn.contains(e.target)) {
-            toolsMenu.classList.add('hidden');
-          }
-        });
-        document.addEventListener('keydown', function(e) {
-          if (e.key === 'Escape' && !toolsMenu.classList.contains('hidden')) {
-            toolsMenu.classList.add('hidden');
+          if (e.target.closest('.tools-menu-item') && !e.target.closest('#toolbar-persona-clear, #actions-model-btn')) {
+            closeComposerMenus(false);
           }
         });
       }
@@ -4114,6 +4401,7 @@
       }
 
       function updateAgentMenuSelection() {
+        if (enhanceRequest && enhanceRequest.agent !== state.activeAgent) { cancelPromptEnhancement(); }
         document.querySelectorAll('.agent-menu-item[data-agent]').forEach(function(item) {
           if (item.dataset.agent === state.activeAgent) {
             item.classList.add('selected');
@@ -4417,9 +4705,27 @@
       themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] });
 
       var enhanceTimeout = null;
+      var enhanceRequest = null;
+      var enhanceSequence = 0;
+      var draftRevision = 0;
+      inputEl.addEventListener('input', function() { draftRevision++; });
+      function cancelPromptEnhancement() {
+        enhanceRequest = null;
+        clearTimeout(enhanceTimeout);
+        enhanceTimeout = null;
+        enhanceBtn.classList.remove('enhancing');
+        var area = document.querySelector('.input-area');
+        if (area) area.classList.remove('enhancing');
+        updateEnhanceAffordance();
+      }
+      function acceptsEnhancement(payload) {
+        return !payload || payload.requestId === undefined || !!(enhanceRequest && payload.requestId === enhanceRequest.id);
+      }
       enhanceBtn.addEventListener('click', function() {
         if (enhanceBtn.disabled) { return; }
+        if (!inputEl.value.trim()) { showToast('Write a prompt before enhancing it.', 'info'); inputEl.focus(); return; }
         if (inputEl.value.trim() && !enhanceBtn.classList.contains('enhancing')) {
+          enhanceRequest = { id: ++enhanceSequence, prompt: inputEl.value, revision: draftRevision, agent: state.activeAgent, conversation: state.conversation };
           // Add enhancing state - show loader and disable inputs
           enhanceBtn.classList.add('enhancing');
           enhanceBtn.title = 'Enhancing prompt...';
@@ -4433,6 +4739,7 @@
               updateEnhanceAffordance();
               var ia = document.querySelector('.input-area');
               if (ia) ia.classList.remove('enhancing');
+              enhanceRequest = null;
               inputEl.placeholder = 'Enhancement timed out. Try again.';
               setTimeout(function() {
                 inputEl.placeholder = COMPOSER_PLACEHOLDER;
@@ -4440,7 +4747,7 @@
             }
           }, 30000);
 
-          postMessageWithPanelId({ type: 'enhancePrompt', payload: inputEl.value });
+          postMessageWithPanelId({ type: 'enhancePrompt', payload: { prompt: inputEl.value, requestId: enhanceRequest.id } });
         }
       });
 
@@ -4481,6 +4788,9 @@
           case 'hubShow':
             handleHubShow(message.payload);
             break;
+          case 'dictationState':
+            handleDictation(message.payload);
+            break;
           case 'settingsSync':
             applySettingsSync(message.payload);
             break;
@@ -4505,6 +4815,7 @@
             break;
           case 'responseStarted':
             subAgentCards.stop();
+            stopCollaborations();
             // Who is answering this turn, as the extension resolved it — the
             // agent it routed to and the model that agent will really run
             // (a per-provider custom-model override outranks the picker, so
@@ -4545,6 +4856,11 @@
             // Payload is { message, usage } - extract message for finalization
             var responsePayload = message.payload || {};
             var completedMessage = responsePayload.message || responsePayload;
+            if (Array.isArray(completedMessage.participants)) {
+              collaborationRuns.forEach(function(run) {
+                if (run.closed) { run.cards.forEach(function(card) { card.el.open = false; }); }
+              });
+            }
             var finalizedEl = finalizeStreamingMessage(completedMessage);
             // Plan 02 Phase 3.4: unified footer (also auto-resolves running
             // tool cards for providers that never stream tool_result)
@@ -4631,6 +4947,7 @@
             break;
           case 'requestCancelled':
             subAgentCards.stop();
+            stopCollaborations();
             hideLoading();
             // Resolve any still-running tool cards in the active streaming
             // message so Stop never leaves an eternal spinner (review [5]).
@@ -4653,6 +4970,12 @@
             }
             break;
           // Sub-agent response events (from @-mentions)
+          case 'collaborationStarted':
+          case 'collaborator':
+          case 'collaborationComplete':
+          case 'collaborationError':
+            handleCollaboration(message.type, message.payload || {});
+            break;
           case 'subAgentStarted':
             subAgentCards.started(message.payload);
             break;
@@ -4737,6 +5060,9 @@
           case 'cliUpdatesAvailable':
             state.cliUpdateNotices = (message.payload && message.payload.updates) || [];
             renderUpdateNotices();
+            break;
+          case 'modelCliUpgrade':
+            showModelCliUpgrade(message.payload);
             break;
           case 'modelsUpdated':
             // Plan 01 Phase 4: model lists are NOT final at initialState — the
@@ -4907,6 +5233,8 @@
             state.workspaceFileCache = message.payload || [];
             break;
           case 'conversationChanged':
+            cancelDictation();
+            cancelPromptEnhancement();
             clearMessages();
             resetContextUsage();
             if (agentMap) { agentMap.reset(); }
@@ -5002,6 +5330,7 @@
             break;
           }
           case 'promptEnhanced':
+            if (!acceptsEnhancement(message.payload)) { break; }
             // Clear safety timeout
             if (enhanceTimeout) {
               clearTimeout(enhanceTimeout);
@@ -5018,7 +5347,11 @@
               ? { prompt: message.payload, changed: true, fallback: false, enhancedBy: '' }
               : (message.payload || { prompt: inputEl.value, changed: false, fallback: false, enhancedBy: '' });
 
-            if (enhancedPayload.changed === false) {
+            var draftChanged = enhanceRequest && (inputEl.value !== enhanceRequest.prompt || draftRevision !== enhanceRequest.revision || state.activeAgent !== enhanceRequest.agent || state.conversation !== enhanceRequest.conversation);
+            enhanceRequest = null;
+            if (draftChanged) {
+              showToast('Your draft changed while enhancement was running. Kept your current text.', 'info');
+            } else if (enhancedPayload.changed === false) {
               // Every backend's enhancePrompt() resolves the ORIGINAL prompt when
               // its CLI fails, so an unchanged result is a no-op, not a success.
               // Say so instead of silently repainting identical text.
@@ -5042,6 +5375,8 @@
             break;
 
           case 'promptEnhanceUnavailable':
+            if (!acceptsEnhancement(message.payload)) { break; }
+            enhanceRequest = null;
             // Authoritative "nothing installed can do this" from the extension:
             // stop the spinner and disable the button with the reason, instead
             // of handing back identical text and looking broken.
@@ -5059,6 +5394,8 @@
             if (!mapIsOpen()) { inputEl.focus(); }
             break;
           case 'promptEnhanceError':
+            if (!acceptsEnhancement(message.payload)) { break; }
+            enhanceRequest = null;
             // Clear safety timeout
             if (enhanceTimeout) {
               clearTimeout(enhanceTimeout);
@@ -5072,7 +5409,7 @@
 
             // Show error briefly in the input area
             var originalPlaceholder = inputEl.placeholder;
-            inputEl.placeholder = 'Enhancement failed: ' + (message.payload || 'Try again');
+            inputEl.placeholder = 'Enhancement failed: ' + (typeof message.payload === 'string' ? message.payload : message.payload && message.payload.error || 'Try again');
             setTimeout(function() {
               inputEl.placeholder = originalPlaceholder;
             }, 3000);
@@ -5277,6 +5614,9 @@
             break;
           case 'setupProgress':
             handleSetupProgress(message.payload);
+            break;
+          case 'providerDetectionComplete':
+            finishInstallDetection(message.payload || {});
             break;
           case 'setupComplete':
             handleSetupComplete(message.payload);
@@ -5754,7 +6094,7 @@
             toast.classList.remove('visible');
           }, 2000);
         } else {
-          toast.textContent = 'Export failed';
+          toast.textContent = payload && payload.error || 'Export failed';
           toast.classList.add('visible');
           setTimeout(function() {
             toast.classList.remove('visible');
@@ -6022,7 +6362,7 @@
 
         // Hide setup after brief success display
         setTimeout(function() {
-          hideSetupOverlay();
+          if (state.setup.currentStep === 'ready' && state.setup.providerId === payload.providerId) hideSetupOverlay();
         }, 1000);
       }
 
@@ -6060,10 +6400,25 @@
         state.setup.error = payload.error;
         state.setup.message = payload.error;
 
+        var content = document.querySelector('#setup-overlay .setup-content');
+        if (content && !content.querySelector('.setup-error')) {
+          content.innerHTML = '<div class="setup-step">Connection failed</div><p class="setup-message"></p><div class="setup-buttons"><button class="setup-btn primary" id="auth-retry-btn">Retry connection</button><button class="setup-btn secondary" id="auth-error-close-btn">Close</button></div>';
+          content.querySelector('#auth-retry-btn').addEventListener('click', function() {
+            this.disabled = true;
+            rearmSetupOverlay();
+            postMessageWithPanelId({ type: 'startProviderSetup', payload: { providerId: payload.providerId, autoInstall: false } });
+          });
+          content.querySelector('#auth-error-close-btn').addEventListener('click', function() {
+            state.setup.dismissedByUser = true;
+            hideSetupOverlay();
+            postMessageWithPanelId({ type: 'skipSetup' });
+          });
+        }
         updateSetupOverlay();
       }
 
       function handleAuthPrompt(payload) {
+        if (currentInstallProviderId === payload.providerId) { hideInstallProviderModal(); }
         state.setup.currentStep = 'authenticating';
         state.setup.providerId = payload.providerId;
         state.setup.message = payload.message;
@@ -6242,6 +6597,13 @@
         state.wizard.providers = payload.providers || [];
         state.wizard.npmAvailable = payload.npmAvailable;
         state.wizard.anyReady = payload.anyReady;
+        if (currentInstallProviderId) {
+          var installedProvider = (payload.providers || []).find(function(p) { return p.providerId === currentInstallProviderId; });
+          if (installedProvider) renderInstallReadiness(installedProvider);
+          currentInstallSupportsAuto = !!(installedProvider && installedProvider.supportsAutoInstall && payload.npmAvailable);
+          var installButton = document.getElementById('install-auto-btn');
+          if (installButton) installButton.disabled = !currentInstallSupportsAuto;
+        }
 
         if (state.wizard.visible) {
           updateWizardProviderCards();
@@ -6800,13 +7162,7 @@
           });
         });
 
-        // Auth options cancel button
-        var authCancelBtn = document.querySelector('.auth-options-cancel');
-        if (authCancelBtn) {
-          authCancelBtn.addEventListener('click', function() {
-            hideAuthOptionsModal();
-          });
-        }
+
       }
 
       function handleWizardProviderAction(providerId, action) {
@@ -6814,7 +7170,7 @@
 
         // Check if this provider supports auto-install
         var provider = state.wizard.providers.find(function(p) { return p.providerId === providerId; });
-        var supportsAutoInstall = provider ? provider.supportsAutoInstall !== false : true;
+        var supportsAutoInstall = provider && provider.supportsAutoInstall === true;
 
         switch (action) {
           case 'setup':
@@ -6827,11 +7183,8 @@
                 payload: { providerId: providerId, autoInstall: state.wizard.npmAvailable }
               });
             } else {
-              // Non-auto-installable: open install modal with manual instructions
-              postMessageWithPanelId({
-                type: 'requestProviderInstallInfo',
-                payload: { providerId: providerId }
-              });
+              // Use the same request identity and loading state as the agent menu.
+              showInstallProviderModal(providerId);
             }
             break;
           case 'auth':
@@ -6850,7 +7203,25 @@
         }
       }
 
+      function showAuthChoiceWaiting(method) {
+        var overlay = document.getElementById('setup-overlay');
+        var content = overlay && overlay.querySelector('.setup-content');
+        if (content) {
+          content.innerHTML = '<div class="setup-progress"><div class="setup-step">Connecting...</div>' +
+            '<div class="setup-message">' + (method === 'api-key' ? 'Enter your API key in the editor prompt.' : 'Complete sign-in in the terminal that opened.') + '</div>' +
+            '<div class="setup-buttons"><button class="setup-btn secondary" id="auth-choice-skip-btn">Continue without it</button></div></div>';
+          overlay.classList.remove('hidden');
+          document.getElementById('auth-choice-skip-btn').addEventListener('click', function() {
+            state.setup.dismissedByUser = true;
+            hideSetupOverlay();
+            postMessageWithPanelId({ type: 'skipSetup' });
+          });
+        }
+      }
+
       function showAuthOptionsModal(payload) {
+        hideSetupOverlay();
+        if (currentInstallProviderId === payload.providerId) { hideInstallProviderModal(); }
         var modal = document.getElementById('auth-options-modal');
         if (!modal) return;
 
@@ -6864,14 +7235,15 @@
           optionsList.innerHTML = '';
 
           payload.options.forEach(function(option) {
-            var optionEl = document.createElement('div');
+            var optionEl = document.createElement('button');
+            optionEl.type = 'button';
             optionEl.className = 'auth-option';
             optionEl.setAttribute('data-method', option.action);
             optionEl.innerHTML =
-              '<span class="auth-option-icon">' + option.icon + '</span>' +
+              '<span class="auth-option-icon">' + escapeHtml(option.icon) + '</span>' +
               '<div class="auth-option-content">' +
-                '<div class="auth-option-label">' + option.label + '</div>' +
-                '<div class="auth-option-desc">' + option.description + '</div>' +
+                '<div class="auth-option-label">' + escapeHtml(option.label) + '</div>' +
+                '<div class="auth-option-desc">' + escapeHtml(option.description) + '</div>' +
               '</div>';
 
             optionEl.addEventListener('click', function() {
@@ -6882,6 +7254,9 @@
               // latch — so a user who once skipped setup got no feedback at all
               // when OAuth polling timed out.
               rearmSetupOverlay();
+              state.setup.providerId = payload.providerId;
+              state.setup.currentStep = 'authenticating';
+              showAuthChoiceWaiting(option.action);
               postMessageWithPanelId({
                 type: 'selectAuthMethod',
                 payload: {
@@ -6896,6 +7271,8 @@
         }
 
         modal.classList.remove('hidden');
+        var firstOption = modal.querySelector('button');
+        if (firstOption) firstOption.focus();
       }
 
       function hideAuthOptionsModal() {
@@ -6911,20 +7288,43 @@
       // ========================================
 
       var currentInstallProviderId = null;
+      var currentInstallSupportsAuto = false;
+      var currentInstallRequest = 0;
+      var installReturnFocus = null;
+      var installRefreshPending = false;
+      var installInfoError = false;
 
       function showInstallProviderModal(providerId) {
-        console.log('[Mysti Webview] showInstallProviderModal called for:', providerId);
+        installReturnFocus = document.activeElement;
+        currentInstallRequest++;
+        installInfoError = false;
+        document.getElementById('install-provider-title').textContent = 'Provider setup';
+        document.getElementById('install-status').textContent = 'Loading setup instructions…';
+        document.querySelectorAll('#install-provider-modal .install-section').forEach(function(section) { section.classList.add('hidden'); });
+        document.getElementById('install-docs-link').style.display = 'none';
         currentInstallProviderId = providerId;
+        currentInstallSupportsAuto = false;
+        var previousModal = document.getElementById('install-provider-modal');
+        if (previousModal) { previousModal.classList.remove('hidden'); }
+        document.getElementById('install-close-btn').focus();
         // Request install info from extension
         postMessageWithPanelId({
           type: 'requestProviderInstallInfo',
-          payload: { providerId: providerId }
+          payload: { providerId: providerId, requestId: currentInstallRequest }
         });
         console.log('[Mysti Webview] requestProviderInstallInfo message sent');
       }
 
       function handleProviderInstallInfo(payload) {
-        console.log('[Mysti Webview] handleProviderInstallInfo received:', payload);
+        if (!payload || payload.providerId !== currentInstallProviderId || (payload.requestId !== undefined && payload.requestId !== currentInstallRequest)) { return; }
+        if (payload.error) {
+          installInfoError = true;
+          document.getElementById('install-status').textContent = payload.error;
+          document.getElementById('install-refresh-btn').textContent = 'Retry loading';
+          return;
+        }
+        installInfoError = false;
+        document.getElementById('install-auth-section').classList.remove('hidden');
         var modal = document.getElementById('install-provider-modal');
         if (!modal) {
           console.log('[Mysti Webview] ERROR: install-provider-modal not found in DOM!');
@@ -6933,6 +7333,7 @@
         console.log('[Mysti Webview] Modal found, updating content...');
 
         currentInstallProviderId = payload.providerId;
+        finishInstallDetection({});
 
         // Update modal content
         var icon = document.getElementById('install-provider-icon');
@@ -6954,7 +7355,7 @@
         var authList = document.getElementById('install-auth-steps');
         if (authList) {
           authList.innerHTML = '';
-          payload.authInstructions.forEach(function(step) {
+          (payload.authInstructions || []).forEach(function(step) {
             var li = document.createElement('li');
             li.textContent = step;
             authList.appendChild(li);
@@ -6978,7 +7379,10 @@
         var progressSection = document.getElementById('install-progress-section');
         if (progressSection) progressSection.classList.add('hidden');
 
-        var supportsAutoInstall = payload.supportsAutoInstall !== false;
+        var supportsAutoInstall = payload.supportsAutoInstall === true;
+        currentInstallSupportsAuto = supportsAutoInstall && payload.npmAvailable !== false;
+        var oldErrors = document.getElementById('install-error-details');
+        if (oldErrors) { oldErrors.classList.add('hidden'); oldErrors.textContent = ''; }
         var installMethods = payload.installMethods || [];
 
         if (supportsAutoInstall) {
@@ -6987,7 +7391,10 @@
           if (methodsSection) methodsSection.classList.add('hidden');
           if (manualSection) manualSection.classList.remove('hidden');
           var autoBtn = document.getElementById('install-auto-btn');
-          if (autoBtn) autoBtn.disabled = false;
+          if (autoBtn) {
+            autoBtn.disabled = !currentInstallSupportsAuto;
+            autoBtn.title = currentInstallSupportsAuto ? 'Install this CLI' : 'Install Node.js and npm first, then reopen this dialog.';
+          }
         } else {
           // Interactive provider: hide auto-install, show install methods
           if (autoSection) autoSection.classList.add('hidden');
@@ -7040,7 +7447,7 @@
                   postMessageWithPanelId({
                     type: 'openTerminal',
                     payload: {
-                      providerId: currentInstallProviderId,
+                      providerId: payload.providerId,
                       command: cmd
                     }
                   });
@@ -7054,6 +7461,7 @@
         }
 
         modal.classList.remove('hidden');
+        renderInstallReadiness(payload);
       }
 
       function hideInstallProviderModal() {
@@ -7062,11 +7470,40 @@
           modal.classList.add('hidden');
         }
         currentInstallProviderId = null;
+        if (installReturnFocus && installReturnFocus.isConnected) { installReturnFocus.focus(); }
+      }
+
+      function renderInstallReadiness(provider) {
+        if (!provider || provider.providerId !== currentInstallProviderId) return;
+        var ready = provider.installed && provider.authenticated;
+        var connect = document.getElementById('install-connect-section');
+        connect.classList.toggle('hidden', !provider.installed || ready);
+        var status = document.getElementById('install-status');
+        status.textContent = ready ? 'Connected and ready to use.' : provider.installed ? 'Installed. Continue setup to connect this provider.' : 'Choose an installation method, then refresh detection.';
+        if (provider.installed) {
+          document.getElementById('install-auto-section').classList.add('hidden');
+        }
+      }
+
+      function finishInstallDetection(payload) {
+        installRefreshPending = false;
+        var button = document.getElementById('install-refresh-btn');
+        button.disabled = false;
+        button.textContent = '↻ Refresh Detection';
+        if (currentInstallProviderId && payload.error) {
+          document.getElementById('install-status').textContent = 'Detection failed: ' + payload.error;
+        }
       }
 
       function startAutoInstallFromModal() {
-        if (!currentInstallProviderId) return;
+        if (!currentInstallProviderId || !currentInstallSupportsAuto) return;
 
+        var errorDetails = document.getElementById('install-error-details');
+        if (errorDetails) { errorDetails.classList.add('hidden'); errorDetails.textContent = ''; }
+        var progressFill = document.getElementById('install-progress-fill');
+        if (progressFill) { progressFill.style.width = '0%'; }
+        var progressMessage = document.getElementById('install-progress-msg');
+        if (progressMessage) { progressMessage.textContent = 'Starting installation…'; }
         // Show progress, hide auto-install section
         var autoSection = document.getElementById('install-auto-section');
         var progressSection = document.getElementById('install-progress-section');
@@ -7082,6 +7519,7 @@
       }
 
       function updateInstallProgress(payload) {
+        var requestId = currentInstallRequest;
         var progressFill = document.getElementById('install-progress-fill');
         var progressMsg = document.getElementById('install-progress-msg');
 
@@ -7102,7 +7540,9 @@
           }
           // Availability arrives on its own: the install's re-probe broadcasts
           // `providerAvailability` to every panel.
-          setTimeout(hideInstallProviderModal, 1500);
+          setTimeout(function() {
+            if (currentInstallProviderId === payload.providerId && currentInstallRequest === requestId) { hideInstallProviderModal(); }
+          }, 1500);
         } else if (payload.step === 'failed') {
           if (progressMsg) progressMsg.textContent = '✗ ' + payload.message;
 
@@ -7155,6 +7595,7 @@
           // Show auto-install section again after delay (if retryable)
           if (payload.retryable !== false) {
             setTimeout(function() {
+              if (currentInstallProviderId !== payload.providerId || currentInstallRequest !== requestId || !currentInstallSupportsAuto) { return; }
               var autoSection = document.getElementById('install-auto-section');
               if (autoSection) autoSection.classList.remove('hidden');
             }, 2000);
@@ -7170,6 +7611,27 @@
 
       // Setup install modal event listeners
       (function setupInstallModalListeners() {
+        var authCancel = document.querySelector('.auth-options-cancel');
+        if (authCancel) authCancel.addEventListener('click', hideAuthOptionsModal);
+        document.getElementById('auth-options-modal').addEventListener('keydown', function(e) {
+          if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); hideAuthOptionsModal(); }
+        });
+        document.getElementById('install-connect-btn').addEventListener('click', function() {
+          var providerId = currentInstallProviderId;
+          if (!providerId) return;
+          hideInstallProviderModal();
+          rearmSetupOverlay();
+          postMessageWithPanelId({ type: 'startProviderSetup', payload: { providerId: providerId, autoInstall: false } });
+        });
+        document.getElementById('install-provider-modal').addEventListener('keydown', function(e) {
+          if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); hideInstallProviderModal(); }
+          if (e.key === 'Tab') {
+            var controls = Array.from(this.querySelectorAll('button:not(:disabled), a[href]')).filter(function(el) { return el.offsetParent !== null; });
+            var first = controls[0], last = controls[controls.length - 1];
+            if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+            else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+          }
+        });
         var autoBtn = document.getElementById('install-auto-btn');
         if (autoBtn) {
           autoBtn.addEventListener('click', startAutoInstallFromModal);
@@ -7207,12 +7669,16 @@
         var refreshBtn = document.getElementById('install-refresh-btn');
         if (refreshBtn) {
           refreshBtn.addEventListener('click', function() {
+            if (installInfoError) { showInstallProviderModal(currentInstallProviderId); return; }
+            if (installRefreshPending) return;
+            installRefreshPending = true;
+            refreshBtn.disabled = true;
             postMessageWithPanelId({
               type: 'refreshProviderDetection',
               payload: {}
             });
             refreshBtn.textContent = '⟳ Refreshing...';
-            setTimeout(function() { refreshBtn.innerHTML = '&#8635; Refresh Detection'; }, 2000);
+
           });
         }
 
@@ -7850,6 +8316,163 @@
         }
       }
 
+      var collaborationRuns = new Map();
+
+      function collaborationDuration(ms) {
+        var seconds = Math.max(0, Math.floor(ms / 1000));
+        return Math.floor(seconds / 60) + ':' + String(seconds % 60).padStart(2, '0');
+      }
+
+      // Each participant has its own clock. Activity from Codex must not hide
+      // a quiet Claude, or blame the unrelated provider selected in the footer.
+      function updateCollaborationWaits() {
+        var active = false;
+        if (!collaborationRuns) { return active; }
+        var awaitingHuman = runsIn('needs').length > 0;
+        collaborationRuns.forEach(function(run) {
+          if (run.closed) { return; }
+          active = true;
+          run.cards.forEach(function(card) {
+            if (card.status.dataset.state !== 'running') { return; }
+            card.elapsed.textContent = collaborationDuration(Date.now() - card.startedAt);
+            var quiet = Date.now() - card.lastActivityAt;
+            card.wait.textContent = !awaitingHuman && !card.waitingForUser && quiet >= 30000
+              ? (card.hasActivity ? 'No new activity from ' : 'Waiting for a response from ') + card.name +
+                ' for ' + collaborationDuration(quiet) + '. It may still be working; no failure has been reported. You can keep waiting or use Stop to cancel the request.'
+              : '';
+          });
+        });
+        return active;
+      }
+
+      function stopCollaborations() {
+        if (!collaborationRuns) { return; }
+        collaborationRuns.forEach(function(run) {
+          if (run.closed) { return; }
+          run.closed = true;
+          run.title.textContent = 'Agent assignments · stopped';
+          run.nextStep.remove();
+          run.cards.forEach(function(card) {
+            if (card.status.dataset.state === 'running') {
+              card.status.textContent = 'Stopped';
+              card.status.dataset.state = 'stopped';
+              card.wait.textContent = '';
+            }
+          });
+        });
+      }
+
+      function handleCollaboration(type, p) {
+        if (!p.runId) { return; }
+        var run = collaborationRuns.get(p.runId);
+        if (type === 'collaborationStarted') {
+          if (run) { return; }
+          // Bound retained DOM references; completed transcript DOM stays intact.
+          if (collaborationRuns.size >= 100) {
+            collaborationRuns.forEach(function(old, key) { if (old.closed) { collaborationRuns.delete(key); } });
+          }
+          var group = document.createElement('section');
+          group.className = 'collaboration-group';
+          group.setAttribute('aria-label', 'Agent assignments');
+          var title = document.createElement('h3');
+          var step = p.phaseCount > 1 ? 'step ' + (p.phaseIndex + 1) + ' of ' + p.phaseCount : '';
+          var heading = 'Agent assignments' + (step ? ' · ' + step : '');
+          title.textContent = heading + (p.dependsOnPrevious ? ' · following previous results' : '');
+          group.appendChild(title);
+          var nextStep = document.createElement('p');
+          nextStep.className = 'collaboration-next';
+          if (Array.isArray(p.nextAgents) && p.nextAgents.length) {
+            nextStep.textContent = 'Next step: ' + p.nextAgents.join(' + ') + '. ' +
+              (p.nextDependsOnPrevious ? 'Waits for this step to succeed.' : 'Waits for this step to finish.');
+            group.appendChild(nextStep);
+          }
+          messagesEl.appendChild(group);
+          run = { group: group, title: title, heading: heading, nextStep: nextStep, cards: new Map(), closed: false };
+          collaborationRuns.set(p.runId, run);
+          setProcessing(true);
+          scrollToBottom();
+          return;
+        }
+        if (!run || run.closed) { return; }
+        if (type === 'collaborationError') {
+          run.failed = true;
+          var error = document.createElement('p');
+          error.className = 'collaboration-error';
+          error.textContent = p.message || 'Assignment failed';
+          run.group.appendChild(error);
+          return;
+        }
+        if (type === 'collaborationComplete') {
+          run.closed = true;
+          run.cards.forEach(function(card) {
+            card.wait.textContent = '';
+            if (card.status.dataset.state === 'error') { run.failed = true; }
+          });
+          run.nextStep.remove();
+          run.title.textContent = run.heading + (run.failed ? ' · finished with errors' : ' · finished');
+          return;
+        }
+        if (!p.collaboratorId) { return; }
+        var card = run.cards.get(p.collaboratorId);
+        if (!card) {
+          var el = document.createElement('details');
+          el.className = 'collaboration-card';
+          el.open = true;
+          var summary = document.createElement('summary');
+          var name = document.createElement('span');
+          var display = getAgentDisplay(p.agentId);
+          name.textContent = p.label || display.name || p.agentId;
+          el.style.setProperty('--agent-color', display.color || 'var(--vscode-focusBorder)');
+          var status = document.createElement('span');
+          status.className = 'collaboration-status';
+          status.setAttribute('role', 'status');
+          var elapsed = document.createElement('span');
+          elapsed.className = 'collaboration-elapsed'; elapsed.title = 'Elapsed time';
+          var progress = document.createElement('span'); progress.className = 'collaboration-progress';
+          progress.appendChild(status); progress.appendChild(elapsed);
+          summary.appendChild(name); summary.appendChild(progress); el.appendChild(summary);
+          var activity = document.createElement('div'); activity.className = 'mysti-node-activity';
+          var output = document.createElement('div'); output.className = 'collaboration-output';
+          var wait = document.createElement('p'); wait.className = 'collaboration-wait';
+          el.appendChild(activity); el.appendChild(output); el.appendChild(wait); run.group.appendChild(el);
+          card = { el: el, status: status, output: output, text: '', name: name.textContent,
+            elapsed: elapsed, wait: wait, startedAt: Date.now(), lastActivityAt: Date.now(), hasActivity: false, waitingForUser: false };
+          run.cards.set(p.collaboratorId, card);
+        }
+        card.lastActivityAt = Date.now();
+        card.wait.textContent = '';
+        card.elapsed.textContent = collaborationDuration(Date.now() - card.startedAt);
+        card.waitingForUser = p.type === 'collab_ask_user_question';
+        if (['collab_text', 'collab_thinking', 'collab_tool_use', 'collab_tool_result'].includes(p.type)) { card.hasActivity = true; }
+        if (p.type === 'collab_started' || p.type === 'collab_thinking') {
+          card.status.textContent = p.type === 'collab_thinking' ? 'Thinking' : 'Waiting for response';
+          card.status.dataset.state = 'running';
+        } else if (p.type === 'collab_text') {
+          card.text += p.content || '';
+          card.output.innerHTML = formatContent(card.text);
+          card.status.textContent = 'Responding'; card.status.dataset.state = 'running';
+        } else if (p.type === 'collab_retry') {
+          card.text = ''; card.output.textContent = '';
+          card.hasActivity = false;
+          card.status.textContent = 'Retrying'; card.status.dataset.state = 'running';
+        } else if (p.type === 'collab_tool_use') {
+          mystiNodeToolUse(card.el, p.toolCall);
+        } else if (p.type === 'collab_tool_result') {
+          mystiNodeToolResult(card.el, p.toolCall);
+        } else if (p.type === 'collab_tool_denied') {
+          card.status.textContent = 'Tool denied';
+        } else if (p.type === 'collab_ask_user_question') {
+          card.status.textContent = 'Waiting for your answer';
+        } else if (p.type === 'collab_complete' || p.type === 'collab_error' || p.type === 'collab_skipped') {
+          var failed = p.hasError || p.type !== 'collab_complete';
+          card.status.textContent = failed ? 'Unavailable · ' + (p.failure || 'failed') : 'Complete';
+          card.status.dataset.state = failed ? 'error' : 'complete';
+          if (p.responseText) { card.text = p.responseText; card.output.innerHTML = formatContent(card.text); }
+          if (failed && !card.text) { card.output.textContent = p.hint || p.content || 'This agent did not provide a response. No opinion was substituted.'; }
+        }
+        scrollToBottom();
+      }
+
       function handleMystiCollab(evt) {
         var chunk = evt.collab || {};
         var el = mystiNodeEl(evt.nodeId);
@@ -7921,7 +8544,7 @@
       function mystiNodeToolUse(nodeEl, toolCall) {
         var act = mystiNodeActivityEl(nodeEl);
         if (!act || !toolCall) return;
-        var inputJson = '';
+        var inputJson;
         try { inputJson = JSON.stringify(toolCall.input || {}, null, 2); }
         catch (e) { inputJson = String(toolCall.input || '{}'); }
         // review[15]: UPSERT by id. Claude/Qwen sub-agents emit tool_use TWICE
@@ -8896,7 +9519,7 @@
 
       function handleBrainstormComplete(payload) {
         state.brainstormPhase = 'complete';
-        state.isLoading = false;
+        setProcessing(false);
 
         // Reset buttons
         if (sendBtn) {
@@ -8955,7 +9578,7 @@
       }
 
       function handleBrainstormError(payload) {
-        state.isLoading = false;
+        setProcessing(false);
 
         // Reset buttons
         if (sendBtn) {
@@ -9085,7 +9708,7 @@
        */
       function applySettingsSync(p) {
         if (!p || typeof p !== 'object') { return; }
-        ['provider', 'model', 'thinkingLevel', 'effortLevel', 'mode', 'accessLevel', 'contextMode'].forEach(function(k) {
+        ['provider', 'model', 'thinkingLevel', 'effortLevel', 'ultracode', 'mode', 'accessLevel', 'contextMode'].forEach(function(k) {
           if (p[k] !== undefined) { state.settings[k] = p[k]; }
         });
         // customModel, plus any provider-declared key the chat already holds
@@ -9662,7 +10285,7 @@
        */
       /** Message types that are evidence the BACKEND is still producing. */
       var STREAM_ALIVE = {
-        responseChunk: 1, responseStarted: 1, toolUse: 1, toolResult: 1,
+        responseChunk: 1, responseStarted: 1, toolUse: 1, toolResult: 1, collaborator: 1,
         thinking: 1, subAgentChunk: 1, subAgentToolUse: 1, subAgentToolResult: 1,
         subAgentStatus: 1, jobProgress: 1, jobToolUse: 1, jobToolResult: 1,
         mystiEvent: 1, mystiDelegateTrace: 1, brainstormAgentChunk: 1,
@@ -9881,6 +10504,13 @@
 
       function stallTick() {
         if (!state.isLoading) { return; }
+        // Assignment-specific notices own this turn, even when the selected
+        // base provider (e.g. Cline) is not one of the requested participants.
+        if (updateCollaborationWaits()) {
+          var genericStall = document.getElementById('stall-card');
+          if (genericStall) { genericStall.remove(); }
+          return;
+        }
         // The backend is SUPPOSED to be quiet while it waits on a human. An
         // open permission card or an unanswered question is not a stall, and
         // saying "nothing for 90s" next to a card asking for a decision blames
@@ -9953,7 +10583,7 @@
 
         [['Model', 'model-select-inline'], ['Effort', 'effort-select-inline']].forEach(function(pair) {
           var sel = document.getElementById(pair[1]);
-          if (!sel || !sel.options) { return; }
+          if (!sel || !sel.options || sel.classList.contains('hidden')) { return; }
           Array.prototype.forEach.call(sel.options, function(o) {
             out.push({ group: pair[0], label: o.text, active: sel.value === o.value,
                        run: function() {
@@ -9973,7 +10603,7 @@
         [['New conversation', 'new-conversation-btn'], ['Open in a tab', 'new-tab-btn'],
          ['Export conversation', 'export-conversation-btn'], ['Enhance the prompt', 'enhance-btn'],
          ['Look at the running app', 'visual-test-btn'], ['Open the canvas', 'canvas-btn'],
-         ['Personas and skills', 'agent-config-btn'], ['Connections', 'connections-btn'],
+         ['Personas and skills', 'agent-config-btn'], ['Connections', 'connections-btn'], ['Proactive inbox', 'proactive-btn'],
          ['Set the coordinator model\u2026', 'mysti-model-btn'],
          ['All settings\u2026', 'settings-btn']].forEach(function(pair) {
           var el = document.getElementById(pair[1]);
@@ -10244,6 +10874,7 @@
       }
 
       function sendMessage() {
+        if (dictationRequest) { finishDictation(); return; }
         var content = inputEl.value.trim();
         if (!content && state.attachments.length === 0) return;
         if (state.isLoading) return;
@@ -10328,6 +10959,7 @@
         div.dataset.id = msg.id;
 
         var attribution = getMessageAttribution(msg);
+        if (msg.role === 'assistant' && attribution.provider) { div.dataset.provider = attribution.provider; }
         var roleLabel = msg.role === 'assistant' ? 'Mysti' : msg.role;
         var html = '<div class="message-header">';
         html += '<div class="message-role-container">';
@@ -10680,7 +11312,7 @@
           // mislabel this is here to end — so the chip shows the agent alone
           // until the stamp lands.
           var liveAttribution = currentTurnAttribution
-            ? { provider: currentTurnAttribution.provider, model: currentTurnAttribution.model || '' }
+            ? { provider: currentTurnAttribution.provider, model: currentTurnAttribution.model || '', participants: currentTurnAttribution.participants }
             : { provider: state.activeAgent, model: state.settings.model };
           streamingEl.innerHTML = '<div class="message-header"><div class="message-role-container"><span class="message-role assistant">Mysti</span><span class="message-model-info">' + escapeHtml(formatAttributionLabel(liveAttribution)) + '</span></div></div><div class="message-body"></div>';
           messagesEl.appendChild(streamingEl);
@@ -12856,6 +13488,9 @@
       // provider/model, then to the live settings (fixes stale model chips
       // after switching providers).
       function getMessageAttribution(msg) {
+        if (msg && Array.isArray(msg.participants) && msg.participants.length) {
+          return { provider: null, model: '', participants: msg.participants.slice(0, 5) };
+        }
         var conv = state.conversation || {};
         return {
           provider: (msg && msg.provider) || conv.provider || (state.settings && state.settings.provider) || null,
@@ -12881,6 +13516,9 @@
        * here is the only per-message statement of who actually answered.
        */
       function formatAttributionLabel(attribution) {
+        if (Array.isArray(attribution.participants) && attribution.participants.length) {
+          return attribution.participants.map(function(id) { return getAgentDisplayName(id) || id; }).join(' + ') + ' · assigned responses';
+        }
         var model = getModelDisplayName(attribution.model);
         var agent = getAgentDisplayName(attribution.provider);
         if (!agent) return model;
@@ -12895,9 +13533,13 @@
       // known).
       function updateMessageAttributionChip(messageEl, msg) {
         if (!messageEl) return;
+        var attribution = getMessageAttribution(msg);
+        // Second opinion must exclude the actual respondent, including an
+        // @-mention override, rather than the currently selected agent.
+        if (attribution.provider) { messageEl.dataset.provider = attribution.provider; }
+        else { delete messageEl.dataset.provider; }
         var chip = messageEl.querySelector('.message-model-info');
         if (!chip) return;
-        var attribution = getMessageAttribution(msg);
         var agentName = getAgentDisplayName(attribution.provider);
         chip.textContent = formatAttributionLabel(attribution);
         chip.title = agentName ? 'Generated by ' + agentName : '';
@@ -13128,6 +13770,45 @@
         messagesEl.scrollTop = messagesEl.scrollHeight;
       }
 
+      function showModelCliUpgrade(payload) {
+        if (!payload || !payload.id) { return; }
+        var card = Array.from(messagesEl.querySelectorAll('.cli-model-upgrade'))
+          .find(function(el) { return el.dataset.upgradeId === payload.id; });
+        if (!card) {
+          // A terminal result belongs to the chat that offered the upgrade.
+          // Do not recreate it after the user switches/clears conversations.
+          if (payload.state !== 'available') { return; }
+          hideLoading();
+          card = Array.from(messagesEl.querySelectorAll('.cli-model-upgrade'))
+            .find(function(el) { return el.dataset.provider === payload.providerId; });
+          if (!card) {
+            card = document.createElement('div');
+            card.className = 'cli-model-upgrade';
+            card.innerHTML = '<strong class="cli-upgrade-heading"></strong>' +
+              '<p class="cli-upgrade-status" role="status" aria-live="polite"></p>' +
+              '<button type="button" class="cli-upgrade-button"></button>';
+            card.querySelector('button').addEventListener('click', function() {
+              this.disabled = true;
+              this.textContent = 'Upgrading…';
+              postMessageWithPanelId({ type: 'upgradeModelCli', payload: { id: card.dataset.upgradeId } });
+            });
+          }
+          card.dataset.upgradeId = payload.id;
+          card.dataset.provider = payload.providerId;
+          messagesEl.appendChild(card);
+        }
+        card.dataset.state = payload.state;
+        card.querySelector('.cli-upgrade-heading').textContent = payload.state === 'ready'
+          ? payload.providerLabel + ' CLI updated' : payload.providerLabel + ' CLI upgrade required';
+        card.querySelector('.cli-upgrade-status').textContent = payload.message;
+        var button = card.querySelector('button');
+        button.disabled = payload.state === 'installing' || payload.state === 'ready';
+        button.textContent = payload.state === 'installing' ? 'Upgrading…'
+          : payload.state === 'ready' ? 'Up to date'
+          : payload.state === 'failed' ? 'Retry upgrade' : 'Upgrade CLI · ' + payload.minimum + '+';
+        scrollToBottom();
+      }
+
       function showAuthError(data) {
         var div = document.createElement('div');
         div.className = 'message error auth-error';
@@ -13137,12 +13818,12 @@
           '</div>' +
           '<p style="margin: 8px 0;">' + escapeHtml(data.providerName) + ' is not authenticated.</p>' +
           '<div style="margin: 12px 0; padding: 8px; background: var(--vscode-textCodeBlock-background); border-radius: 4px; font-family: monospace;">' +
-            '<strong>To authenticate, run:</strong><br>' +
+            '<strong>' + (data.apiKeySetup ? 'Configure provider:' : 'To authenticate, run:') + '</strong><br>' +
             '<code style="color: var(--vscode-textPreformat-foreground);">' + escapeHtml(data.authCommand) + '</code>' +
           '</div>' +
           '<button id="auth-terminal-btn" ' +
             'style="padding: 6px 12px; cursor: pointer; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 4px;">' +
-            'Open Terminal & Authenticate' +
+            (data.apiKeySetup ? 'Configure API key' : 'Authenticate') +
           '</button>' +
         '</div>';
         messagesEl.appendChild(div);
@@ -13151,7 +13832,9 @@
         var authBtn = div.querySelector('#auth-terminal-btn');
         if (authBtn) {
           authBtn.addEventListener('click', function() {
-            vscode.postMessage({ type: 'openTerminal', payload: data.authCommand });
+            vscode.postMessage(data.providerId
+              ? { type: 'authConfirm', payload: { providerId: data.providerId } }
+              : { type: 'openTerminal', payload: data.authCommand });
           });
         }
 
@@ -14718,7 +15401,7 @@
 
         var html = '<div class="todo-list">';
         todos.forEach(function(todo) {
-          var statusIcon = '';
+          var statusIcon;
           if (todo.status === 'completed') {
             statusIcon = '<svg viewBox="0 0 16 16" width="16" height="16"><path fill="currentColor" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>';
           } else if (todo.status === 'in_progress') {

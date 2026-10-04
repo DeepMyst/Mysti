@@ -80,6 +80,7 @@ const VSCE = path.join(REPO_ROOT, 'node_modules', '@vscode', 'vsce', 'vsce');
 const LARGE_FILE_BYTES = 100 * 1024;
 
 const LARGE_ASSET_ALLOWLIST = [
+  [/^l10n\/bundle\.l10n\.ru\.json$/, 'Russian runtime translation catalog declared by package.l10n'],
   [/^dist\/extension\.js$/,                       'the extension bundle itself'],
   [/^dist\/canvasWebview\.js$/,                   'the canvas webview bundle (Plan 22)'],
   [/^media\/chat\/chat\.js$/,                     'the chat webview script (Plan 03 Phase 3c)'],
@@ -629,6 +630,15 @@ function main() {
   console.log('');
 
   inspectArchive(archive, manifest);
+  if (manifest.l10n) {
+    const present = new Set(archive.files.map(file => file.rel));
+    const catalogDir = manifest.l10n.replace(/^\.\//, '');
+    const required = ['package.nls.json', 'package.nls.ru.json', `${catalogDir}/bundle.l10n.json`, `${catalogDir}/bundle.l10n.ru.json`];
+    const missing = required.filter(file => !present.has(file));
+    if (missing.length) { fail('H (localization catalogs present)', 'The declared Russian interface needs manifest and runtime catalogs.', missing); }
+    else { notes.push('H: English and Russian localization catalogs are packaged.'); }
+  }
+
   assertNoPhantomDeps(manifest);
   if (skipParity) { notes.push('F: SKIPPED (--skip-parity).'); } else { assertFlagParity(manifest); }
 

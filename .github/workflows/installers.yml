@@ -1,0 +1,26 @@
+name: Installer validation
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  npm-installers:
+    name: Fresh CLI installs (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Install and launch each CLI in an isolated prefix
+        run: npm run validate:installers
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: installer-results-${{ matrix.os }}
+          path: installer-validation.json

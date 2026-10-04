@@ -1,3 +1,5 @@
+> **Mysti 2.0 BETA:** This community translation may describe an earlier release. See the [current English README](README.md) and [2.0 BETA release notes](docs/releases/2.0-beta/RELEASE-NOTES.md) for current behavior. Translation updates are welcome.
+
 <p align="center">
   <a href="README.md">English</a> | <a href="README.zh-CN.md">简体中文</a> | <a href="README.ja.md">日本語</a> | <a href="README.ko.md">한국어</a> | <a href="README.es.md">Español</a> | <a href="README.pt-BR.md">Português</a> | العربية | <a href="README.de.md">Deutsch</a> | <a href="README.fr.md">Français</a> | <a href="README.tr.md">Türkçe</a> | <a href="README.ru.md">Русский</a>
 </p>
@@ -334,7 +336,7 @@ ext install DeepMyst.mysti
 | أداة CLI | الاشتراك | التثبيت |
 |----------|---------|---------|
 | **Claude Code** (مُوصى به) | Anthropic API أو Claude Pro/Max | `npm install -g @anthropic-ai/claude-code` |
-| **GitHub Copilot CLI** | GitHub Copilot Pro/Pro+/Business | `npm install -g @github/copilot-cli` |
+| **GitHub Copilot CLI** | GitHub Copilot Pro/Pro+/Business | `npm install -g @github/copilot` |
 | **Gemini CLI** | Google AI API أو Gemini Advanced | `npm install -g @google/gemini-cli` |
 | **Codex CLI** | OpenAI API | اتبع دليل تثبيت OpenAI |
 | **Cline** | يعتمد على مزود النموذج | `npm install -g cline` |
@@ -368,12 +370,12 @@ npm install -g @anthropic-ai/claude-code
 claude auth login
 
 # أو GitHub Copilot CLI (الوصول لـ Claude و GPT-5 و Gemini عبر GitHub)
-npm install -g @github/copilot-cli
+npm install -g @github/copilot
 copilot  # ثم استخدم أمر /login
 
 # أو Gemini CLI
 npm install -g @google/gemini-cli
-gemini auth login
+gemini
 
 # أو Cursor
 curl https://cursor.com/install -fsS | bash
@@ -381,7 +383,7 @@ agent login
 
 # أو OpenClaw
 npm install -g openclaw@latest && openclaw onboard --install-daemon
-openclaw login
+openclaw onboard
 
 # أو OpenCode
 npm i -g opencode-ai@latest
@@ -462,7 +464,7 @@ qwen  # ثم اكتب /auth
 | الإعداد | الافتراضي | الوصف |
 |---------|----------|-------|
 | `mysti.defaultProvider` | `claude-code` | مزود الذكاء الاصطناعي الرئيسي |
-| `mysti.claudePath` | `claude` | مسار CLI لـ Claude |
+| `mysti.claudeCodePath` | `claude` | مسار CLI لـ Claude |
 | `mysti.codexPath` | `codex` | مسار CLI لـ Codex |
 | `mysti.geminiPath` | `gemini` | مسار CLI لـ Gemini |
 | `mysti.copilotPath` | `copilot` | مسار CLI لـ Copilot |
@@ -584,8 +586,8 @@ qwen  # ثم اكتب /auth
 </p>
 
 <p align="center">
-  <a href="https://star-history.com/#DeepMyst/Mysti&Date">
-    <img src="https://api.star-history.com/svg?repos=DeepMyst/Mysti&type=Date" width="600" alt="مخطط سجل النجوم" />
+  <a href="https://www.star-history.com/?repos=DeepMyst%2FMysti&type=date">
+    مخطط سجل النجوم ↗
   </a>
 </p>
 

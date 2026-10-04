@@ -24,7 +24,7 @@ export type ThinkingLevel = 'none' | 'low' | 'medium' | 'high';
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export type AccessLevel = 'read-only' | 'ask-permission' | 'full-access';
 export type ContextMode = 'auto' | 'manual';
-export type ProviderType = 'claude-code' | 'openai-codex' | 'google-gemini' | 'cline' | 'github-copilot' | 'cursor' | 'openclaw' | 'opencode' | 'ollama' | 'localai' | 'qwen-code' | 'hermes' | 'continue' | 'openrouter' | 'kimi-code';
+export type ProviderType = 'claude-code' | 'openai-codex' | 'google-gemini' | 'cline' | 'github-copilot' | 'cursor' | 'openclaw' | 'opencode' | 'ollama' | 'localai' | 'qwen-code' | 'hermes' | 'continue' | 'openrouter' | 'kimi-code' | 'minimax';
 
 /**
  * Pseudo-agents: selectable in the agent menu, but NOT registered providers —
@@ -45,7 +45,7 @@ export type AgentSelection = ProviderType | PseudoAgentType;
 export type AutocompleteType = 'sentence' | 'paragraph' | 'message';
 
 // Agent and Brainstorm types
-export type AgentType = 'claude-code' | 'openai-codex' | 'google-gemini' | 'cline' | 'github-copilot' | 'cursor' | 'openclaw' | 'opencode' | 'ollama' | 'localai' | 'qwen-code' | 'hermes' | 'continue' | 'openrouter' | 'kimi-code';
+export type AgentType = 'claude-code' | 'openai-codex' | 'google-gemini' | 'cline' | 'github-copilot' | 'cursor' | 'openclaw' | 'opencode' | 'ollama' | 'localai' | 'qwen-code' | 'hermes' | 'continue' | 'openrouter' | 'kimi-code' | 'minimax';
 export type PersonaType = 'neutral' | 'architect' | 'pragmatist' | 'engineer' | 'reviewer' | 'designer' | 'custom';
 export type BrainstormPhase = 'initial' | 'individual' | 'discussion' | 'synthesis' | 'complete';
 export type CollaborationStrategy = 'quick' | 'debate' | 'red-team' | 'perspectives' | 'delphi';
@@ -156,6 +156,8 @@ export interface Message {
   toolCalls?: ToolCall[];
   /** Provider that produced this message (assistant messages, Plan 02 Phase 3). */
   provider?: ProviderType;
+  /** Explicit assignment participants; no single provider authored the whole result. */
+  participants?: ProviderType[];
   /** Model that produced this message (assistant messages, Plan 02 Phase 3). */
   model?: string;
   /** Ordered render segments for exact stream replay (see MessageSegment). */
@@ -225,6 +227,8 @@ export interface Settings {
   thinkingLevel: ThinkingLevel;
   /** Reasoning-effort tier (Claude Code parity). Optional for back-compat; defaults to 'high'. */
   effortLevel?: EffortLevel;
+  /** Claude's independent workflow setting; does not change reasoning effort. */
+  ultracode?: boolean;
   accessLevel: AccessLevel;
   contextMode: ContextMode;
   model: string;
@@ -486,12 +490,27 @@ export interface CliUpdatesAvailableMessage {
   payload: { updates: CliUpdatePayload[] };
 }
 
+export interface ModelCliUpgradePayload {
+  id: string;
+  providerId: string;
+  providerLabel: string;
+  minimum: string;
+  state: 'available' | 'installing' | 'failed' | 'ready';
+  message: string;
+}
+
+export interface ModelCliUpgradeMessage {
+  type: 'modelCliUpgrade';
+  payload: ModelCliUpgradePayload;
+}
+
 export type TypedWebviewMessage =
   | ManifestUpdatedMessage
   | StreamStatusMessage
   | ModelsUpdatedMessage
   | NewModelsAvailableMessage
-  | CliUpdatesAvailableMessage;
+  | CliUpdatesAvailableMessage
+  | ModelCliUpgradeMessage;
 
 export interface ProviderConfig {
   name: string;

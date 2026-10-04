@@ -205,3 +205,23 @@ By contributing to Mysti, you agree that your contributions will be licensed und
 ---
 
 Thank you for helping make Mysti better!
+
+## Mysti 2.0 BETA contributions
+
+Read [Getting started](docs/GETTING-STARTED.md), [assignment semantics](docs/MENTIONS.md), and [architecture](docs/ARCHITECTURE.md) before changing routing. An explicit tag is a user assignment: a model must not drop it, substitute a different provider, or invent another agent's answer.
+
+For routing changes, test selected-provider inclusion, simultaneous independent starts, dependencies, unavailable/auth-failed providers, write serialization, native approval, Stop, superseding sends, and distinct repeated roles. Use deterministic barriers to prove concurrency rather than timing thresholds. Exercise the actual webview when changing progress or attribution; a host event with no renderer is not a complete feature.
+
+Useful focused checks:
+
+```sh
+npm test -- tests/managers/explicitMentions.test.ts tests/managers/collaborationManager.test.ts
+npm test -- tests/services/collaboratorPoolNativeApproval.test.ts tests/integration/chatViewMessagePersistence.test.ts
+npm test -- tests/webview/collaborationBrowser.test.ts
+npm run typecheck
+npm run lint
+```
+
+For release presentation, update the README, feature-specific guide, CHANGELOG and versioned release notes together. Keep account requirements and beta limitations visible. Do not claim platform or live-provider validation from mocked tests. Community translations should link the current canonical guide until updated.
+
+Record new visual changes with `npm run demo:record` after installing Chromium and FFmpeg. Review every frame for secrets, clipping, and unsupported claims. Preserve the sample-data label on fixture captures. See the [media kit](docs/releases/2.0-beta/README.md) for reproducibility and the [maintenance guide](docs/MAINTENANCE.md) for packaging and exact-commit release checks.

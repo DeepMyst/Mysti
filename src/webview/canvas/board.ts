@@ -542,6 +542,7 @@ export class BoardController {
    *  matters while the user is dragging, so the sampler runs only then. */
   private _gestureFrames: number[] = [];
   private _gestureRaf: number | null = null;
+  private _overview: boolean | undefined;
   private _zoomRaf: number | null = null;
   private _gestureLast = 0;
   private _lastGestureStats: { p50: number; p95: number; dropped: number } | null = null;
@@ -1832,9 +1833,15 @@ export class BoardController {
   private _applyTransform(): void {
     const { zoom, pan } = this._transform;
     this._world.style.setProperty('transform-origin', '0 0');
+    const overview = zoom < 0.25;
+    if (this._overview !== overview) {
+      this._overview = overview;
+      this._world.setAttribute('data-overview', String(overview));
+    }
     this._world.style.setProperty('transform', `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`);
     const label = this._env.doc.getElementById(BOARD_ZOOM_LEVEL_ID);
-    if (label) { label.textContent = `${Math.round(zoom * 100)}%`; }
+    const text = `${Math.round(zoom * 100)}%`;
+    if (label && label.textContent !== text) { label.textContent = text; }
   }
 
   private _zoomPreset(dir: 1 | -1): void {
@@ -1979,7 +1986,9 @@ export class BoardController {
     const button = typeof ev?.button === 'number' ? ev.button : 0;
     if (button === 1 || (button === 0 && this._spaceHeld)) {
       this._userAdjusted = true;
-      this._panFrom = this._localPoint(ev);
+      // Pan deltas are in client coordinates; no viewport layout read is
+      // needed on every move after writing the world's transform.
+      this._panFrom = { x: ev.clientX ?? 0, y: ev.clientY ?? 0 };
       this._panOrigin = this._transform;
       this._setCursorState();
       ev?.preventDefault?.();
@@ -1998,7 +2007,7 @@ export class BoardController {
     if (this._disposed) { return; }
     const ev = raw as PointerLike;
     if (this._panFrom && this._panOrigin) {
-      const now = this._localPoint(ev);
+      const now = { x: ev.clientX ?? 0, y: ev.clientY ?? 0 };
       this._setTransform(panBy(this._panOrigin, now.x - this._panFrom.x, now.y - this._panFrom.y));
       return;
     }
@@ -2096,7 +2105,7 @@ export class BoardController {
   private _capturePreviewRect(pageId: string, mid: Mid, node: AttrNodeLike | null): void {
     const page = this._page(pageId);
     if (!page || !node || typeof node.getBoundingClientRect !== 'function') { return; }
-    let box: { left: number; top: number; width: number; height: number } | null = null;
+    let box: { left: number; top: number; width: number; height: number } | null;
     try { box = node.getBoundingClientRect(); } catch { return; }
     if (!box || typeof box.left !== 'number' || typeof box.top !== 'number') { return; }
     const host = this._viewportHost as MeasurableLike | null;

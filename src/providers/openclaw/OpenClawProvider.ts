@@ -8,7 +8,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { parse as parseJson5 } from 'json5';
+import { gatewayDeviceSigner } from './OpenClawDeviceIdentity';
 import * as vscode from 'vscode';
+import { allowsUnrestrictedNativeTools } from '../base/NativeApprovalPolicy';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -52,7 +55,7 @@ export interface OpenClawSessionState extends PanelSessionState {
  * Fallback: CLI spawn via `openclaw agent --message "..." --json --local`
  *
  * Install: npm install -g openclaw@latest && openclaw onboard --install-daemon
- * Auth: openclaw login
+ * Auth: openclaw onboard
  * Config: ~/.openclaw/openclaw.json
  */
 export class OpenClawProvider extends BaseCliProvider {
@@ -112,7 +115,7 @@ export class OpenClawProvider extends BaseCliProvider {
       'openclawGatewayUrl', 'ws://127.0.0.1:18789'
     );
     const token = readOpenClawToken();
-    this._gateway = new OpenClawGateway(gatewayUrl, token);
+    this._gateway = new OpenClawGateway(gatewayUrl, token, gatewayDeviceSigner(context.secrets));
   }
 
   protected _createSession(panelId: string): OpenClawSessionState {
@@ -221,7 +224,7 @@ export class OpenClawProvider extends BaseCliProvider {
   async getAuthConfig(): Promise<AuthConfig> {
     const home = os.homedir();
     const configPath = path.join(home, '.openclaw', 'openclaw.json');
-    // `openclaw login` writes an auth-profile store (auth-profiles.json, legacy
+    // `openclaw onboard` writes an auth-profile store (auth-profiles.json, legacy
     // auth.json) into the agent dir, NOT the ~/.openclaw/credentials/ dir the old
     // code probed (that's channel-pairing creds). Honor the state/agent-dir env
     // overrides so a relocated install isn't wrongly reported unauthenticated.
@@ -264,7 +267,7 @@ export class OpenClawProvider extends BaseCliProvider {
     if (!auth.isAuthenticated) {
       return {
         authenticated: false,
-        error: 'Not authenticated. Please run "openclaw login" to sign in.',
+        error: 'Not authenticated. Please run "openclaw onboard" to sign in.',
       };
     }
 
@@ -272,12 +275,7 @@ export class OpenClawProvider extends BaseCliProvider {
     try {
       if (auth.configPath && fs.existsSync(auth.configPath)) {
         const configContent = fs.readFileSync(auth.configPath, 'utf-8');
-        // JSON5 is a superset of JSON; try standard JSON parse first
-        // Strip single-line comments and trailing commas for basic JSON5 compat
-        const cleaned = configContent
-          .replace(/\/\/.*$/gm, '')
-          .replace(/,(\s*[}\]])/g, '$1');
-        const config = JSON.parse(cleaned);
+        const config = parseJson5(configContent);
         return {
           authenticated: true,
           user: config.email || config.user || 'Authenticated',
@@ -291,7 +289,7 @@ export class OpenClawProvider extends BaseCliProvider {
   }
 
   getAuthCommand(): string {
-    return 'openclaw login';
+    return 'openclaw onboard';
   }
 
   getInstallCommand(): string {
@@ -395,43 +393,10 @@ export class OpenClawProvider extends BaseCliProvider {
     args.push('--local');
 
     // Add permission flags based on mode and access level
-    this._addPermissionFlags(args, settings);
+    // The CLI has no --sandbox or --yolo flags. sendMessage rejects modes
+    // whose permissions this transport cannot enforce.
 
     return args;
-  }
-
-  /**
-   * Add permission flags based on mode and access level
-   * Maps Mysti settings to OpenClaw CLI permission modes
-   */
-  private _addPermissionFlags(args: string[], settings: Settings): void {
-    const { mode, accessLevel } = settings;
-
-    // Plan modes or read-only → sandbox mode
-    if (mode === 'quick-plan' || mode === 'detailed-plan' || accessLevel === 'read-only') {
-      args.push('--sandbox');
-      console.log('[Mysti] OpenClaw: Using sandbox mode (read-only)');
-      return;
-    }
-
-    // More-restrictive-wins: only auto-approve when BOTH mode and access allow it
-    if (mode === 'edit-automatically' && accessLevel === 'full-access') {
-      args.push('--yolo');
-      console.log('[Mysti] OpenClaw: Using yolo mode (edit-automatically + full-access)');
-      return;
-    }
-
-    // default mode + full-access = yolo (no explicit edit restriction)
-    if (mode === 'default' && accessLevel === 'full-access') {
-      args.push('--yolo');
-      console.log('[Mysti] OpenClaw: Using yolo mode (default + full-access)');
-      return;
-    }
-
-    // All other combinations: bypass CLI permissions to prevent stdin hang.
-    // The stream-level tool-use gate in ChatViewProvider handles permission prompts.
-    args.push('--yolo');
-    console.log(`[Mysti] OpenClaw: Bypassing CLI permissions (stream gate handles UI prompts) [mode=${mode}, access=${accessLevel}]`);
   }
 
   /**
@@ -738,6 +703,11 @@ export class OpenClawProvider extends BaseCliProvider {
     providerManager?: unknown,
     agentConfig?: AgentConfiguration,
   ): AsyncGenerator<StreamChunk> {
+    if (!allowsUnrestrictedNativeTools(settings)) {
+      yield { type: 'error', content: 'OpenClaw cannot enforce Mysti approval or read-only modes. Use another provider, or explicitly select Edit Automatically with Full Access to use OpenClaw’s configured tool policy.' };
+      yield { type: 'done' };
+      return;
+    }
     const useGateway = vscode.workspace.getConfiguration('mysti').get<boolean>('openclawUseGateway', true);
 
     // Try Gateway first
@@ -904,7 +874,10 @@ export class OpenClawProvider extends BaseCliProvider {
    */
   cancelCurrentRequest(panelId?: string): void {
     // Cancel Gateway run
-    this._gateway.cancelAgent();
+    if (panelId) {
+      const sessionKey = this._panelSessions.get(panelId)?.sessionId;
+      if (sessionKey) { void this._gateway.cancelAgent(sessionKey); }
+    } else { void this._gateway.cancelAgent(); }
     // Cancel CLI process via base class
     super.cancelCurrentRequest(panelId);
   }
@@ -931,7 +904,7 @@ export class OpenClawProvider extends BaseCliProvider {
       try {
         let result = '';
         const enhanceMsg = `Please enhance the following prompt to be more specific and effective for a coding assistant. Return only the enhanced prompt without any explanation:\n\nOriginal prompt: "${prompt}"\n\nEnhanced prompt:`;
-        for await (const chunk of this._gateway.sendAgentMessage(enhanceMsg, { thinking: 'off' })) {
+        for await (const chunk of this._gateway.sendAgentMessage(enhanceMsg, { thinking: 'off', sessionKey: `mysti-enhance-${Date.now()}-${Math.random().toString(36).slice(2)}` })) {
           if (chunk.type === 'text' && chunk.content) {
             result += chunk.content;
           }

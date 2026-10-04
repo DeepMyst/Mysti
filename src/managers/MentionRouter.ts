@@ -765,7 +765,6 @@ export class MentionRouter {
         }
       } catch (error) {
         if (run.controller.signal.aborted) { throw error; }
-        hasError = true;
         lastError = error instanceof Error ? error.message : 'Unknown error';
         yield { type: 'subagent_error', agentId, content: lastError };
       }

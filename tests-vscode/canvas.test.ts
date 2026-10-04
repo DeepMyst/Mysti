@@ -36,6 +36,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { chromium, type Browser, type Frame, type Page } from 'playwright';
+import { legacyCdp } from './legacyCdp';
 
 const EXTENSION_ID = 'DeepMyst.mysti';
 
@@ -76,6 +77,7 @@ function workspaceRoot(): string {
 describe('Mysti Canvas — real VS Code host', function () {
   this.timeout(120_000);
   let browser: Browser | undefined;
+  let legacy: Awaited<ReturnType<typeof legacyCdp>> | undefined;
 
   before(async () => {
     const ext = vscode.extensions.getExtension(EXTENSION_ID);
@@ -88,12 +90,14 @@ describe('Mysti Canvas — real VS Code host', function () {
     const endpoint = fs.readFileSync(path.join(profile, 'DevToolsActivePort'), 'utf8').trim().split(/\r?\n/);
     assert.match(endpoint[0], /^\d+$/, 'the editor did not publish a CDP port');
     assert.ok(endpoint[1]?.startsWith('/devtools/browser/'), 'the editor did not publish a CDP endpoint');
-    browser = await chromium.connectOverCDP(`ws://127.0.0.1:${endpoint[0]}${endpoint[1]}`);
+    const inspection = `ws://127.0.0.1:${endpoint[0]}${endpoint[1]}`;
+    if (vscode.version.startsWith('1.86.')) { legacy = await legacyCdp(inspection); }
+    browser = await chromium.connectOverCDP(legacy?.endpoint || inspection);
     for (const context of browser.contexts()) {
       for (const page of context.pages()) {
         page.on('console', message => {
           if (/canvas:|Content Security Policy/.test(message.text())) {
-            console.log('[Mysti test] webview console:', message.text());
+            console.log('[Mysti test] webview console:', message.location().url, message.text());
           }
         });
       }
@@ -104,6 +108,7 @@ describe('Mysti Canvas — real VS Code host', function () {
     // For connectOverCDP this disconnects our client; the test runner owns the
     // editor process and must still receive the Mocha result before it exits.
     await browser?.close();
+    await legacy?.close();
   });
 
   async function canvasFrame(): Promise<{ page: Page; frame: Frame }> {
@@ -204,7 +209,7 @@ describe('Mysti Canvas — real VS Code host', function () {
     // Re-open so the client re-reports with pages present.
     await vscode.commands.executeCommand('mysti.openCanvas');
     const live = await waitFor(
-      d => d.rendered !== null && d.rendered.pages > 0,
+      d => d.rendered !== null && d.rendered.pages > 0 && d.rendered.pages === d.pages,
       'the webview to report a render WITH artboards',
     );
     assert.ok(live.rendered);
@@ -241,7 +246,14 @@ describe('Mysti Canvas — real VS Code host', function () {
     assert.strictEqual(await artboard.getAttribute('sandbox'), 'allow-scripts');
     const design = artboard.contentFrame();
     await design.getByRole('heading', { name: 'Welcome back', exact: true }).waitFor({ state: 'visible' });
-    const email = design.locator('input[type="email"]');
+    // UI.Field is a labelled text input; the login scaffold does not declare
+    // an HTML email type. Locate the control by its accessible user-facing name.
+    const email = design.getByLabel('Email', { exact: true });
+    // A visible field alone can pass with broken CSS. Verify real computed
+    // styles inside the sandbox without relaxing either frame's CSP.
+    const styles = await email.evaluate((element: any) => ({ padding: element.ownerDocument.defaultView.getComputedStyle(element).paddingTop, width: element.getBoundingClientRect().width })) as { padding: string; width: number };
+    assert.strictEqual(styles.padding, '10px');
+    assert.ok(styles.width > 100, 'the field lost its layout styling');
     await email.fill('canvas-test@example.invalid');
     assert.strictEqual(await email.inputValue(), 'canvas-test@example.invalid');
   });
