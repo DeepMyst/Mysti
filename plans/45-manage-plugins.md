@@ -1,7 +1,7 @@
 # Plan 45 — Manage Plugins
 
 - **Date:** 2026-09-25
-- **Status:** Phase 1 IMPLEMENTED 2026-10-01 on `feat/plan-45-manage-plugins` (plan: `plans/45-manage-plugins-phase1.md`). Phase 2 not started.
+- **Status:** Phase 1 MERGED to main 2026-10-05 (PR #69, plan: `plans/45-manage-plugins-phase1.md`). Phase 2 IMPLEMENTED 2026-10-05 on `feat/plan-45-plugins-phase2` (see §8).
 - **Inputs:** Local `--help` / read-only `list` runs of every installed CLI; a latest-release survey of all 15 backends (npm, PyPI, GitHub releases, official docs); Claude Code's VS Code docs (<https://code.claude.com/docs/en/vs-code.md>, "Manage plugins").
 - **Trigger:** User request for the Claude Code VS Code extension's "Manage plugins" functionality in Mysti, extended to every backend that has a plugin system.
 
@@ -204,3 +204,21 @@ Run `npm test` and `npm run typecheck` before and after (CLAUDE.md).
   - **OpenCode:** list via `debug config` plus install; uninstall becomes a note.
   - **Cursor:** marketplaces only.
 - **Before Phase 2:** re-verify each of these CLIs' latest release. When the provider-native commands catalog was built (2026-09-06), every installed CLI had drifted from its latest release.
+
+---
+
+## 8. Phase 2 as built (2026-10-05)
+
+Re-verified first against each CLI's latest release (Codex 0.160.0, Gemini 0.62.0, Qwen 0.24.7, Cline 3.0.68, OpenCode 1.18.34, Cursor 2026.10.01). What changed from §7's sketch, and why:
+
+| Backend | Driven | Not offered, and why |
+|---|---|---|
+| Codex | list (`--json --available`), install (`add`), uninstall (`remove`), marketplaces (add/list/upgrade/remove) | On/off and update: no CLI command exists (its TUI edits `config.toml`). A failed remote-catalog fetch exits 0 with empty lists; that is shown as a warning, not "nothing installed". |
+| Gemini | list (JSON on **stderr**), install by URL/path (`--consent --skip-settings`, consent given by Mysti's modal), on/off at user scope, uninstall | Update: it can prompt with no flag to skip it, and exits 0 on failure. Catalog: web-only. `resolvedSettings` (may hold secrets) is never kept. |
+| Qwen | list (text: keyed on each extension's `.qwen/extensions/<id>` folder and the ✓/✗ header, because labels are localised), install by source with `--scope`, on/off, uninstall, marketplace sources | Update: exits 0 on failure. Non-English output it can't read is an error, never an empty list. |
+| Cline | list (read-only from its plugin folders and `disabledPlugins`; it has no list command), install by source (`--cwd` for project), uninstall by install path | On/off: TUI only. |
+| OpenCode | list (`debug config`, scope from `plugin_origins`), install npm package (`-g` for you, project otherwise) | Uninstall: none for plugins, and its top-level `uninstall` removes OpenCode itself, so it is never called. |
+| Cursor | marketplaces (add/list/update/remove; team/global ones are read-only here) | Plugins: installed only inside Cursor. Needs `agent login`; its message is shown as the error. |
+
+Contract additions: an adapter may carry a `note` and an `applyHint`; `list`, `install` and `inspect` are optional; `installSource` + `sourceHint` install from a typed source and ALWAYS confirm in the native modal (flag-like, control-character, empty and oversized sources are refused; project scope needs a trusted workspace). The runner now spawns in its own process group so a timeout kills the CLI's children too, and Claude success is positively `outcome === "ok"` (the only success value its result writer emits).
+
