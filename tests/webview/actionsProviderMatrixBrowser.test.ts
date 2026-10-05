@@ -121,12 +121,17 @@ describe('actions menu across the real provider catalog', () => {
     expect(await page.inputValue('#message-input')).toBe('Current rewrite');
   });
   it.skipIf(CHROMIUM_UNAVAILABLE)('persona selection works while drafting without a recommendations request and can be cleared by keyboard', async () => {
-    await boot('claude-code'); await page.fill('#message-input', 'A meaningful draft');
+    // Typing schedules debounced requests (autocomplete at 300 ms, agent
+    // recommendations later). Freeze the clock and let them fire AFTER the
+    // keyboard clear — the order a slow macOS runner produced — and assert on
+    // the persona messages themselves, not on whatever was posted last.
+    await boot('claude-code'); await page.clock.install(); await page.fill('#message-input', 'A meaningful draft');
     await menu(); await page.click('#toolbar-persona-btn');
     await page.focus('.recommendation-chip[data-agent-id="test-persona"]'); await page.keyboard.press('Enter');
     await menu(); await page.click('#toolbar-persona-btn');
     await page.focus('.recommendation-chip[data-agent-id=""]'); await page.keyboard.press('Enter');
-    expect((await posted()).at(-1)).toMatchObject({ type: 'updateAgentConfig', payload: { personaId: null } });
+    await page.clock.runFor(1000);
+    expect((await posted()).findLast(m => m.type === 'updateAgentConfig')).toMatchObject({ payload: { personaId: null } });
     expect(await page.inputValue('#message-input')).toBe('A meaningful draft');
   });
   it.skipIf(CHROMIUM_UNAVAILABLE)('switching providers cancels enhancement ownership and ignores its late result', async () => {
