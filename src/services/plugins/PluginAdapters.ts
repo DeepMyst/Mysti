@@ -21,11 +21,13 @@
  * the `--json` line's `outcome`.
  */
 
-import { execFile } from 'child_process';
+import { spawn } from 'child_process';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import type { ProviderType } from '../../types';
 import { getEnrichedEnv } from '../../utils/platform';
+import { killProcessTree } from '../../utils/processKill';
 
 export type PluginScope = 'user' | 'project' | 'local';
 
@@ -70,7 +72,8 @@ export interface Approval {
 }
 
 export interface RunResult { code: number | null; stdout: string; stderr: string; timedOut: boolean }
-export type Run = (args: string[], opts?: { timeoutMs?: number }) => Promise<RunResult>;
+/** Runs the backend's CLI. `cwd` is the workspace it runs in, for adapters that read project-scope folders. */
+export type Run = ((args: string[], opts?: { timeoutMs?: number }) => Promise<RunResult>) & { cwd?: string };
 
 /** Executable component kinds (`[]` = none), or `'unknown'` when they cannot be seen before install. */
 export type CodeParts = string[] | 'unknown';
@@ -86,11 +89,20 @@ export class PluginCliError extends Error {
 
 export interface PluginAdapter {
   scopes: PluginScope[];
-  list(run: Run): Promise<PluginListing>;
+  /** Shown beside what the adapter CAN do, e.g. what its CLI cannot. */
+  note?: string;
+  /** Appended to the "applies from your next message" banner when the backend needs more. */
+  applyHint?: string;
+  /** Absent when the CLI cannot list plugins (Cursor manages only marketplaces). */
+  list?(run: Run): Promise<PluginListing>;
   /** Catalogs that only answer a query (ClawHub, Hermes). */
   search?(run: Run, query: string): Promise<CatalogPlugin[]>;
-  inspect(run: Run, entry: CatalogPlugin): Promise<CodeParts>;
-  install(run: Run, id: string, scope: PluginScope, approval?: Approval): Promise<void>;
+  /** Required whenever install exists; absent means "can't see before install". */
+  inspect?(run: Run, entry: CatalogPlugin): Promise<CodeParts>;
+  install?(run: Run, id: string, scope: PluginScope, approval?: Approval): Promise<void>;
+  /** Install from a source the user types (git URL, path, npm package). Contents are never visible first. */
+  installSource?(run: Run, source: string, scope: PluginScope, approval?: Approval): Promise<void>;
+  sourceHint?: { label: string; placeholder: string };
   uninstall?(run: Run, p: InstalledPlugin): Promise<void>;
   setEnabled?(run: Run, p: InstalledPlugin, on: boolean): Promise<void>;
   update?(run: Run, p: InstalledPlugin, approval?: Approval): Promise<void>;
@@ -122,24 +134,50 @@ export function runCli(cliPath: string, args: string[], opts: { timeoutMs?: numb
   if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(cliPath)) {
     return Promise.resolve({ code: null, stdout: '', stderr: `Manage Plugins can't run ${path.basename(cliPath)} on Windows yet. Use the CLI's own plugin command in a terminal.`, timedOut: false });
   }
+  const posix = process.platform !== 'win32';
+  const cap = 64 * 1024 * 1024;
   return new Promise((resolve) => {
-    const child = execFile(cliPath, args, {
-      cwd: opts.cwd,
-      timeout: opts.timeoutMs ?? LIST_TIMEOUT_MS,
-      killSignal: 'SIGKILL',
-      maxBuffer: 64 * 1024 * 1024,
-      windowsHide: true,
-      env: getEnrichedEnv(),
-      encoding: 'utf8',
-    }, (err, stdout, stderr) => {
-      const e = err as (Error & { code?: number | string; killed?: boolean; signal?: string | null }) | null;
-      resolve({
-        code: e ? (typeof e.code === 'number' ? e.code : null) : 0,
-        stdout: String(stdout ?? ''),
-        stderr: String(stderr ?? '') || (e && typeof e.code !== 'number' ? e.message : ''),
-        timedOut: !!e && e.killed === true && e.signal === 'SIGKILL',
-      });
+    let timedOut = false;
+    let settled = false;
+    const out: Buffer[] = [];
+    const err: Buffer[] = [];
+    let size = 0;
+    const finish = (code: number | null, extraErr = '') => {
+      if (settled) { return; }
+      settled = true;
+      clearTimeout(timer);
+      resolve({ code, stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8') || extraErr, timedOut });
+    };
+    // spawn, not execFile: execFile drops `detached`. Its own process group on
+    // POSIX lets a timeout reach the git/npm processes the CLI started too
+    // (Windows kills the tree via taskkill). Still an argv array, no shell.
+    const child = spawn(cliPath, args, { cwd: opts.cwd, env: getEnrichedEnv(), windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], detached: posix });
+    // Kill the CLI and everything it started. The group signal reaches children
+    // even after the leader has exited (killProcessTree skips a dead leader).
+    let killed = false;
+    const killAll = () => {
+      if (killed) { return; }
+      killed = true;
+      if (posix && child.pid) { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* group already gone */ } }
+      void killProcessTree(child, 1000, { useProcessGroup: posix, initialSignal: 'SIGKILL', label: 'plugin CLI' });
+    };
+    const collect = (into: Buffer[]) => (chunk: Buffer) => {
+      size += chunk.length;
+      if (size <= cap) { into.push(chunk); } else { killAll(); }
+    };
+    child.stdout?.on('data', collect(out));
+    child.stderr?.on('data', collect(err));
+    child.on('error', (e) => finish(null, e.message));
+    child.on('close', (code) => finish(typeof code === 'number' ? code : null));
+    // The CLI has exited, but something it started may still hold the output
+    // pipe: give that a moment, then kill it and report the CLI's own result.
+    child.on('exit', (code) => {
+      setTimeout(() => { if (!settled) { killAll(); finish(typeof code === 'number' ? code : null); } }, 1000).unref?.();
     });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killAll();
+    }, opts.timeoutMs ?? LIST_TIMEOUT_MS);
     // No TTY and nothing to say: a CLI that stops to ask a question gets EOF
     // (and its default) instead of hanging until the timeout.
     child.stdin?.on('error', () => { /* already exited */ });
@@ -171,11 +209,13 @@ function parseJson(r: RunResult, what: string): unknown {
   try {
     return JSON.parse(r.stdout);
   } catch { /* maybe a banner first */ }
-  // Some CLIs print a warning banner before the JSON (OpenClaw's config box).
+  // Some CLIs print warnings before the JSON (OpenClaw's config box; Gemini's
+  // "[ExtensionManager] …", which itself starts with "["), so try each line
+  // that could begin it.
   const lines = r.stdout.split(/\r?\n/);
-  const start = lines.findIndex((l) => /^\s*[[{]/.test(l));
-  if (start > 0) {
-    try { return JSON.parse(lines.slice(start).join('\n')); } catch { /* fall through */ }
+  for (let i = 1; i < lines.length; i++) {
+    if (!/^\s*[[{]/.test(lines[i])) { continue; }
+    try { return JSON.parse(lines.slice(i).join('\n')); } catch { /* next candidate */ }
   }
   const why = cleanCliText(r.stderr);
   throw new PluginCliError(`Couldn't read ${what}${why ? `: ${why}` : '.'}`);
@@ -185,6 +225,8 @@ function splitId(id: string): { name: string; marketplace?: string } {
   const at = id.lastIndexOf('@');
   return at > 0 ? { name: id.slice(0, at), marketplace: id.slice(at + 1) } : { name: id };
 }
+
+const errorMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 function str(v: unknown): string | undefined {
   return typeof v === 'string' && v ? v : undefined;
@@ -199,8 +241,8 @@ const num = (v: unknown): number | undefined => (typeof v === 'number' ? v : und
 // ── Claude Code ─────────────────────────────────────────────────────────────
 
 /**
- * A Claude `--json` mutation result. Failure is `outcome: "failed"` unless the
- * plugin is already in the requested state; the exit code is only a tiebreak.
+ * A Claude `--json` mutation result. Success is `outcome: "ok"` (or the plugin
+ * already being in the requested state); the exit code is only a tiebreak.
  */
 function claudeOutcome(r: RunResult): void {
   if (r.timedOut) { throw new PluginCliError(TIMED_OUT); }
@@ -212,7 +254,9 @@ function claudeOutcome(r: RunResult): void {
   }
   const j = obj(parsed);
   if (j.alreadyInGoalState === true) { return; }
-  if (j.outcome === 'failed' || r.code !== 0) {
+  // The result writer emits exactly "ok" or "failed" (Claude 2.1.288); anything
+  // else is unknown, and unknown is not success.
+  if (j.outcome !== 'ok' || r.code !== 0) {
     throw new PluginCliError(str(j.message) ?? str(j.failureCode) ?? 'Claude Code reported a failure.', claudeAcceptCommand(j));
   }
 }
@@ -406,6 +450,8 @@ const COPILOT_ADAPTER: PluginAdapter = {
 
 const OPENCLAW_ADAPTER: PluginAdapter = {
   scopes: ['user'],
+  // A Gateway OpenClaw manages hot-reloads; one the user runs themselves doesn't.
+  applyHint: 'If you run its Gateway yourself, restart it with `openclaw gateway restart`.',
 
   async list(run) {
     const j = obj(parseJson(await run(['plugins', 'list', '--json'], { timeoutMs: LIST_TIMEOUT_MS }), "OpenClaw's plugin list"));
@@ -475,6 +521,285 @@ const HERMES_ADAPTER: PluginAdapter = {
   async update(run, p) { expectExit0(await run(['plugins', 'update', p.id], MUTATE), 'Update'); },
 };
 
+// ── Codex ───────────────────────────────────────────────────────────────────
+// Codex 0.160.0: plugin list/add/remove + marketplace add/list/upgrade/remove,
+// all with --json. No enable/disable/update command exists.
+
+const LIST = { timeoutMs: LIST_TIMEOUT_MS };
+
+const CODEX_ADAPTER: PluginAdapter = {
+  scopes: ['user'],
+  note: "Turning plugins on and off isn't available from Codex's command line. Use /plugins inside Codex for that.",
+
+  async list(run) {
+    const r = await run(['plugin', 'list', '--json', '--available'], LIST);
+    const j = obj(parseJson(r, "Codex's plugin list"));
+    if (!Array.isArray(j.installed)) { throw new PluginCliError("Couldn't read Codex's plugin list."); }
+    const installed = objs(j.installed).filter((p) => str(p.pluginId)).map((p): InstalledPlugin => ({
+      id: String(p.pluginId), name: str(p.name) ?? String(p.pluginId), marketplace: str(p.marketplaceName),
+      version: str(p.version), scope: 'user', enabled: p.enabled !== false,
+    }));
+    const ids = new Set(installed.map((p) => p.id));
+    const available = objs(j.available).filter((p) => str(p.pluginId) && p.installed !== true && !ids.has(String(p.pluginId))).map((p): CatalogPlugin => ({
+      id: String(p.pluginId), name: str(p.name) ?? String(p.pluginId), marketplace: str(p.marketplaceName), version: str(p.version),
+    }));
+    // A failed remote catalog fetch still exits 0, with empty lists and a stderr warning.
+    const down = /failed to list remote marketplace plugins/i.test(r.stderr);
+    // Unknown is not zero: an empty list from a failed fetch says nothing.
+    if (down && installed.length === 0) {
+      throw new PluginCliError("Codex couldn't reach its plugin catalog, so Mysti can't tell what's installed. Refresh to try again.");
+    }
+    return { installed, available, warning: down ? "Codex couldn't reach its plugin catalog, so these lists may be incomplete. Refresh to try again." : undefined };
+  },
+
+  async inspect() { return 'unknown'; },
+  async install(run, id) { expectExit0(await run(['plugin', 'add', id, '--json'], MUTATE), 'Install'); },
+  async uninstall(run, p) { expectExit0(await run(['plugin', 'remove', p.id, '--json'], MUTATE), 'Uninstall'); },
+
+  marketplaces: {
+    async list(run) {
+      const r = await run(['plugin', 'marketplace', 'list', '--json'], LIST);
+      expectExit0(r, "Reading Codex's marketplaces");
+      return objs(obj(parseJson(r, "Codex's marketplaces")).marketplaces).filter((m) => str(m.name)).map((m): Marketplace => {
+        const source = str(obj(m.marketplaceSource).source);
+        // The curated marketplace Codex ships with has no source of its own.
+        return { name: String(m.name), source: source ?? 'built in', builtin: !source };
+      });
+    },
+    async add(run, source) { expectExit0(await run(['plugin', 'marketplace', 'add', source, '--json'], MUTATE), 'Adding the marketplace'); },
+    async remove(run, name) { expectExit0(await run(['plugin', 'marketplace', 'remove', name, '--json'], MUTATE), 'Removing the marketplace'); },
+    async refresh(run, name) {
+      const r = await run(['plugin', 'marketplace', 'upgrade', name, '--json'], MUTATE);
+      expectExit0(r, 'Refreshing the marketplace');
+      const errors = objs(obj(parseJson(r, 'the refresh result')).errors).map((e) => str(e.message)).filter(Boolean);
+      if (errors.length) { throw new PluginCliError(errors.join('\n')); }
+    },
+  },
+};
+
+// ── Gemini ──────────────────────────────────────────────────────────────────
+// Gemini 0.62.0: `extensions list -o json` writes to STDERR. There is no
+// catalog command. `update` is not offered: it can prompt with no flag to skip
+// it, and it exits 0 when it fails.
+
+const GEMINI_ADAPTER: PluginAdapter = {
+  scopes: ['user'],
+  note: "Gemini's command line has no catalog: find extensions at geminicli.com/extensions and paste the repository URL below. Update extensions with `gemini extensions update` in a terminal.",
+  sourceHint: { label: 'Git repository URL or local path', placeholder: 'https://github.com/owner/extension' },
+
+  async list(run) {
+    const r = await run(['extensions', 'list', '-o', 'json'], LIST);
+    const j = parseJson({ ...r, stdout: r.stderr.trim() ? r.stderr : r.stdout }, "Gemini's extension list");
+    if (!Array.isArray(j)) { throw new PluginCliError("Couldn't read Gemini's extension list."); }
+    // Only these fields are kept: resolvedSettings can hold secret values.
+    return {
+      installed: objs(j).filter((e) => str(e.name)).map((e): InstalledPlugin => ({
+        id: String(e.name), name: String(e.name), version: str(e.version), scope: 'user', enabled: e.isActive !== false,
+        description: str(obj(e.installMetadata).source),
+      })),
+    };
+  },
+
+  // --consent: the native modal Mysti always shows before a source install IS the consent.
+  async installSource(run, source) { expectExit0(await run(['extensions', 'install', source, '--consent', '--skip-settings'], MUTATE), 'Install'); },
+  async uninstall(run, p) { expectExit0(await run(['extensions', 'uninstall', p.id], MUTATE), 'Uninstall'); },
+  async setEnabled(run, p, on) { expectExit0(await run(['extensions', on ? 'enable' : 'disable', '--scope', 'user', p.id], MUTATE), on ? 'Enable' : 'Disable'); },
+};
+
+// ── Qwen Code ───────────────────────────────────────────────────────────────
+// Qwen 0.24.7 has no JSON output, and its labels are localised, so the parser
+// keys on what can't be translated: the extension's folder under
+// .qwen/extensions and the ✓/✗ header. Anything else it can't read is an
+// error, never an empty list. `update` is not offered (it exits 0 on failure).
+
+/** @internal exported for tests */
+export function parseQwenExtensions(text: string): InstalledPlugin[] | undefined {
+  const out: InstalledPlugin[] = [];
+  // eslint-disable-next-line no-control-regex -- stripping ANSI color escapes is the point
+  const clean = text.replace(/\x1b\[[0-9;]*m/g, '');
+  for (const block of clean.split(/\r?\n\s*\r?\n/)) {
+    // A whole "<label>: <path>" line, so a description that mentions another
+    // extension's path can't lend it its id.
+    const where = /^\s*[^:\n]+:\s*(\S*[\\/]\.qwen[\\/]extensions[\\/][^\s\\/]+)\s*$/m.exec(block);
+    if (!where) { continue; }
+    const id = path.basename(where[1]);
+    const header = /^\s*([✓✗])\s+(.*)\s+\(([^()]*)\)\s*$/m.exec(block);
+    const description = /^\s*Description:\s*(.+)$/m.exec(block)?.[1];
+    out.push({
+      id, name: header?.[2].trim() || id, version: header?.[3] || undefined, scope: 'user',
+      enabled: header ? header[1] === '✓' : undefined, description: description?.trim(),
+    });
+  }
+  if (out.length) { return out; }
+  return /^\s*No extensions installed\.?\s*$/.test(clean) ? [] : undefined;
+}
+
+function parseQwenSources(text: string): Marketplace[] | undefined {
+  if (/^\s*No marketplace sources added yet\.?\s*$/.test(text)) { return []; }
+  const out: Marketplace[] = [];
+  for (const block of text.split(/\r?\n\s*\r?\n/)) {
+    const lines = block.split(/\r?\n/).filter((l) => l.trim());
+    if (lines.length < 2 || /^\s/.test(lines[0])) { continue; }
+    out.push({ name: lines[0].trim(), source: lines[1].replace(/^\s*[^:]+:\s*/, '').replace(/\s*\([^)]*\)\s*$/, '') });
+  }
+  return out.length ? out : undefined;
+}
+
+const QWEN_ADAPTER: PluginAdapter = {
+  scopes: ['user', 'project'],
+  note: "Qwen's command line can't list a catalog: browse with /extensions inside Qwen, or install by source below. Update extensions with /extensions inside Qwen.",
+  sourceHint: { label: 'Git URL, local path, npm package, or marketplace-url:plugin', placeholder: 'https://github.com/owner/extension' },
+
+  async list(run) {
+    const r = await run(['extensions', 'list'], LIST);
+    expectExit0(r, "Reading Qwen's extensions");
+    const installed = parseQwenExtensions(r.stdout);
+    if (!installed) { throw new PluginCliError("Couldn't read Qwen's extension list. If Qwen's language isn't English, its output can't be read here."); }
+    return { installed };
+  },
+
+  async installSource(run, source, scope) { expectExit0(await run(['extensions', 'install', source, '--scope', scope, '--consent'], MUTATE), 'Install'); },
+  async uninstall(run, p) { expectExit0(await run(['extensions', 'uninstall', p.id], MUTATE), 'Uninstall'); },
+  async setEnabled(run, p, on) { expectExit0(await run(['extensions', on ? 'enable' : 'disable', '--scope', 'user', p.id], MUTATE), on ? 'Enable' : 'Disable'); },
+
+  marketplaces: {
+    async list(run) {
+      const r = await run(['extensions', 'sources', 'list'], LIST);
+      expectExit0(r, "Reading Qwen's sources");
+      const sources = parseQwenSources(r.stdout);
+      if (!sources) { throw new PluginCliError("Couldn't read Qwen's marketplace sources."); }
+      return sources;
+    },
+    async add(run, source) { expectExit0(await run(['extensions', 'sources', 'add', source], MUTATE), 'Adding the source'); },
+    async remove(run, name) { expectExit0(await run(['extensions', 'sources', 'remove', name], MUTATE), 'Removing the source'); },
+    async refresh(run, name) { expectExit0(await run(['extensions', 'sources', 'update', name], MUTATE), 'Refreshing the source'); },
+  },
+};
+
+// ── Cline ───────────────────────────────────────────────────────────────────
+// Cline 3.0.68 can install and uninstall but has no list command, so installed
+// plugins are read (read-only) from its plugin folders:
+// <root>/_installed/<kind>/…/<slug>-<hash>/package.json.
+
+function clineHome(): string {
+  return process.env.CLINE_DIR || path.join(os.homedir(), '.cline');
+}
+
+function clineInstalls(root: string): string[] {
+  const found: string[] = [];
+  const walk = (dir: string, depth: number) => {
+    if (depth > 5) { return; }
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (e) {
+      // No folder is "nothing installed"; a folder it can't read is unknown.
+      if (depth === 0 && (e as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw new PluginCliError(`Couldn't read Cline's plugin folder ${dir}: ${(e as NodeJS.ErrnoException).code ?? errorMessage(e)}`);
+      }
+      return;
+    }
+    if (entries.some((e) => e.isFile() && e.name === 'package.json')) { found.push(dir); return; }
+    for (const e of entries) {
+      if (e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules') { walk(path.join(dir, e.name), depth + 1); }
+    }
+  };
+  walk(path.join(root, '_installed'), 0);
+  return found.sort();
+}
+
+const CLINE_ADAPTER: PluginAdapter = {
+  scopes: ['user', 'project'],
+  note: "Turning plugins on and off isn't available from Cline's command line. Use Cline's settings screen for that.",
+  sourceHint: { label: 'Official plugin name, npm package, git URL, or local path', placeholder: 'plugin-name or https://github.com/owner/plugin' },
+
+  async list(run) {
+    const settingsFile = path.join(clineHome(), 'data', 'settings', 'global-settings.json');
+    const settings = readJson(settingsFile);
+    // A settings file that exists but can't be read leaves on/off unknown.
+    const known = settings !== undefined || !fs.existsSync(settingsFile);
+    const disabled = obj(settings).disabledPlugins;
+    const off = new Set(Array.isArray(disabled) ? disabled.filter((x): x is string => typeof x === 'string') : []);
+    const roots: [string, PluginScope][] = [[path.join(clineHome(), 'plugins'), 'user']];
+    if (run.cwd) { roots.push([path.join(run.cwd, '.cline', 'plugins'), 'project']); }
+    const installed: InstalledPlugin[] = [];
+    for (const [root, scope] of roots) {
+      for (const dir of clineInstalls(root)) {
+        const pkg = obj(readJson(path.join(dir, 'package.json')));
+        const name = str(pkg.name) ?? path.basename(dir);
+        installed.push({ id: dir, name, version: str(pkg.version), description: str(pkg.description), scope, enabled: known ? !off.has(dir) && !off.has(name) : undefined });
+      }
+    }
+    return { installed };
+  },
+
+  async installSource(run, source, scope) {
+    const args = ['plugin', 'install', source, '--json'];
+    if (scope === 'project') {
+      if (!run.cwd) { throw new PluginCliError('Open a folder to install a plugin for this project.'); }
+      args.push('--cwd', run.cwd);
+    }
+    expectExit0(await run(args, MUTATE), 'Install');
+  },
+  // By install path: unambiguous, and the CLI accepts a path.
+  async uninstall(run, p) {
+    const args = ['plugin', 'uninstall', p.id, '--json'];
+    if (p.scope === 'project' && run.cwd) { args.push('--cwd', run.cwd); }
+    expectExit0(await run(args, MUTATE), 'Uninstall');
+  },
+};
+
+// ── OpenCode ────────────────────────────────────────────────────────────────
+// OpenCode 1.18.34: `opencode plugin <module> [-g]` installs; there is no list
+// or uninstall for plugins (its top-level `uninstall` removes OpenCode itself,
+// so it is never called). `debug config` prints the resolved config.
+
+const OPENCODE_ADAPTER: PluginAdapter = {
+  scopes: ['user', 'project'],
+  note: "OpenCode's command line can install plugins but not remove them. To remove one, delete it from the plugin list in opencode.json.",
+  sourceHint: { label: 'npm package', placeholder: 'opencode-plugin-name' },
+
+  async list(run) {
+    const j = obj(parseJson(await run(['debug', 'config'], LIST), "OpenCode's config"));
+    const origins = objs(j.plugin_origins);
+    const specs = (Array.isArray(j.plugin) ? j.plugin : [])
+      .map((p) => (typeof p === 'string' ? p : Array.isArray(p) && typeof p[0] === 'string' ? p[0] : undefined))
+      .filter((p): p is string => !!p);
+    return {
+      installed: specs.map((spec): InstalledPlugin => ({
+        id: spec, name: spec, scope: origins.find((o) => o.spec === spec)?.scope === 'local' ? 'project' : 'user',
+      })),
+    };
+  },
+
+  // -g writes the global config; without it, the project's .opencode/opencode.json.
+  async installSource(run, source, scope) { expectExit0(await run(['plugin', source, ...(scope === 'user' ? ['-g'] : [])], MUTATE), 'Install'); },
+};
+
+// ── Cursor ──────────────────────────────────────────────────────────────────
+// Cursor 2026.10.01 manages plugin marketplaces from its CLI; plugins
+// themselves are installed only inside Cursor.
+
+const CURSOR_ADAPTER: PluginAdapter = {
+  scopes: ['user'],
+  note: "Cursor installs plugins only inside Cursor: use /plugins in its agent, or the Cursor app. Marketplaces can be managed here.",
+  marketplaces: {
+    async list(run) {
+      const r = await run(['plugin', 'marketplace', 'list', '--format', 'json'], LIST);
+      expectExit0(r, "Reading Cursor's marketplaces");
+      return objs(parseJson(r, "Cursor's marketplaces")).filter((m) => str(m.name)).map((m): Marketplace => ({
+        name: String(m.name),
+        source: `${str(m.gitUrl) ?? ''}${str(m.gitRef) ? `@${String(m.gitRef)}` : ''}`,
+        // Team and global marketplaces are managed from the Cursor dashboard.
+        builtin: !(m.scope === 'user' || m.scope === 'local'),
+      }));
+    },
+    async add(run, source) { expectExit0(await run(['plugin', 'marketplace', 'add', source], MUTATE), 'Adding the marketplace'); },
+    async remove(run, name) { expectExit0(await run(['plugin', 'marketplace', 'remove', name], MUTATE), 'Removing the marketplace'); },
+    async refresh(run, name) { expectExit0(await run(['plugin', 'marketplace', 'update', name], MUTATE), 'Refreshing the marketplace'); },
+  },
+};
+
 // ── The table ───────────────────────────────────────────────────────────────
 
 /**
@@ -487,12 +812,12 @@ export const PLUGIN_ADAPTERS: Record<ProviderType, PluginBackend> = {
   'github-copilot': COPILOT_ADAPTER,
   'openclaw': OPENCLAW_ADAPTER,
   'hermes': HERMES_ADAPTER,
-  'openai-codex': { note: 'Manage Codex plugins with /plugins inside Codex.' },
-  'google-gemini': { note: 'Manage Gemini extensions with `gemini extensions` in a terminal.' },
-  'qwen-code': { note: 'Manage Qwen extensions with /extensions inside Qwen Code.' },
-  'cline': { note: 'Manage Cline plugins in its settings screen, or with `cline plugin` in a terminal.' },
-  'opencode': { note: 'Manage OpenCode plugins in the plugin list of opencode.json.' },
-  'cursor': { note: 'Manage Cursor plugins with /plugin inside Cursor, or in the Cursor app.' },
+  'openai-codex': CODEX_ADAPTER,
+  'google-gemini': GEMINI_ADAPTER,
+  'qwen-code': QWEN_ADAPTER,
+  'cline': CLINE_ADAPTER,
+  'opencode': OPENCODE_ADAPTER,
+  'cursor': CURSOR_ADAPTER,
   'kimi-code': { note: 'Manage Kimi plugins with /plugins inside Kimi.' },
   'continue': null,
   'ollama': null,
@@ -502,5 +827,5 @@ export const PLUGIN_ADAPTERS: Record<ProviderType, PluginBackend> = {
 };
 
 export function isAdapter(b: PluginBackend): b is PluginAdapter {
-  return !!b && 'list' in b;
+  return !!b && 'scopes' in b;
 }

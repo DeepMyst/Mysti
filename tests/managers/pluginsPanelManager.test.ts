@@ -371,4 +371,148 @@ describe('PluginsPanelManager (Plan 45)', () => {
       (window as any).createWebviewPanel = original;
     }
   });
+
+  // ── Phase 2 contract ──────────────────────────────────────────────────────
+
+  it('shows an adapter\'s note next to what it can do', async () => {
+    adapter = testAdapter({ note: 'Turning plugins on and off: use /plugins inside Codex.' } as Partial<PluginAdapter>);
+    build({ 'claude-code': adapter, 'openai-codex': null, 'continue': null });
+    await manager.handleMessage({ type: 'ready' });
+    expect(state!.note).toMatch(/inside Codex/);
+    expect(state!.listing).toBeDefined();
+  });
+
+  it('handles a backend that can manage marketplaces but cannot list or install plugins', async () => {
+    const markets = { list: vi.fn(async () => [{ name: 'mk', source: 'https://x/mk.git' }]), add: vi.fn(), remove: vi.fn(), refresh: vi.fn() };
+    build({ 'claude-code': { scopes: ['user'], note: 'Install plugins with /plugin inside Cursor.', marketplaces: markets } as unknown as PluginAdapter, 'openai-codex': null, 'continue': null });
+    await manager.handleMessage({ type: 'ready' });
+    expect(state!.backends[0].status).toBe('ok');
+    expect(state!.can).toMatchObject({ list: false, install: false, marketplaces: true });
+    expect(state!.error).toBeUndefined();
+    expect(state!.markets).toEqual([{ name: 'mk', source: 'https://x/mk.git' }]);
+  });
+
+  describe('install from a source the user typed', () => {
+    let installSource: ReturnType<typeof vi.fn>;
+    beforeEach(async () => {
+      installSource = vi.fn(async () => {});
+      adapter = testAdapter({ scopes: ['user', 'project'], installSource, sourceHint: { label: 'Git URL or path', placeholder: 'https://github.com/o/r' } } as Partial<PluginAdapter>);
+      build({ 'claude-code': adapter, 'openai-codex': null, 'continue': null });
+      await manager.handleMessage({ type: 'ready' });
+    });
+
+    it('offers it and says what to type', () => {
+      expect(state!.can.installSource).toBe(true);
+      expect(state!.sourceHint).toEqual({ label: 'Git URL or path', placeholder: 'https://github.com/o/r' });
+    });
+
+    it('always asks first, showing the source, and installs nothing if declined', async () => {
+      await manager.handleMessage({ type: 'installSource', source: 'https://github.com/o/r', scope: 'user' });
+      expect(String(modal.mock.calls[0][1].detail)).toContain('https://github.com/o/r');
+      expect(installSource).not.toHaveBeenCalled();
+    });
+
+    it('installs on yes and tells open chats', async () => {
+      modal.mockImplementation(async (_m: string, _o: unknown, ...items: string[]) => items[0]);
+      await manager.handleMessage({ type: 'installSource', source: 'https://github.com/o/r', scope: 'project' });
+      expect(installSource).toHaveBeenCalledWith(expect.any(Function), 'https://github.com/o/r', 'project', undefined);
+      expect(providers['claude-code'].markPluginsChanged).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(['-rf', '--registry=evil', 'a\nb', '', 'x'.repeat(501)])('refuses the source %j', async (source) => {
+      modal.mockImplementation(async (_m: string, _o: unknown, ...items: string[]) => items[0]);
+      await manager.handleMessage({ type: 'installSource', source, scope: 'user' });
+      expect(installSource).not.toHaveBeenCalled();
+    });
+
+    it('refuses a project install from source in an untrusted workspace', async () => {
+      (workspace as any).isTrusted = false;
+      modal.mockImplementation(async (_m: string, _o: unknown, ...items: string[]) => items[0]);
+      await manager.handleMessage({ type: 'installSource', source: 'https://github.com/o/r', scope: 'project' });
+      expect(installSource).not.toHaveBeenCalled();
+    });
+  });
+
+  it('refuses to toggle a plugin an administrator manages (review M4)', async () => {
+    adapter = testAdapter({ list: vi.fn(async () => ({ installed: [{ id: 'org@m', name: 'org', scope: 'managed' as const, enabled: true }], available: [] })) });
+    build({ 'claude-code': adapter, 'openai-codex': null, 'continue': null });
+    await manager.handleMessage({ type: 'ready' });
+    await manager.handleMessage({ type: 'setEnabled', id: 'org@m', scope: 'managed', on: false });
+    expect(adapter.setEnabled).not.toHaveBeenCalled();
+    expect(state!.error).toMatch(/administrator/i);
+  });
+
+  it('adds the backend\'s own "how it applies" hint to the banner (review M11)', async () => {
+    adapter = testAdapter({ applyHint: 'If you run its Gateway yourself, restart it with `openclaw gateway restart`.' } as Partial<PluginAdapter>);
+    build({ 'claude-code': adapter, 'openai-codex': null, 'continue': null });
+    await manager.handleMessage({ type: 'ready' });
+    await manager.handleMessage({ type: 'setEnabled', id: 'on@m', scope: 'user', on: false });
+    expect(state!.banner).toMatch(/next message.*openclaw gateway restart/s);
+  });
+
+  // ── Phase 2 review fixes ──────────────────────────────────────────────────
+
+  describe('with no folder open (review P2-I1)', () => {
+    const folders = (workspace as any).workspaceFolders;
+    afterEach(() => { (workspace as any).workspaceFolders = folders; });
+
+    it('refuses a project or local install, and tells the panel so', async () => {
+      (workspace as any).workspaceFolders = undefined;
+      await manager.handleMessage({ type: 'refresh' });
+      expect(state!.projectOk).toBe(false);
+      await manager.handleMessage({ type: 'install', id: 'plain@m', scope: 'project' });
+      await manager.handleMessage({ type: 'install', id: 'plain@m', scope: 'local' });
+      expect(adapter.install).not.toHaveBeenCalled();
+      expect(state!.error).toMatch(/Open a folder/);
+    });
+
+    it('refuses a project install from source too', async () => {
+      const installSource = vi.fn(async () => {});
+      adapter = testAdapter({ scopes: ['user', 'project'], installSource } as Partial<PluginAdapter>);
+      build({ 'claude-code': adapter, 'openai-codex': null, 'continue': null });
+      (workspace as any).workspaceFolders = undefined;
+      await manager.handleMessage({ type: 'ready' });
+      modal.mockImplementation(async (_m: string, _o: unknown, ...items: string[]) => items[0]);
+      await manager.handleMessage({ type: 'installSource', source: 'https://github.com/o/r', scope: 'project' });
+      expect(installSource).not.toHaveBeenCalled();
+    });
+  });
+
+  it('clears an earlier source install error when another source is tried (review P2-m3)', async () => {
+    const installSource = vi.fn().mockRejectedValueOnce(new PluginCliError('repo not found')).mockResolvedValueOnce(undefined);
+    adapter = testAdapter({ installSource } as Partial<PluginAdapter>);
+    build({ 'claude-code': adapter, 'openai-codex': null, 'continue': null });
+    await manager.handleMessage({ type: 'ready' });
+    modal.mockImplementation(async (_m: string, _o: unknown, ...items: string[]) => items[0]);
+    await manager.handleMessage({ type: 'installSource', source: 'https://github.com/o/a', scope: 'user' });
+    expect(Object.values(state!.rowErrors)).toContain('repo not found');
+    await manager.handleMessage({ type: 'installSource', source: 'https://github.com/o/b', scope: 'user' });
+    expect(Object.keys(state!.rowErrors).filter((k) => k.startsWith('source:'))).toEqual([]);
+  });
+
+  it('says why a source was refused (review P2-m8)', async () => {
+    adapter = testAdapter({ installSource: vi.fn(), sourceHint: { label: 'Git URL', placeholder: '' } } as Partial<PluginAdapter>);
+    build({ 'claude-code': adapter, 'openai-codex': null, 'continue': null });
+    await manager.handleMessage({ type: 'ready' });
+    await manager.handleMessage({ type: 'installSource', source: '-rf', scope: 'user' });
+    expect(state!.error).toMatch(/starts with "-"/);
+  });
+
+  it.each(['https://github.com/o/\u202Eevil', 'a\u2028b', 'x\u0085y'])('refuses a source with invisible or line-breaking characters %j (review P2-m7)', async (source) => {
+    const installSource = vi.fn();
+    adapter = testAdapter({ installSource } as Partial<PluginAdapter>);
+    build({ 'claude-code': adapter, 'openai-codex': null, 'continue': null });
+    await manager.handleMessage({ type: 'ready' });
+    modal.mockImplementation(async (_m: string, _o: unknown, ...items: string[]) => items[0]);
+    await manager.handleMessage({ type: 'installSource', source, scope: 'user' });
+    await manager.handleMessage({ type: 'addMarketplace', source });
+    expect(installSource).not.toHaveBeenCalled();
+    expect(adapter.marketplaces!.add).not.toHaveBeenCalled();
+  });
+
+  it('refuses a marketplace source with a DEL character (review P2-m7)', async () => {
+    modal.mockImplementation(async (_m: string, _o: unknown, ...items: string[]) => items[0]);
+    await manager.handleMessage({ type: 'addMarketplace', source: 'owner/repo\u007f' });
+    expect(adapter.marketplaces!.add).not.toHaveBeenCalled();
+  });
 });

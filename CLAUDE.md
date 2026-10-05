@@ -274,7 +274,9 @@ manager/service cluster and has a design doc in `plans/`:
   listing, confirms anything that runs code (hooks, MCP/LSP servers, monitors,
   unrecognised plugin content, or contents it can't see) in a NATIVE modal, and on success calls
   `markPluginsChanged()`, which respawns persistent CLI processes on their
-  next message. Phase 1 drives Claude Code, Copilot, OpenClaw and Hermes.
+  next message. Claude Code, Copilot, OpenClaw, Hermes, Codex, Gemini, Qwen,
+  Cline, OpenCode and Cursor are driven as far as each CLI allows (plans/45 §8);
+  Kimi is a note; the HTTP backends have no plugin system.
 - **Agent catalog & quarantine** (`plans/20`) — the coordinator's `search`/
   `publish`/`skillrun` capabilities over the bundled + user-authored personas,
   skills and roles, all gated on local execution + OS sandbox + trusted

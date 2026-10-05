@@ -240,4 +240,101 @@ describe('Plan 45 — Manage Plugins tab', () => {
     expect(await pg.$eval('#markets-empty', (e) => (e as HTMLElement).hidden)).toBe(true);
     expect(await pg.$eval('#error', (e) => e.textContent)).toContain('offline');
   });
+
+  // ── Phase 2 ──────────────────────────────────────────────────────────────
+
+  const sourceState = (over: Record<string, unknown> = {}) => state({
+    can: { toggle: true, update: true, uninstall: true, list: true, install: false, installSource: true },
+    scopes: ['user', 'project'],
+    sourceHint: { label: 'Git repository URL or local path', placeholder: 'https://github.com/owner/extension' },
+    listing: { installed: [] },
+    markets: undefined,
+    ...over,
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('installs from a typed source, asking where when there are two scopes', async () => {
+    const pg = await openPage(sourceState());
+    expect(await pg.$eval('#source-label', (l) => l.textContent)).toBe('Git repository URL or local path');
+    expect(await pg.$eval('#source-input', (i) => (i as HTMLInputElement).placeholder)).toBe('https://github.com/owner/extension');
+    await pg.fill('#source-input', 'https://github.com/o/ext');
+    await pg.click('#source-install');
+    const scopes = await pg.$$eval('#source-scopes [data-scope]', (bs) => bs.map((b) => (b as HTMLElement).dataset.scope));
+    expect(scopes).toEqual(['user', 'project']);
+    await pg.click('#source-scopes [data-scope="project"]');
+    expect((await posted(pg)).pop()).toEqual({ type: 'installSource', source: 'https://github.com/o/ext', scope: 'project' });
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('installs a typed source straight away when there is one scope', async () => {
+    const pg = await openPage(sourceState({ scopes: ['user'] }));
+    await pg.fill('#source-input', 'my-plugin');
+    await pg.click('#source-install');
+    expect((await posted(pg)).pop()).toEqual({ type: 'installSource', source: 'my-plugin', scope: 'user' });
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('shows no catalog section when the backend has no catalog, and no Install buttons when it cannot install', async () => {
+    const pg = await openPage(sourceState());
+    expect(await pg.$eval('#available-h', (h) => (h as HTMLElement).hidden)).toBe(true);
+    const noInstall = await openPage(state({ can: { toggle: true, list: true, install: false } }));
+    expect(await noInstall.$$eval('#available [data-action="install"]', (b) => b.length)).toBe(0);
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('never says "Nothing installed" for a backend that cannot list its plugins', async () => {
+    const pg = await openPage(state({ can: { marketplaces: true, list: false, install: false }, listing: undefined, note: 'Install plugins with /plugin inside Cursor.' }));
+    expect(await pg.$eval('#panel-plugins', (p) => p.textContent)).not.toMatch(/Nothing installed/);
+    expect(await pg.$eval('#search', (i) => (i.closest('label') as HTMLElement).hidden)).toBe(true);
+    expect(await pg.$eval('#note', (n) => n.textContent)).toContain('/plugin inside Cursor');
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('shows the installed list again after visiting a backend that cannot list', async () => {
+    const pg = await openPage(state({ can: { marketplaces: true, list: false, install: false }, listing: undefined }));
+    await send(pg, state());
+    expect(await pg.$eval('#installed', (u) => (u as HTMLElement).hidden)).toBe(false);
+    expect(await ids(pg, 'installed')).toHaveLength(2);
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('shows no switch for an administrator-managed plugin (review M4)', async () => {
+    const listing = { installed: [{ id: 'org@m', name: 'org', scope: 'managed', enabled: true }], available: [] };
+    const pg = await openPage(state({ listing }));
+    expect(await pg.$$eval('#installed [role="switch"]', (b) => b.length)).toBe(0);
+    expect(await pg.$eval('#installed > li', (li) => li.textContent)).toContain('Managed');
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('keeps keyboard focus on the control you used after the list re-renders (review M9)', async () => {
+    const pg = await openPage();
+    const sw = '#installed > li[data-id="superpowers@claude-plugins-official"] [role="switch"]';
+    await pg.focus(sw);
+    await send(pg, state({ busy: {} }));
+    expect(await pg.evaluate(() => {
+      const a = document.activeElement as HTMLElement | null;
+      return a ? `${a.closest('li')?.getAttribute('data-id')}|${a.getAttribute('role')}` : 'none';
+    })).toBe('superpowers@claude-plugins-official|switch');
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('greys out project scopes when no folder is open (review P2-I1)', async () => {
+    const pg = await openPage(state({ projectOk: false }));
+    await pg.click('#available > li[data-id="context7@claude-plugins-official"] [data-action="install"]');
+    const scopes = await pg.$$eval('#available [data-scope]', (bs) => bs.map((b) => [(b as HTMLElement).dataset.scope, (b as HTMLButtonElement).disabled, b.textContent]));
+    expect(scopes.map((x) => x.slice(0, 2))).toEqual([['user', false], ['project', true], ['local', true]]);
+    expect(String(scopes[1][2])).toMatch(/Open a folder/);
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('puts focus back on the switch after its own busy state clears (review P2-m4)', async () => {
+    const pg = await openPage();
+    const sw = '#installed > li[data-id="superpowers@claude-plugins-official"] [role="switch"]';
+    await pg.focus(sw);
+    await send(pg, state({ busy: { 'superpowers@claude-plugins-official': 'Turning off…' } }));
+    await send(pg, state({ busy: {} }));
+    expect(await pg.evaluate(() => {
+      const a = document.activeElement as HTMLElement | null;
+      return a ? `${a.closest('li')?.getAttribute('data-id')}|${a.getAttribute('role')}` : 'none';
+    })).toBe('superpowers@claude-plugins-official|switch');
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('does not claim "On" when the on/off state is unknown (review P2-m6)', async () => {
+    const listing = { installed: [{ id: '/p/x', name: 'x', scope: 'user' }] };
+    const pg = await openPage(state({ can: { list: true, toggle: false }, listing }));
+    const side = await pg.$$eval('#installed > li .row-side > *', (els) => els.map((e) => e.textContent));
+    expect(side).not.toContain('On');
+    expect(side).not.toContain('Off');
+  });
 });

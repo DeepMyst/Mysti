@@ -169,8 +169,9 @@ describe('the backend table (Plan 45)', () => {
       const b = PLUGIN_ADAPTERS[id];
       return isAdapter(b) ? 'adapter' : b ? 'note' : 'none';
     };
-    for (const id of ['claude-code', 'github-copilot', 'openclaw', 'hermes'] as const) { expect(kind(id)).toBe('adapter'); }
-    for (const id of ['openai-codex', 'google-gemini', 'qwen-code', 'cline', 'opencode', 'cursor', 'kimi-code'] as const) { expect(kind(id)).toBe('note'); }
+    for (const id of ['claude-code', 'github-copilot', 'openclaw', 'hermes', 'openai-codex', 'google-gemini', 'qwen-code', 'cline', 'opencode', 'cursor'] as const) { expect(kind(id)).toBe('adapter'); }
+    // Kimi manages plugins only inside its TUI.
+    for (const id of ['kimi-code'] as const) { expect(kind(id)).toBe('note'); }
     for (const id of ['continue', 'ollama', 'localai', 'openrouter', 'minimax'] as const) { expect(kind(id)).toBe('none'); }
   });
 });
@@ -190,6 +191,28 @@ describe('runCli (Plan 45)', () => {
   it('kills a CLI that runs past its timeout', async () => {
     const r = await runCli(process.execPath, ['-e', 'setTimeout(()=>{},10000)'], { timeoutMs: 200 });
     expect(r.timedOut).toBe(true);
+  });
+
+  it.skipIf(process.platform === 'win32')('a timeout also kills what the CLI started (git, npm)', async () => {
+    // The "CLI" starts a grandchild that would outlive it, prints its pid, then hangs.
+    const script = 'const c=require("child_process").spawn(process.execPath,["-e","setTimeout(()=>{},60000)"],{stdio:"ignore"});'
+      + 'process.stdout.write(String(c.pid));setTimeout(()=>{},60000)';
+    const r = await runCli(process.execPath, ['-e', script], { timeoutMs: 500 });
+    expect(r.timedOut).toBe(true);
+    const grandchild = Number(r.stdout);
+    expect(grandchild).toBeGreaterThan(0);
+    await new Promise((res) => setTimeout(res, 300));
+    const alive = (() => { try { process.kill(grandchild, 0); return true; } catch { return false; } })();
+    if (alive) { process.kill(grandchild, 'SIGKILL'); }
+    expect(alive).toBe(false);
+  });
+
+  it.skipIf(process.platform === 'win32')('returns as soon as the CLI exits, killing a child left holding its output (review P2-m1)', async () => {
+    const started = Date.now();
+    const r = await runCli('/bin/sh', ['-c', 'sleep 6 & echo started'], { timeoutMs: 5000 });
+    expect(Date.now() - started).toBeLessThan(3500);
+    expect(r).toMatchObject({ code: 0, timedOut: false });
+    expect(r.stdout.trim()).toBe('started');
   });
 
   it('reports a missing binary instead of throwing', async () => {

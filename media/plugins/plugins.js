@@ -17,14 +17,17 @@
   const vscode = acquireVsCodeApi();
   const CAP = 100;
   const SCOPE_LABEL = { user: 'For you', project: 'This project', local: 'Just you, this repo' };
-  const SCOPE_HINT = { user: 'Every project on this machine', project: 'Shared with this workspace', local: 'Only you, in this workspace' };
+  const SCOPE_HINT = { user: 'Every project on this machine', project: 'Only in this workspace', local: 'Only you, in this workspace' };
   const SCOPE_BADGE = { user: 'User', project: 'Project', local: 'Local', bundled: 'Bundled', managed: 'Managed' };
 
   let state = null;
   let tab = 'plugins';
   let scopeFor = null;
+  let sourceScopesOpen = false;
   let lastSelected = null;
   let searchTimer = null;
+  /** A control that was focused before its row went busy, to refocus when it returns. */
+  let pendingFocus = null;
 
   function $(id) { return document.getElementById(id); }
   function post(m) { vscode.postMessage(m); }
@@ -63,6 +66,24 @@
   });
   document.querySelectorAll('[role="tab"]').forEach(function (t) {
     t.addEventListener('click', function () { tab = t.dataset.tab; render(); });
+  });
+  $('source-install').addEventListener('click', function () {
+    const source = $('source-input').value.trim();
+    if (!source || !state) { return; }
+    const scopes = state.scopes || [];
+    if (scopes.length > 1) {
+      sourceScopesOpen = !sourceScopesOpen;
+      render();
+    } else {
+      post({ type: 'installSource', source: source, scope: scopes[0] || 'user' });
+    }
+  });
+  $('source-scopes').addEventListener('click', function (e) {
+    const b = e.target.closest('button[data-scope]');
+    if (!b || b.disabled) { return; }
+    sourceScopesOpen = false;
+    post({ type: 'installSource', source: $('source-input').value.trim(), scope: b.dataset.scope });
+    render();
   });
   $('mkt-add').addEventListener('click', function () {
     const source = $('mkt-source').value.trim();
@@ -113,14 +134,50 @@
 
   // ── Rendering ────────────────────────────────────────────────────────────
 
+  /** The focused control, by row and action, so it can be found again after a re-render. */
+  function focusKey() {
+    const a = document.activeElement;
+    const row = a && a.closest ? a.closest('li[data-id], li[data-name]') : null;
+    if (!row) { return null; }
+    return {
+      list: row.parentElement && row.parentElement.id,
+      id: row.dataset.id || row.dataset.name,
+      sel: a.getAttribute('role') === 'switch' ? '[role="switch"]'
+        : a.dataset.action ? '[data-action="' + a.dataset.action + '"]'
+          : a.dataset.scope ? '[data-scope="' + a.dataset.scope + '"]'
+            : a.tagName === 'SUMMARY' ? 'summary' : null,
+    };
+  }
+
+  function restoreFocus(key) {
+    if (!key || !key.list || !key.sel) { return true; }
+    const rows = document.querySelectorAll('#' + key.list + ' > li');
+    for (let i = 0; i < rows.length; i++) {
+      if ((rows[i].dataset.id || rows[i].dataset.name) === key.id) {
+        const target = rows[i].querySelector(key.sel);
+        if (target) { target.focus(); return true; }
+        return false;  // the row is busy: its control will come back
+      }
+    }
+    return true;
+  }
+
   function render() {
+    const key = focusKey() || pendingFocus;
+    renderNow();
+    pendingFocus = restoreFocus(key) ? null : key;
+  }
+
+  function renderNow() {
     if (!state) { return; }
     const s = state;
     if (s.selected !== lastSelected) {
       lastSelected = s.selected;
       tab = 'plugins';
       scopeFor = null;
+      sourceScopesOpen = false;
       $('search').value = '';
+      $('source-input').value = '';
     }
     const current = (s.backends || []).find(function (b) { return b.id === s.selected; }) || {};
     renderBackends(s);
@@ -176,6 +233,18 @@
     const query = $('search').value.trim().toLowerCase();
     const can = s.can || {};
     const listing = s.listing;
+    // A CLI that can't list (Cursor) shows only its note: never "Nothing installed".
+    const canList = can.list !== false;
+    const hasCatalog = !!can.search || !!(listing && listing.available);
+    $('search-box').hidden = !canList;
+    ['installed-h', 'installed'].forEach(function (id) { $(id).hidden = !canList; });
+    if (!canList) { $('installed-empty').hidden = true; }
+    renderSourceForm(s);
+    if (!canList) {
+      ['available-h', 'available-empty', 'available', 'more'].forEach(function (id) { $(id).hidden = true; });
+      return;
+    }
+    ['available-h', 'available'].forEach(function (id) { $(id).hidden = !hasCatalog; });
     const installedAll = listing ? listing.installed : [];
     const installed = installedAll.filter(matches(query));
     $('count-installed').textContent = listing ? String(installedAll.length) : '';
@@ -204,7 +273,7 @@
     // OpenClaw installs a ClawHub package under its runtime id.
     available = available.filter(function (p) { return !installedIds[p.id] && !(p.installedAs && installedIds[p.installedAs]); });
     fill($('available'), available, function (p) { return availableRow(p, s); });
-    show($('available-empty'), available.length ? '' : empty);
+    show($('available-empty'), available.length || !hasCatalog ? '' : empty);
     const more = installed.length > CAP || available.length > CAP;
     show($('more'), more ? (Math.max(installed.length, available.length) - CAP) + ' more. Search to narrow the list.' : '');
   }
@@ -237,15 +306,16 @@
     if (busy) {
       side.append(el('span', 'row-busy', busy));
     } else {
-      if (can.toggle) {
+      if (can.toggle && p.scope !== 'managed') {
         const sw = button('', 'switch', {
           role: 'switch', 'aria-checked': String(p.enabled !== false), 'data-action': 'toggle',
           'aria-label': (p.enabled !== false ? 'Turn off ' : 'Turn on ') + p.name,
         });
         sw.append(el('span', 'knob'));
         side.append(sw);
-      } else {
-        side.append(el('span', 'meta', p.enabled === false ? 'Off' : 'On'));
+      } else if (typeof p.enabled === 'boolean') {
+        // Unknown on/off says nothing rather than "On".
+        side.append(el('span', 'meta', p.enabled ? 'On' : 'Off'));
       }
       const items = [];
       if (can.details) { items.push(['details', 'Details']); }
@@ -283,7 +353,7 @@
     const err = s.rowErrors && s.rowErrors[p.id];
     if (busy) {
       side.append(el('span', 'row-busy', busy));
-    } else {
+    } else if ((s.can || {}).install !== false) {
       side.append(button('Install', 'btn', { 'data-action': 'install', 'aria-expanded': String(scopeFor === p.id), 'aria-label': 'Install ' + p.name }));
     }
     head.append(main, side);
@@ -293,18 +363,46 @@
       group.setAttribute('role', 'group');
       group.setAttribute('aria-label', 'Install ' + p.name + ' for');
       const choices = el('div', 'scope-choices');
-      (s.scopes || []).forEach(function (scope) {
-        const locked = scope !== 'user' && !s.trusted;
-        const b = button('', 'scope', { 'data-scope': scope });
-        b.disabled = locked;
-        b.append(el('strong', null, SCOPE_LABEL[scope] || scope), el('span', 'meta', locked ? 'Needs a trusted workspace' : SCOPE_HINT[scope] || ''));
-        choices.append(b);
-      });
+      scopeButtons(choices, s);
       group.append(choices, button('Cancel', 'btn btn-link', { 'data-action': 'cancel-scope' }));
       li.append(group);
     }
     if (err) { li.append(el('div', 'row-error', err)); }
     return li;
+  }
+
+  function scopeButtons(container, s) {
+    (s.scopes || []).forEach(function (scope) {
+      const noFolder = scope !== 'user' && s.projectOk === false;
+      const locked = scope !== 'user' && (noFolder || !s.trusted);
+      const b = button('', 'scope', { 'data-scope': scope });
+      b.disabled = locked;
+      const why = noFolder ? 'Open a folder first' : 'Needs a trusted workspace';
+      b.append(el('strong', null, SCOPE_LABEL[scope] || scope), el('span', 'meta', locked ? why : SCOPE_HINT[scope] || ''));
+      container.append(b);
+    });
+  }
+
+  function renderSourceForm(s) {
+    const can = s.can || {};
+    $('source-form').hidden = !can.installSource;
+    if (!can.installSource) { return; }
+    const hint = s.sourceHint || { label: 'Source', placeholder: '' };
+    $('source-label').textContent = hint.label;
+    $('source-input').placeholder = hint.placeholder;
+    const box = $('source-scopes');
+    box.replaceChildren();
+    box.hidden = !sourceScopesOpen;
+    if (sourceScopesOpen) {
+      const choices = el('div', 'scope-choices');
+      scopeButtons(choices, s);
+      box.append(choices);
+    }
+    const firstKey = function (map) { return Object.keys(map || {}).find(function (k) { return k.indexOf('source:') === 0; }); };
+    const busyKey = firstKey(s.busy);
+    const errKey = firstKey(s.rowErrors);
+    show($('source-status'), busyKey ? s.busy[busyKey] : '');
+    show($('source-error'), errKey ? s.rowErrors[errKey] : '');
   }
 
   function renderMarkets(s) {

@@ -62,7 +62,7 @@ describe('Claude Code plugin adapter (Plan 45)', () => {
   });
 
   it('installs with the scope flag and --json, and no consent flag', async () => {
-    const run = fakeRun({ [`plugin install ${ID} -s project --json`]: ok('{"command":"install","outcome":"success"}') });
+    const run = fakeRun({ [`plugin install ${ID} -s project --json`]: ok('{"command":"install","outcome":"ok"}') });
     await claude.install(run, ID, 'project');
     expect(run.calls).toEqual([['plugin', 'install', ID, '-s', 'project', '--json']]);
     expect(run.calls.flat()).not.toContain('-y');
@@ -70,9 +70,14 @@ describe('Claude Code plugin adapter (Plan 45)', () => {
 
   it('pins an approved marketplace command by its hash', async () => {
     const sha = 'a'.repeat(64);
-    const run = fakeRun({ [`plugin install ${ID} -s user --json --accept-command ${sha}`]: ok('{"outcome":"success"}') });
+    const run = fakeRun({ [`plugin install ${ID} -s user --json --accept-command ${sha}`]: ok('{"outcome":"ok"}') });
     await claude.install(run, ID, 'user', { acceptCommandSha: sha });
     expect(run.calls[0].slice(-2)).toEqual(['--accept-command', sha]);
+  });
+
+  it('counts only outcome "ok" as success — the only success value its result writer emits', async () => {
+    const run = fakeRun({ [`plugin install ${ID} -s user --json`]: ok('{"command":"install","outcome":"partial","message":"half done"}', 0) });
+    await expect(claude.install(run, ID, 'user')).rejects.toThrow('half done');
   });
 
   it('treats outcome "failed" as a failure even when the CLI exits 0', async () => {
@@ -120,9 +125,9 @@ describe('Claude Code plugin adapter (Plan 45)', () => {
   it('uninstalls, enables and updates in the plugin\'s own scope', async () => {
     const p = { id: ID, name: 'commit-commands', scope: 'local' as const };
     const run = fakeRun({
-      [`plugin uninstall ${ID} -s local --json`]: ok('{"outcome":"success"}'),
-      [`plugin enable ${ID} -s local --json`]: ok('{"outcome":"success"}'),
-      [`plugin update ${ID} -s local --json`]: ok('{"outcome":"success"}'),
+      [`plugin uninstall ${ID} -s local --json`]: ok('{"outcome":"ok"}'),
+      [`plugin enable ${ID} -s local --json`]: ok('{"outcome":"ok"}'),
+      [`plugin update ${ID} -s local --json`]: ok('{"outcome":"ok"}'),
     });
     await claude.uninstall!(run, p);
     await claude.setEnabled!(run, p, true);

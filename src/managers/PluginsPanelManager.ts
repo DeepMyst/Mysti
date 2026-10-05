@@ -34,8 +34,15 @@ export interface PluginsViewState {
   selected: string;
   note?: string;
   scopes: PluginScope[];
-  can: { toggle: boolean; update: boolean; uninstall: boolean; details: boolean; marketplaces: boolean; search: boolean };
+  can: {
+    toggle: boolean; update: boolean; uninstall: boolean; details: boolean; marketplaces: boolean; search: boolean;
+    list: boolean; install: boolean; installSource: boolean;
+  };
+  /** What to type to install from a source, when the backend supports it. */
+  sourceHint?: { label: string; placeholder: string };
   trusted: boolean;
+  /** A folder is open, so project/local scopes have somewhere to go. */
+  projectOk: boolean;
   loading: boolean;
   listing?: PluginListing;
   search?: { query: string; results: CatalogPlugin[] };
@@ -63,6 +70,29 @@ const text = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
 const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 /** An argument that would reach the CLI as an option instead of a value. */
 const flagLike = (v: string): boolean => v.startsWith('-');
+
+/**
+ * Why a typed source can't be passed to a CLI, or undefined when it can.
+ * Refuses control characters (C0, DEL, C1), line/paragraph separators and
+ * invisible format characters such as U+202E, which could make the modal show
+ * something other than what runs.
+ */
+function sourceProblem(source: string, what: string): string | undefined {
+  if (!source) { return `Enter ${what}.`; }
+  if (source.length > 500) { return 'That source is too long.'; }
+  if (flagLike(source)) { return 'That source starts with "-", so the CLI would read it as an option.'; }
+  // eslint-disable-next-line no-control-regex -- control characters are exactly what this refuses
+  if (/[\u0000-\u001f\u007f-\u009f\u2028\u2029]|\p{Cf}/u.test(source)) { return 'That source contains invisible or control characters.'; }
+  return undefined;
+}
+
+/** A project or local scope needs a trusted, open folder; undefined when this one can be used. */
+function scopeProblem(scope: PluginScope): string | undefined {
+  if (scope === 'user') { return undefined; }
+  if (!vscode.workspace.workspaceFolders?.length) { return 'Open a folder to install for a project.'; }
+  if (vscode.workspace.isTrusted !== true) { return 'Installing for this project needs a trusted workspace.'; }
+  return undefined;
+}
 /** Untrusted catalog text for a native modal: one line, no control characters, capped. */
 function oneLine(v: string | undefined, max = 80): string {
   // eslint-disable-next-line no-control-regex -- control characters are exactly what this removes
@@ -156,6 +186,7 @@ export class PluginsPanelManager implements vscode.Disposable {
         case 'select': return await this._select(text(msg.backend));
         case 'search': return await this._searchCatalog(backend, text(msg.query));
         case 'install': return await this._install(backend, text(msg.id), text(msg.scope));
+        case 'installSource': return await this._installSource(backend, text(msg.source), text(msg.scope));
         case 'uninstall': return await this._onInstalled(backend, msg, 'uninstall');
         case 'setEnabled': return await this._onInstalled(backend, msg, 'setEnabled');
         case 'update': return await this._onInstalled(backend, msg, 'update');
@@ -200,11 +231,15 @@ export class PluginsPanelManager implements vscode.Disposable {
   private async _relist(backend: string, adapter: PluginAdapter): Promise<void> {
     const run = this._runFor(backend);
     const problems: string[] = [];
-    try {
-      this._listing.set(backend, await adapter.list(run));
-    } catch (e) {
-      this._listing.delete(backend);
-      problems.push(errorText(e));
+    if (!adapter.list) {
+      this._listing.delete(backend);  // nothing to list; the note says where plugins live
+    } else {
+      try {
+        this._listing.set(backend, await adapter.list(run));
+      } catch (e) {
+        this._listing.delete(backend);
+        problems.push(errorText(e));
+      }
     }
     if (adapter.marketplaces) {
       try {
@@ -236,26 +271,57 @@ export class PluginsPanelManager implements vscode.Disposable {
 
   private async _install(backend: string, id: string, scope: string): Promise<void> {
     const adapter = this._adapterFor(backend);
-    if (!adapter) { return; }
+    const install = adapter?.install;
+    if (!adapter || !install) { return; }
     const entry = this._catalog(backend).find((e) => e.id === id);
     if (!entry) { this._fail(backend, 'That plugin is no longer in the list. Refresh and try again.'); return; }
     if (flagLike(entry.id)) { this._fail(backend, `${oneLine(entry.name)} can't be installed from here: its id reads as a command-line option.`); return; }
     if (!adapter.scopes.includes(scope as PluginScope)) { this._fail(backend, `${this._name(backend)} can't install plugins for that scope.`); return; }
     const where = scope as PluginScope;
-    if (where !== 'user' && vscode.workspace.isTrusted !== true) {
-      this._fail(backend, 'Installing for this project needs a trusted workspace.');
-      return;
-    }
+    const scopeIssue = scopeProblem(where);
+    if (scopeIssue) { this._fail(backend, scopeIssue); return; }
     // A second click while this row is busy is the same request.
     if (this._busy.has(`${backend}\n${entry.id}`)) { return; }
     const run = this._runFor(backend);
     // Inspect, confirm and install in ONE queued job, so what was inspected is
     // what gets installed — no other action on this backend runs in between.
     await this._mutate(backend, entry.id, 'Checking…', true, `Installed ${oneLine(entry.name)} ${SCOPE_PHRASE[where]}.`, async (setBusy) => {
-      const parts: CodeParts = entry.codeParts ?? await adapter.inspect(run, entry).catch(() => 'unknown' as const);
+      const parts: CodeParts = entry.codeParts
+        ?? (adapter.inspect ? await adapter.inspect(run, entry).catch(() => 'unknown' as const) : 'unknown');
       if ((parts === 'unknown' || parts.length > 0) && !(await this._confirmInstall(backend, entry, parts, where))) { return false; }
       setBusy('Installing…');
-      await this._withApproval(backend, entry, (approval) => adapter.install(run, entry.id, where, approval));
+      await this._withApproval(backend, entry, (approval) => install(run, entry.id, where, approval));
+      return true;
+    });
+  }
+
+  /**
+   * Install from a source the user typed. Mysti can never see inside it first,
+   * so it always asks, showing the source exactly as it will be passed.
+   */
+  private async _installSource(backend: string, source: string, scope: string): Promise<void> {
+    const adapter = this._adapterFor(backend);
+    const installSource = adapter?.installSource;
+    if (!adapter || !installSource) { return; }
+    const problem = sourceProblem(source, adapter.sourceHint?.label ?? 'a source');
+    if (problem) { this._fail(backend, problem); return; }
+    if (!adapter.scopes.includes(scope as PluginScope)) { this._fail(backend, `${this._name(backend)} can't install plugins for that scope.`); return; }
+    const where = scope as PluginScope;
+    const scopeIssue = scopeProblem(where);
+    if (scopeIssue) { this._fail(backend, scopeIssue); return; }
+    // The form shows one result at a time: an earlier source's error goes.
+    for (const k of [...this._rowErrors.keys()]) { if (k.startsWith(`${backend}\nsource:`)) { this._rowErrors.delete(k); } }
+    const key = `source:${source}`;
+    if (this._busy.has(`${backend}\n${key}`)) { return; }
+    const what = { id: source, name: oneLine(source, 120) };
+    await this._mutate(backend, key, 'Installing…', true, `Installed ${what.name} ${SCOPE_PHRASE[where]}.`, async () => {
+      const button = 'Install anyway';
+      const answer = await vscode.window.showWarningMessage(`Install from ${what.name}?`, {
+        modal: true,
+        detail: `Mysti can't see what this contains until it is installed. It may add hooks, servers or other code, which run inside ${this._name(backend)}, outside Mysti's per-tool approval, even in read-only mode.\n\nSource: ${oneLine(source, 500)}. Installs ${SCOPE_PHRASE[where]}.`,
+      }, button);
+      if (answer !== button) { return false; }
+      await this._withApproval(backend, what, (approval) => installSource(this._runFor(backend), source, where, approval));
       return true;
     });
   }
@@ -327,6 +393,8 @@ export class PluginsPanelManager implements vscode.Disposable {
       await this._mutate(backend, p.id, 'Uninstalling…', true, `Uninstalled ${p.name}.`, () => adapter.uninstall!(run, p));
     } else if (op === 'setEnabled') {
       if (!adapter.setEnabled) { return; }
+      // Its enable/disable only takes user/project/local; an administrator sets managed ones.
+      if (p.scope === 'managed') { this._fail(backend, `${oneLine(p.name)} is managed by an administrator and can't be turned on or off here.`); return; }
       const on = msg.on === true;
       await this._mutate(backend, p.id, on ? 'Turning on…' : 'Turning off…', true, `Turned ${on ? 'on' : 'off'} ${p.name}.`, () => adapter.setEnabled!(run, p, on));
     } else {
@@ -340,11 +408,8 @@ export class PluginsPanelManager implements vscode.Disposable {
   private async _addMarketplace(backend: string, source: string): Promise<void> {
     const m = this._adapterFor(backend)?.marketplaces;
     if (!m) { return; }
-    // eslint-disable-next-line no-control-regex
-    if (!source || source.length > 500 || source.startsWith('-') || /[\u0000-\u001f]/.test(source)) {
-      this._fail(backend, 'Enter a marketplace as owner/repo, a git URL, or a local path.');
-      return;
-    }
+    const problem = sourceProblem(source, 'a marketplace as owner/repo, a git URL, or a local path');
+    if (problem) { this._fail(backend, problem); return; }
     const button = 'Add marketplace';
     const answer = await vscode.window.showWarningMessage(`Add the marketplace ${source} to ${this._name(backend)}?`, {
       modal: true,
@@ -399,7 +464,8 @@ export class PluginsPanelManager implements vscode.Disposable {
         declined = (await fn(setBusy)) === false;
         if (!declined) {
           if (changesPlugins) { this._providers.getProviderInstance(backend)?.markPluginsChanged?.(); }
-          this._banner = changesPlugins ? `${done} It applies from your next message in ${this._name(backend)} chats.` : done;
+          const hint = this._adapterFor(backend)?.applyHint;
+          this._banner = changesPlugins ? `${done} It applies from your next message in ${this._name(backend)} chats.${hint ? ` ${hint}` : ''}` : done;
         }
       } catch (e) {
         this._rowErrors.set(key, errorText(e));
@@ -420,7 +486,9 @@ export class PluginsPanelManager implements vscode.Disposable {
   private _runFor(backend: string): Run {
     const cliPath = this._providers.getProviderInstance(backend)?.getCliPath() ?? '';
     const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    return (args, opts) => this._runCli(cliPath, args, { timeoutMs: opts?.timeoutMs, cwd });
+    const run: Run = (args, opts) => this._runCli(cliPath, args, { timeoutMs: opts?.timeoutMs, cwd });
+    run.cwd = cwd;
+    return run;
   }
 
   private _catalog(backend: string): CatalogPlugin[] {
@@ -475,13 +543,16 @@ export class PluginsPanelManager implements vscode.Disposable {
         };
       }),
       selected: b,
-      note: entry && !isAdapter(entry) ? entry.note : undefined,
+      note: adapter?.note ?? (entry && !isAdapter(entry) ? entry.note : undefined),
+      sourceHint: adapter?.installSource ? adapter.sourceHint ?? { label: 'Source', placeholder: '' } : undefined,
       scopes: adapter?.scopes ?? [],
       can: {
         toggle: !!adapter?.setEnabled, update: !!adapter?.update, uninstall: !!adapter?.uninstall,
         details: !!adapter?.details, marketplaces: !!adapter?.marketplaces, search: !!adapter?.search,
+        list: !!adapter?.list, install: !!adapter?.install, installSource: !!adapter?.installSource,
       },
       trusted: vscode.workspace.isTrusted === true,
+      projectOk: !!vscode.workspace.workspaceFolders?.length,
       loading: this._loading.has(b),
       listing: this._listing.get(b),
       search: this._search.get(b),
