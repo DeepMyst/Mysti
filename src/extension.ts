@@ -139,6 +139,80 @@ export async function handleShareableImportLink(
   }
 }
 
+/**
+ * `vscode://DeepMyst.mysti/prompt?text=…` — another tool hands Mysti a task.
+ *
+ * Unauthenticated in exactly the way `/import` is, so it stands behind the same
+ * gate: a MODAL whose first (default) button is Cancel and owns the close
+ * affordance, and whose only acting outcome is the exact confirm item by
+ * identity. What it then allows is small on purpose — the text is PLACED in the
+ * chat box and nothing is sent. The person reads it there and sends it, or
+ * does not.
+ *
+ * Bounded, and stripped of what a reader cannot see (control characters, and
+ * the direction overrides that make a line display as something other than
+ * what an agent reads) BEFORE it is previewed or placed, so the modal shows the
+ * same text the chat box will hold. Never rejects.
+ */
+export const PROMPT_LINK_CONFIRM: vscode.MessageItem = { title: 'Put it in the chat box' };
+const PROMPT_LINK_CANCEL: vscode.MessageItem = { title: 'Cancel', isCloseAffordance: true };
+export const PROMPT_LINK_MAX_CHARS = 12000;
+const PROMPT_LINK_PREVIEW_CHARS = 280;
+
+/** By code point: keeps tab and newline, drops C0/C1 controls and bidi overrides/isolates. */
+export function cleanPromptLinkText(raw: string): string {
+  return Array.from(raw).filter(ch => {
+    const c = ch.codePointAt(0) ?? 0;
+    if (c === 0x09 || c === 0x0a) { return true; }
+    return !(c < 0x20 || (c >= 0x7f && c <= 0x9f) || (c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069));
+  }).join('');
+}
+
+/**
+ * The text of a `/prompt` link, from the query the editor hands over.
+ *
+ * The editor percent-decodes a URI's query before any extension sees it, so by
+ * here an `&` the sender encoded is a bare `&` again. Splitting on it — what
+ * `URLSearchParams` does — would end the prompt at the first one in somebody's
+ * sentence. `text` is this link's only parameter: everything after `text=` is
+ * the text, and senders encode it ONCE.
+ */
+export function promptLinkText(query: string): string | null {
+  return query.startsWith('text=') ? query.slice('text='.length) : null;
+}
+
+export async function handlePromptLink(
+  raw: string,
+  deps: { insertPrompt: (text: string) => void | Promise<void> },
+): Promise<void> {
+  try {
+    const text = cleanPromptLinkText(raw).trim();
+    if (!text) {
+      return;
+    }
+    if (text.length > PROMPT_LINK_MAX_CHARS) {
+      vscode.window.showErrorMessage(`This link carries ${text.length} characters of prompt; Mysti takes at most ${PROMPT_LINK_MAX_CHARS} from a link.`);
+      return;
+    }
+    const preview = text.length > PROMPT_LINK_PREVIEW_CHARS ? `${text.slice(0, PROMPT_LINK_PREVIEW_CHARS)}…` : text;
+    const choice = await vscode.window.showWarningMessage(
+      'A link wants to put a prompt in your Mysti chat box — allow it?',
+      {
+        modal: true,
+        detail: `This link came from outside the editor. The text is placed in the chat box for you to read; nothing is sent or run until you send it.\n\nIt starts:\n${preview}`,
+      },
+      PROMPT_LINK_CANCEL,
+      PROMPT_LINK_CONFIRM,
+    );
+    if (choice !== PROMPT_LINK_CONFIRM) {
+      return;
+    }
+    await deps.insertPrompt(text);
+  } catch (err) {
+    console.log('[Mysti] deep-link prompt failed:', err);
+  }
+}
+
 export async function activate(context: vscode.ExtensionContext) {
   PerfTracker.mark('activation.start');
   const perfConfigListener = PerfTracker.init();
@@ -1069,6 +1143,21 @@ export async function activate(context: vscode.ExtensionContext) {
                 vscode.commands.executeCommand('mysti.chatView.focus');
                 chatViewProvider.postMessage({ type: 'conversationChanged' });
                 telemetryManager.sendEvent('deeplink.imported', {});
+              },
+            });
+          }
+        }
+        if (uri.path === '/prompt') {
+          const text = promptLinkText(uri.query);
+          if (text) {
+            // Unauthenticated, like /import — ask first (handlePromptLink never rejects).
+            return handlePromptLink(text, {
+              insertPrompt: async (t) => {
+                await vscode.commands.executeCommand('mysti.chatView.focus');
+                // The sidebar chat by id: with no id this BROADCASTS, and would
+                // overwrite whatever is half-typed in every open composer.
+                chatViewProvider.postMessage({ type: 'insertPrompt', payload: t }, 'sidebar');
+                telemetryManager.sendEvent('deeplink.prompt', {});
               },
             });
           }
