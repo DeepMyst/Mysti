@@ -7,6 +7,7 @@
 - Allow Brainstorm deliberation beyond 90 seconds; bound and parallelize provider-readiness checks so discovery cannot leave analysis waiting indefinitely.
 - Prepare publication of the exact tested beta VSIX to Open VSX (publisher credentials still required).
 - `vscode://DeepMyst.mysti/prompt?text=…` lets another tool hand Mysti a task: after you agree to read it, the whole text opens in a read-only tab, and a control under its last line puts it in the sidebar chat box. Nothing is sent until you send it.
+- The conversation import link's confirmation no longer imports on Enter or Space: its default button is now "Not now".
 
 
 All notable changes to the Mysti extension will be documented in this file.

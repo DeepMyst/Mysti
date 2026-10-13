@@ -105,13 +105,21 @@ let connectionsPanelManager: ConnectionsPanelManager;
  * Plan 27 §21.6c #11 (P-3). The `vscode://DeepMyst.mysti/import?data=…` deep
  * link is reachable by anyone who can get the editor to open a URI — a web page,
  * a chat message, an e-mail. Lane G bounded what the payload can contain; this
- * is the human gate in front of it: a MODAL prompt whose first (default) button
- * is Cancel and owns the close affordance (Escape / dismiss → Cancel), and whose
- * only importing outcome is the exact confirm item by identity. Anything else —
- * `undefined`, Cancel, a look-alike object — denies. Never rejects.
+ * is the human gate in front of it: a MODAL prompt whose DEFAULT button denies,
+ * and whose only importing outcome is the exact confirm item by identity.
+ * Anything else — `undefined` (Escape / dismiss), the denying item, a look-alike
+ * object — denies. Never rejects.
+ *
+ * The default is decided by ORDER, not by the close affordance. The editor
+ * makes the close-affordance item the cancel button and gives Enter/Space to
+ * the first item that is NOT it. This gate used to pass [Cancel (close
+ * affordance), Import], which made Import the default: a dialog that took
+ * focus while somebody was typing was answered yes by their next keystroke. So
+ * the denying item comes first and is deliberately not the close affordance;
+ * the editor supplies its own Cancel for Escape.
  */
 export const SHAREABLE_IMPORT_CONFIRM: vscode.MessageItem = { title: 'Import conversation' };
-const SHAREABLE_IMPORT_CANCEL: vscode.MessageItem = { title: 'Cancel', isCloseAffordance: true };
+export const SHAREABLE_IMPORT_CANCEL: vscode.MessageItem = { title: 'Not now' };
 
 export async function handleShareableImportLink(
   data: string,
