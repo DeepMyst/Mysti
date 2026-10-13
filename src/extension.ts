@@ -65,6 +65,12 @@ import { DeskPairing } from './managers/DeskPairing';
 import { DeskPeerBook } from './managers/DeskPeerBook';
 import { DeskPairingFlow } from './managers/DeskPairingFlow';
 import { MODEL_REFRESH_WARMUP_DELAY_MS } from './constants';
+import {
+  PromptLinkReview,
+  PROMPT_LINK_DISCARD_COMMAND,
+  PROMPT_LINK_PLACE_COMMAND,
+  PROMPT_LINK_SCHEME,
+} from './services/PromptLinkReview';
 import type { Conversation } from './types';
 
 let chatViewProvider: ChatViewProvider;
@@ -142,30 +148,58 @@ export async function handleShareableImportLink(
 /**
  * `vscode://DeepMyst.mysti/prompt?text=…` — another tool hands Mysti a task.
  *
- * Unauthenticated in exactly the way `/import` is, so it stands behind the same
- * gate: a MODAL whose first (default) button is Cancel and owns the close
- * affordance, and whose only acting outcome is the exact confirm item by
- * identity. What it then allows is small on purpose — the text is PLACED in the
- * chat box and nothing is sent. The person reads it there and sends it, or
- * does not.
+ * Unauthenticated in exactly the way `/import` is — any web page, chat message
+ * or e-mail can hand the editor one — and what it carries is aimed at an agent
+ * that can edit the workspace. So the text is never placed anywhere on a
+ * dialog's say-so. Three steps, each closing a way the first version of this
+ * could be walked through:
  *
- * Bounded, and stripped of what a reader cannot see (control characters, and
- * the direction overrides that make a line display as something other than
- * what an agent reads) BEFORE it is previewed or placed, so the modal shows the
- * same text the chat box will hold. Never rejects.
+ *  1. ASK, AND FAIL CLOSED. The editor gives Enter and Space to the FIRST
+ *     button that is not the close affordance. A dialog that takes focus while
+ *     somebody is typing is answered by their next keystroke, so that button
+ *     denies. The only acting item comes second, and all it does is open the
+ *     text to be read. (No item is the close affordance on purpose: marking the
+ *     denying one would hand the default to the acting one.)
+ *  2. SHOW ALL OF IT. The dialog shows none of the text — a prefix would be a
+ *     preview of something other than what is placed. The whole text opens
+ *     read-only in an editor tab (`PromptLinkReview`); the chat box, which
+ *     shows a few lines of however many arrive, is not where it is read.
+ *  3. PLACE IT ON A CLICK UNDER THE LAST LINE. See `PromptLinkReview`.
+ *
+ * Before any of that the text is bounded, stripped of what a reader cannot see
+ * and has its padding collapsed (`cleanPromptLinkText`), so what is read is
+ * what is placed. Never rejects.
  */
-export const PROMPT_LINK_CONFIRM: vscode.MessageItem = { title: 'Put it in the chat box' };
-const PROMPT_LINK_CANCEL: vscode.MessageItem = { title: 'Cancel', isCloseAffordance: true };
+export const PROMPT_LINK_READ: vscode.MessageItem = { title: 'Read it' };
+export const PROMPT_LINK_DENY: vscode.MessageItem = { title: 'Not now' };
 export const PROMPT_LINK_MAX_CHARS = 12000;
-const PROMPT_LINK_PREVIEW_CHARS = 280;
 
-/** By code point: keeps tab and newline, drops C0/C1 controls and bidi overrides/isolates. */
+/**
+ * What a reader cannot see, an agent still reads. Controls, format characters
+ * (direction overrides, zero-width joiners, the invisible "tag" alphabet),
+ * private-use and lone surrogates, and everything Unicode marks as ignorable
+ * by default — variation selectors among them, which can carry a hidden
+ * message a byte at a time.
+ */
+const UNSEEN = /[\p{Cc}\p{Cf}\p{Co}\p{Cs}\p{Default_Ignorable_Code_Point}]/gu;
+
+/**
+ * The text as it will be read AND placed.
+ *
+ * Unseen characters go (a newline is the one control kept; a tab becomes a
+ * space). Then padding goes, because padding is how a line is pushed out of
+ * sight: any run of spacing becomes one space, and any run of blank lines
+ * becomes one. Indentation is lost with it — this is a task handed over in
+ * words, not a file.
+ */
 export function cleanPromptLinkText(raw: string): string {
-  return Array.from(raw).filter(ch => {
-    const c = ch.codePointAt(0) ?? 0;
-    if (c === 0x09 || c === 0x0a) { return true; }
-    return !(c < 0x20 || (c >= 0x7f && c <= 0x9f) || (c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069));
-  }).join('');
+  return raw
+    .replace(/\r\n?/g, '\n')
+    .replace(UNSEEN, ch => (ch === '\n' ? ch : ch === '\t' ? ' ' : ''))
+    .replace(/[^\S\n]+/g, ' ')
+    .replace(/ ?\n ?/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 /**
@@ -183,10 +217,10 @@ export function promptLinkText(query: string): string | null {
 
 export async function handlePromptLink(
   raw: string,
-  deps: { insertPrompt: (text: string) => void | Promise<void> },
+  deps: { review: (text: string) => void | Promise<void> },
 ): Promise<void> {
   try {
-    const text = cleanPromptLinkText(raw).trim();
+    const text = cleanPromptLinkText(raw);
     if (!text) {
       return;
     }
@@ -194,20 +228,19 @@ export async function handlePromptLink(
       vscode.window.showErrorMessage(`This link carries ${text.length} characters of prompt; Mysti takes at most ${PROMPT_LINK_MAX_CHARS} from a link.`);
       return;
     }
-    const preview = text.length > PROMPT_LINK_PREVIEW_CHARS ? `${text.slice(0, PROMPT_LINK_PREVIEW_CHARS)}…` : text;
     const choice = await vscode.window.showWarningMessage(
-      'A link wants to put a prompt in your Mysti chat box — allow it?',
+      'A link wants to hand Mysti a prompt — read it?',
       {
         modal: true,
-        detail: `This link came from outside the editor. The text is placed in the chat box for you to read; nothing is sent or run until you send it.\n\nIt starts:\n${preview}`,
+        detail: `This link came from outside the editor. Its text (${text.length} characters on ${text.split('\n').length} lines) opens in a read-only tab. Nothing is put in the chat box unless you choose that under the text, and nothing is sent or run.`,
       },
-      PROMPT_LINK_CANCEL,
-      PROMPT_LINK_CONFIRM,
+      PROMPT_LINK_DENY,
+      PROMPT_LINK_READ,
     );
-    if (choice !== PROMPT_LINK_CONFIRM) {
+    if (choice !== PROMPT_LINK_READ) {
       return;
     }
-    await deps.insertPrompt(text);
+    await deps.review(text);
   } catch (err) {
     console.log('[Mysti] deep-link prompt failed:', err);
   }
@@ -1101,6 +1134,52 @@ export async function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // The `/prompt` deep link's reading tab, and the two controls under its text.
+  // The commands are registered, not contributed: nothing offers them but the
+  // lenses, and each needs the random id of a text somebody was shown.
+  const promptLinkReview = new PromptLinkReview();
+  const promptLinkUri = (id: string) =>
+    vscode.Uri.from({ scheme: PROMPT_LINK_SCHEME, path: '/Prompt from a link.md', query: id });
+  const closePromptLinkTab = async (id: string) => {
+    try {
+      for (const group of vscode.window.tabGroups.all) {
+        for (const tab of group.tabs) {
+          const input = tab.input;
+          if (input instanceof vscode.TabInputText && input.uri.scheme === PROMPT_LINK_SCHEME && input.uri.query === id) {
+            await vscode.window.tabGroups.close(tab);
+          }
+        }
+      }
+    } catch { /* A tab that will not close never blocks the choice made in it. */ }
+  };
+  context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider(PROMPT_LINK_SCHEME, {
+      provideTextDocumentContent: (uri) => promptLinkReview.content(uri.query),
+    }),
+    vscode.languages.registerCodeLensProvider({ scheme: PROMPT_LINK_SCHEME }, {
+      provideCodeLenses: (document) => promptLinkReview.lenses(document.uri.query).map(lens =>
+        new vscode.CodeLens(new vscode.Range(lens.line, 0, lens.line, 0), {
+          title: lens.title,
+          command: lens.command,
+          arguments: lens.arguments,
+        })),
+    }),
+    vscode.commands.registerCommand(PROMPT_LINK_PLACE_COMMAND, async (id: unknown) => {
+      const text = promptLinkReview.take(id);
+      if (text === undefined || typeof id !== 'string') { return; }
+      await closePromptLinkTab(id);
+      await vscode.commands.executeCommand('mysti.chatView.focus');
+      // The sidebar chat by id: with no id this BROADCASTS, and would overwrite
+      // whatever is half-typed in every open composer.
+      chatViewProvider.postMessage({ type: 'insertPrompt', payload: text }, 'sidebar');
+      telemetryManager.sendEvent('deeplink.prompt.placed', {});
+    }),
+    vscode.commands.registerCommand(PROMPT_LINK_DISCARD_COMMAND, async (id: unknown) => {
+      if (promptLinkReview.take(id) === undefined || typeof id !== 'string') { return; }
+      await closePromptLinkTab(id);
+    }),
+  );
+
   // Register URI handler for conversation deep links (Feature 5)
   context.subscriptions.push(
     vscode.window.registerUriHandler({
@@ -1152,12 +1231,15 @@ export async function activate(context: vscode.ExtensionContext) {
           if (text) {
             // Unauthenticated, like /import — ask first (handlePromptLink never rejects).
             return handlePromptLink(text, {
-              insertPrompt: async (t) => {
-                await vscode.commands.executeCommand('mysti.chatView.focus');
-                // The sidebar chat by id: with no id this BROADCASTS, and would
-                // overwrite whatever is half-typed in every open composer.
-                chatViewProvider.postMessage({ type: 'insertPrompt', payload: t }, 'sidebar');
-                telemetryManager.sendEvent('deeplink.prompt', {});
+              review: async (t) => {
+                const id = promptLinkReview.hold(t);
+                const doc = await vscode.workspace.openTextDocument(promptLinkUri(id));
+                await vscode.window.showTextDocument(doc, { preview: true });
+                if (vscode.workspace.getConfiguration('editor').get<boolean>('codeLens') === false) {
+                  // Fail closed: no second control is offered where the first is hidden.
+                  vscode.window.showInformationMessage('CodeLens is switched off, so the choice under this text is hidden. Copy the text into the chat box yourself, or switch editor.codeLens on and open the link again.');
+                }
+                telemetryManager.sendEvent('deeplink.prompt.opened', {});
               },
             });
           }
