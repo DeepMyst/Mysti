@@ -46,6 +46,9 @@ export interface PromptLinkLens {
 export class PromptLinkReview {
   private readonly _pending = new Map<string, string>();
 
+  /** `onEvict` is told the id of a text pushed out, so its tab can be closed. */
+  constructor(private readonly _onEvict?: (id: string) => void) {}
+
   /** Keep the text and return the id its document, lenses and commands go by. */
   hold(text: string): string {
     const id = crypto.randomUUID();
@@ -54,6 +57,7 @@ export class PromptLinkReview {
       const oldest = this._pending.keys().next().value;
       if (oldest === undefined) { break; }
       this._pending.delete(oldest);
+      this._onEvict?.(oldest);
     }
     return id;
   }

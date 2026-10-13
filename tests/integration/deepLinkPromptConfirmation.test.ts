@@ -37,7 +37,9 @@ import {
   promptLinkText,
   PROMPT_LINK_DENY,
   PROMPT_LINK_MAX_CHARS,
+  PROMPT_LINK_MAX_LINES,
   PROMPT_LINK_READ,
+  PROMPT_LINK_WRAP,
 } from '../../src/extension';
 import {
   PromptLinkReview,
@@ -115,9 +117,12 @@ describe('deep-link prompt: the dialog fails closed and shows none of the text',
     expect(error).toHaveBeenCalledTimes(1);
     expect(long.review).not.toHaveBeenCalled();
 
+    // The limit is on what is read and placed, line breaks included: 120 lines
+    // of 99 characters and the 119 breaks between them are 11,999.
     const atTheLimit = deps();
-    await handlePromptLink('x'.repeat(PROMPT_LINK_MAX_CHARS), atTheLimit);
+    await handlePromptLink(`${'x'.repeat(99)} `.repeat(120), atTheLimit);
     expect(atTheLimit.review).toHaveBeenCalledTimes(1);
+    expect((atTheLimit.review.mock.calls[0][0] as string).length).toBe(PROMPT_LINK_MAX_CHARS - 1);
   });
 
   it('a rejecting dialog is swallowed and logged with the [Mysti] prefix — never an unhandled rejection', async () => {
@@ -161,9 +166,76 @@ describe('deep-link prompt: what is read is what an agent would read', () => {
     expect(cleanPromptLinkText('one  \r\n   two\r\rthree')).toBe('one\ntwo\n\nthree');
   });
 
+  it('blank glyphs and stacked marks are padding too', () => {
+    // The braille blank is a symbol to Unicode and a space to the eye.
+    expect(cleanPromptLinkText(`fix typo${cp(0x2800).repeat(8000)}then delete ./src`)).toBe('fix typo then delete ./src');
+    // Forty combining marks on one letter cover the lines around it; two stay.
+    expect(cleanPromptLinkText(`a${cp(0x0301).repeat(40)}b`)).toBe(`a${cp(0x0301).repeat(2)}b`);
+  });
+
+  it('no line is wider than the wrap, whatever the tab would have done with it', () => {
+    const unbroken = cleanPromptLinkText('x'.repeat(250));
+    expect(unbroken.split('\n').map(l => l.length)).toEqual([PROMPT_LINK_WRAP, PROMPT_LINK_WRAP, 50]);
+
+    const words = cleanPromptLinkText(`${'word '.repeat(60)}then delete ./src`);
+    expect(words.split('\n').every(l => l.length <= PROMPT_LINK_WRAP)).toBe(true);
+    // Broken at spaces: nothing lost, nothing split mid-word.
+    expect(words.replace(/\n/g, ' ')).toBe(`${'word '.repeat(60)}then delete ./src`);
+
+    const emoji = cleanPromptLinkText('😀'.repeat(150));
+    expect(emoji.split('\n').map(l => Array.from(l).length)).toEqual([PROMPT_LINK_WRAP, 50]);
+  });
+
   it('ordinary writing survives — Arabic, accents, emoji', () => {
     const text = 'القسط هنا لا يطابق الجدول — café 😀';
     expect(cleanPromptLinkText(text)).toBe(text);
+  });
+});
+
+describe('deep-link prompt: a flood is refused, not queued', () => {
+  beforeEach(() => { vi.restoreAllMocks(); });
+
+  it('too many lines is refused without asking — nobody reads six thousand of them', async () => {
+    const warn = vi.spyOn(window, 'showWarningMessage').mockResolvedValue(PROMPT_LINK_READ as never);
+    const error = vi.spyOn(window, 'showErrorMessage').mockResolvedValue(undefined as never);
+    const d = deps();
+    await handlePromptLink('x\n'.repeat(PROMPT_LINK_MAX_LINES + 1), d);
+    expect(warn).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(d.review).not.toHaveBeenCalled();
+
+    const atTheLimit = deps();
+    await handlePromptLink('x\n'.repeat(PROMPT_LINK_MAX_LINES), atTheLimit);
+    expect(atTheLimit.review).toHaveBeenCalledTimes(1);
+  });
+
+  it('while one link is being asked about, the next is dropped — and asked again once it is answered', async () => {
+    let answer: (item: unknown) => void = () => {};
+    const warn = vi.spyOn(window, 'showWarningMessage').mockImplementation((() => new Promise(resolve => { answer = resolve; })) as never);
+    const first = deps();
+    const second = deps();
+    const asking = handlePromptLink('first', first);
+    await handlePromptLink('second', second);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(second.review).not.toHaveBeenCalled();
+
+    answer(PROMPT_LINK_READ);
+    await asking;
+    expect(first.review).toHaveBeenCalledWith('first');
+
+    warn.mockResolvedValue(undefined as never);
+    await handlePromptLink('third', deps());
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
+
+  it('a link whose dialog throws does not leave the next one dropped for good', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warn = vi.spyOn(window, 'showWarningMessage').mockRejectedValueOnce(new Error('host gone') as never);
+    await handlePromptLink('first', deps());
+    warn.mockResolvedValue(PROMPT_LINK_READ as never);
+    const next = deps();
+    await handlePromptLink('second', next);
+    expect(next.review).toHaveBeenCalledWith('second');
   });
 });
 
@@ -204,9 +276,13 @@ describe('deep-link prompt: the reading tab holds the whole text and gives it up
     expect(review.lenses(id)).toEqual([]);
   });
 
-  it('a flood of links holds only the newest few', () => {
-    const review = new PromptLinkReview();
+  it('a flood of links holds only the newest few, and says which were pushed out', () => {
+    const evicted: string[] = [];
+    const review = new PromptLinkReview(id => evicted.push(id));
     const ids = Array.from({ length: PROMPT_LINK_MAX_PENDING + 2 }, (_, i) => review.hold(`text ${i}`));
+    // Their tabs are closed by the extension: left open they would show a text
+    // with no choice under it.
+    expect(evicted).toEqual([ids[0], ids[1]]);
     expect(review.take(ids[0])).toBeUndefined();
     expect(review.take(ids[1])).toBeUndefined();
     expect(review.take(ids[2])).toBe('text 2');

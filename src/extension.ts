@@ -173,6 +173,10 @@ export async function handleShareableImportLink(
 export const PROMPT_LINK_READ: vscode.MessageItem = { title: 'Read it' };
 export const PROMPT_LINK_DENY: vscode.MessageItem = { title: 'Not now' };
 export const PROMPT_LINK_MAX_CHARS = 12000;
+/** A text is read by scrolling it; nobody reads six thousand one-letter lines. */
+export const PROMPT_LINK_MAX_LINES = 200;
+/** No line of the reading tab is wider than this, whatever its wrap setting. */
+export const PROMPT_LINK_WRAP = 100;
 
 /**
  * What a reader cannot see, an agent still reads. Controls, format characters
@@ -182,24 +186,50 @@ export const PROMPT_LINK_MAX_CHARS = 12000;
  * message a byte at a time.
  */
 const UNSEEN = /[\p{Cc}\p{Cf}\p{Co}\p{Cs}\p{Default_Ignorable_Code_Point}]/gu;
+/** A SYMBOL to Unicode and a space to the eye, so no spacing rule catches it. */
+const BRAILLE_BLANK = String.fromCodePoint(0x2800);
+
+/** One line as lines no wider than the wrap, broken at a space where there is one. */
+function wrapPromptLinkLine(line: string): string {
+  const out: string[] = [];
+  let rest = Array.from(line);
+  while (rest.length > PROMPT_LINK_WRAP) {
+    const space = rest.lastIndexOf(' ', PROMPT_LINK_WRAP);
+    const at = space > 0 ? space : PROMPT_LINK_WRAP;
+    out.push(rest.slice(0, at).join(''));
+    rest = rest.slice(space > 0 ? at + 1 : at);
+  }
+  out.push(rest.join(''));
+  return out.join('\n');
+}
 
 /**
  * The text as it will be read AND placed.
  *
  * Unseen characters go (a newline is the one control kept; a tab becomes a
  * space). Then padding goes, because padding is how a line is pushed out of
- * sight: any run of spacing becomes one space, and any run of blank lines
- * becomes one. Indentation is lost with it — this is a task handed over in
- * words, not a file.
+ * sight: any run of spacing becomes one space — the braille blank counted as
+ * spacing — any run of blank lines becomes one, and marks stacked on a letter
+ * until they cover the lines around it are cut to two. Last, every line is
+ * wrapped HERE rather than left to the tab: a reader with word wrap off would
+ * otherwise get twelve thousand characters on one line, most of it off the
+ * edge. Indentation is lost and long lines are broken — this is a task handed
+ * over in words, not a file.
+ *
+ * Not stopped, because nothing here can: a letter that looks like another
+ * alphabet's. The reader's eyes are the only check on that.
  */
 export function cleanPromptLinkText(raw: string): string {
   return raw
     .replace(/\r\n?/g, '\n')
+    .split(BRAILLE_BLANK).join(' ')
     .replace(UNSEEN, ch => (ch === '\n' ? ch : ch === '\t' ? ' ' : ''))
+    .replace(/([\p{Mn}\p{Me}]{2})[\p{Mn}\p{Me}]+/gu, '$1')
     .replace(/[^\S\n]+/g, ' ')
     .replace(/ ?\n ?/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
-    .trim();
+    .trim()
+    .split('\n').map(wrapPromptLinkLine).join('\n');
 }
 
 /**
@@ -215,24 +245,38 @@ export function promptLinkText(query: string): string | null {
   return query.startsWith('text=') ? query.slice('text='.length) : null;
 }
 
+/**
+ * One question at a time. A page can fire these links in a loop; each would
+ * queue its own dialog behind the last and take the editor's focus again and
+ * again. While one is being asked about, the rest are dropped — the person can
+ * press the link again.
+ */
+let promptLinkAsking = false;
+
 export async function handlePromptLink(
   raw: string,
   deps: { review: (text: string) => void | Promise<void> },
 ): Promise<void> {
+  if (promptLinkAsking) {
+    console.log('[Mysti] deep-link prompt dropped: another is being asked about');
+    return;
+  }
+  promptLinkAsking = true;
   try {
     const text = cleanPromptLinkText(raw);
     if (!text) {
       return;
     }
-    if (text.length > PROMPT_LINK_MAX_CHARS) {
-      vscode.window.showErrorMessage(`This link carries ${text.length} characters of prompt; Mysti takes at most ${PROMPT_LINK_MAX_CHARS} from a link.`);
+    const lines = text.split('\n').length;
+    if (text.length > PROMPT_LINK_MAX_CHARS || lines > PROMPT_LINK_MAX_LINES) {
+      vscode.window.showErrorMessage(`This link carries ${text.length} characters of prompt on ${lines} lines; Mysti takes at most ${PROMPT_LINK_MAX_CHARS} characters on ${PROMPT_LINK_MAX_LINES} lines from a link.`);
       return;
     }
     const choice = await vscode.window.showWarningMessage(
       'A link wants to hand Mysti a prompt — read it?',
       {
         modal: true,
-        detail: `This link came from outside the editor. Its text (${text.length} characters on ${text.split('\n').length} lines) opens in a read-only tab. Nothing is put in the chat box unless you choose that under the text, and nothing is sent or run.`,
+        detail: `This link came from outside the editor. Its text (${text.length} characters on ${lines} lines) opens in a read-only tab. Nothing is put in the chat box unless you choose that under the text, and nothing is sent or run.`,
       },
       PROMPT_LINK_DENY,
       PROMPT_LINK_READ,
@@ -243,6 +287,8 @@ export async function handlePromptLink(
     await deps.review(text);
   } catch (err) {
     console.log('[Mysti] deep-link prompt failed:', err);
+  } finally {
+    promptLinkAsking = false;
   }
 }
 
@@ -1137,7 +1183,6 @@ export async function activate(context: vscode.ExtensionContext) {
   // The `/prompt` deep link's reading tab, and the two controls under its text.
   // The commands are registered, not contributed: nothing offers them but the
   // lenses, and each needs the random id of a text somebody was shown.
-  const promptLinkReview = new PromptLinkReview();
   const promptLinkUri = (id: string) =>
     vscode.Uri.from({ scheme: PROMPT_LINK_SCHEME, path: '/Prompt from a link.md', query: id });
   const closePromptLinkTab = async (id: string) => {
@@ -1152,6 +1197,9 @@ export async function activate(context: vscode.ExtensionContext) {
       }
     } catch { /* A tab that will not close never blocks the choice made in it. */ }
   };
+  // A text pushed out by newer ones takes its tab with it: left open, it would
+  // show the text with no choice under it.
+  const promptLinkReview = new PromptLinkReview(id => { void closePromptLinkTab(id); });
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider(PROMPT_LINK_SCHEME, {
       provideTextDocumentContent: (uri) => promptLinkReview.content(uri.query),
