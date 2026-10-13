@@ -65,6 +65,12 @@ import { DeskPairing } from './managers/DeskPairing';
 import { DeskPeerBook } from './managers/DeskPeerBook';
 import { DeskPairingFlow } from './managers/DeskPairingFlow';
 import { MODEL_REFRESH_WARMUP_DELAY_MS } from './constants';
+import {
+  PromptLinkReview,
+  PROMPT_LINK_DISCARD_COMMAND,
+  PROMPT_LINK_PLACE_COMMAND,
+  PROMPT_LINK_SCHEME,
+} from './services/PromptLinkReview';
 import type { Conversation } from './types';
 
 let chatViewProvider: ChatViewProvider;
@@ -136,6 +142,153 @@ export async function handleShareableImportLink(
     }
   } catch (err) {
     console.log('[Mysti] deep-link import prompt failed:', err);
+  }
+}
+
+/**
+ * `vscode://DeepMyst.mysti/prompt?text=…` — another tool hands Mysti a task.
+ *
+ * Unauthenticated in exactly the way `/import` is — any web page, chat message
+ * or e-mail can hand the editor one — and what it carries is aimed at an agent
+ * that can edit the workspace. So the text is never placed anywhere on a
+ * dialog's say-so. Three steps, each closing a way the first version of this
+ * could be walked through:
+ *
+ *  1. ASK, AND FAIL CLOSED. The editor gives Enter and Space to the FIRST
+ *     button that is not the close affordance. A dialog that takes focus while
+ *     somebody is typing is answered by their next keystroke, so that button
+ *     denies. The only acting item comes second, and all it does is open the
+ *     text to be read. (No item is the close affordance on purpose: marking the
+ *     denying one would hand the default to the acting one.)
+ *  2. SHOW ALL OF IT. The dialog shows none of the text — a prefix would be a
+ *     preview of something other than what is placed. The whole text opens
+ *     read-only in an editor tab (`PromptLinkReview`); the chat box, which
+ *     shows a few lines of however many arrive, is not where it is read.
+ *  3. PLACE IT ON A CLICK UNDER THE LAST LINE. See `PromptLinkReview`.
+ *
+ * Before any of that the text is bounded, stripped of what a reader cannot see
+ * and has its padding collapsed (`cleanPromptLinkText`), so what is read is
+ * what is placed. Never rejects.
+ */
+export const PROMPT_LINK_READ: vscode.MessageItem = { title: 'Read it' };
+export const PROMPT_LINK_DENY: vscode.MessageItem = { title: 'Not now' };
+export const PROMPT_LINK_MAX_CHARS = 12000;
+/** A text is read by scrolling it; nobody reads six thousand one-letter lines. */
+export const PROMPT_LINK_MAX_LINES = 200;
+/** No line of the reading tab is wider than this, whatever its wrap setting. */
+export const PROMPT_LINK_WRAP = 100;
+
+/**
+ * What a reader cannot see, an agent still reads. Controls, format characters
+ * (direction overrides, zero-width joiners, the invisible "tag" alphabet),
+ * private-use and lone surrogates, and everything Unicode marks as ignorable
+ * by default — variation selectors among them, which can carry a hidden
+ * message a byte at a time.
+ */
+const UNSEEN = /[\p{Cc}\p{Cf}\p{Co}\p{Cs}\p{Default_Ignorable_Code_Point}]/gu;
+/** A SYMBOL to Unicode and a space to the eye, so no spacing rule catches it. */
+const BRAILLE_BLANK = String.fromCodePoint(0x2800);
+
+/** One line as lines no wider than the wrap, broken at a space where there is one. */
+function wrapPromptLinkLine(line: string): string {
+  const out: string[] = [];
+  let rest = Array.from(line);
+  while (rest.length > PROMPT_LINK_WRAP) {
+    const space = rest.lastIndexOf(' ', PROMPT_LINK_WRAP);
+    const at = space > 0 ? space : PROMPT_LINK_WRAP;
+    out.push(rest.slice(0, at).join(''));
+    rest = rest.slice(space > 0 ? at + 1 : at);
+  }
+  out.push(rest.join(''));
+  return out.join('\n');
+}
+
+/**
+ * The text as it will be read AND placed.
+ *
+ * Unseen characters go (a newline is the one control kept; a tab becomes a
+ * space). Then padding goes, because padding is how a line is pushed out of
+ * sight: any run of spacing becomes one space — the braille blank counted as
+ * spacing — any run of blank lines becomes one, and marks stacked on a letter
+ * until they cover the lines around it are cut to two. Last, every line is
+ * wrapped HERE rather than left to the tab: a reader with word wrap off would
+ * otherwise get twelve thousand characters on one line, most of it off the
+ * edge. Indentation is lost and long lines are broken — this is a task handed
+ * over in words, not a file.
+ *
+ * Not stopped, because nothing here can: a letter that looks like another
+ * alphabet's. The reader's eyes are the only check on that.
+ */
+export function cleanPromptLinkText(raw: string): string {
+  return raw
+    .replace(/\r\n?/g, '\n')
+    .split(BRAILLE_BLANK).join(' ')
+    .replace(UNSEEN, ch => (ch === '\n' ? ch : ch === '\t' ? ' ' : ''))
+    .replace(/([\p{Mn}\p{Me}]{2})[\p{Mn}\p{Me}]+/gu, '$1')
+    .replace(/[^\S\n]+/g, ' ')
+    .replace(/ ?\n ?/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+    .split('\n').map(wrapPromptLinkLine).join('\n');
+}
+
+/**
+ * The text of a `/prompt` link, from the query the editor hands over.
+ *
+ * The editor percent-decodes a URI's query before any extension sees it, so by
+ * here an `&` the sender encoded is a bare `&` again. Splitting on it — what
+ * `URLSearchParams` does — would end the prompt at the first one in somebody's
+ * sentence. `text` is this link's only parameter: everything after `text=` is
+ * the text, and senders encode it ONCE.
+ */
+export function promptLinkText(query: string): string | null {
+  return query.startsWith('text=') ? query.slice('text='.length) : null;
+}
+
+/**
+ * One question at a time. A page can fire these links in a loop; each would
+ * queue its own dialog behind the last and take the editor's focus again and
+ * again. While one is being asked about, the rest are dropped — the person can
+ * press the link again.
+ */
+let promptLinkAsking = false;
+
+export async function handlePromptLink(
+  raw: string,
+  deps: { review: (text: string) => void | Promise<void> },
+): Promise<void> {
+  if (promptLinkAsking) {
+    console.log('[Mysti] deep-link prompt dropped: another is being asked about');
+    return;
+  }
+  promptLinkAsking = true;
+  try {
+    const text = cleanPromptLinkText(raw);
+    if (!text) {
+      return;
+    }
+    const lines = text.split('\n').length;
+    if (text.length > PROMPT_LINK_MAX_CHARS || lines > PROMPT_LINK_MAX_LINES) {
+      vscode.window.showErrorMessage(`This link carries ${text.length} characters of prompt on ${lines} lines; Mysti takes at most ${PROMPT_LINK_MAX_CHARS} characters on ${PROMPT_LINK_MAX_LINES} lines from a link.`);
+      return;
+    }
+    const choice = await vscode.window.showWarningMessage(
+      'A link wants to hand Mysti a prompt — read it?',
+      {
+        modal: true,
+        detail: `This link came from outside the editor. Its text (${text.length} characters on ${lines} lines) opens in a read-only tab. Nothing is put in the chat box unless you choose that under the text, and nothing is sent or run.`,
+      },
+      PROMPT_LINK_DENY,
+      PROMPT_LINK_READ,
+    );
+    if (choice !== PROMPT_LINK_READ) {
+      return;
+    }
+    await deps.review(text);
+  } catch (err) {
+    console.log('[Mysti] deep-link prompt failed:', err);
+  } finally {
+    promptLinkAsking = false;
   }
 }
 
@@ -1027,6 +1180,54 @@ export async function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // The `/prompt` deep link's reading tab, and the two controls under its text.
+  // The commands are registered, not contributed: nothing offers them but the
+  // lenses, and each needs the random id of a text somebody was shown.
+  const promptLinkUri = (id: string) =>
+    vscode.Uri.from({ scheme: PROMPT_LINK_SCHEME, path: '/Prompt from a link.md', query: id });
+  const closePromptLinkTab = async (id: string) => {
+    try {
+      for (const group of vscode.window.tabGroups.all) {
+        for (const tab of group.tabs) {
+          const input = tab.input;
+          if (input instanceof vscode.TabInputText && input.uri.scheme === PROMPT_LINK_SCHEME && input.uri.query === id) {
+            await vscode.window.tabGroups.close(tab);
+          }
+        }
+      }
+    } catch { /* A tab that will not close never blocks the choice made in it. */ }
+  };
+  // A text pushed out by newer ones takes its tab with it: left open, it would
+  // show the text with no choice under it.
+  const promptLinkReview = new PromptLinkReview(id => { void closePromptLinkTab(id); });
+  context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider(PROMPT_LINK_SCHEME, {
+      provideTextDocumentContent: (uri) => promptLinkReview.content(uri.query),
+    }),
+    vscode.languages.registerCodeLensProvider({ scheme: PROMPT_LINK_SCHEME }, {
+      provideCodeLenses: (document) => promptLinkReview.lenses(document.uri.query).map(lens =>
+        new vscode.CodeLens(new vscode.Range(lens.line, 0, lens.line, 0), {
+          title: lens.title,
+          command: lens.command,
+          arguments: lens.arguments,
+        })),
+    }),
+    vscode.commands.registerCommand(PROMPT_LINK_PLACE_COMMAND, async (id: unknown) => {
+      const text = promptLinkReview.take(id);
+      if (text === undefined || typeof id !== 'string') { return; }
+      await closePromptLinkTab(id);
+      await vscode.commands.executeCommand('mysti.chatView.focus');
+      // The sidebar chat by id: with no id this BROADCASTS, and would overwrite
+      // whatever is half-typed in every open composer.
+      chatViewProvider.postMessage({ type: 'insertPrompt', payload: text }, 'sidebar');
+      telemetryManager.sendEvent('deeplink.prompt.placed', {});
+    }),
+    vscode.commands.registerCommand(PROMPT_LINK_DISCARD_COMMAND, async (id: unknown) => {
+      if (promptLinkReview.take(id) === undefined || typeof id !== 'string') { return; }
+      await closePromptLinkTab(id);
+    }),
+  );
+
   // Register URI handler for conversation deep links (Feature 5)
   context.subscriptions.push(
     vscode.window.registerUriHandler({
@@ -1069,6 +1270,24 @@ export async function activate(context: vscode.ExtensionContext) {
                 vscode.commands.executeCommand('mysti.chatView.focus');
                 chatViewProvider.postMessage({ type: 'conversationChanged' });
                 telemetryManager.sendEvent('deeplink.imported', {});
+              },
+            });
+          }
+        }
+        if (uri.path === '/prompt') {
+          const text = promptLinkText(uri.query);
+          if (text) {
+            // Unauthenticated, like /import — ask first (handlePromptLink never rejects).
+            return handlePromptLink(text, {
+              review: async (t) => {
+                const id = promptLinkReview.hold(t);
+                const doc = await vscode.workspace.openTextDocument(promptLinkUri(id));
+                await vscode.window.showTextDocument(doc, { preview: true });
+                if (vscode.workspace.getConfiguration('editor').get<boolean>('codeLens') === false) {
+                  // Fail closed: no second control is offered where the first is hidden.
+                  vscode.window.showInformationMessage('CodeLens is switched off, so the choice under this text is hidden. Copy the text into the chat box yourself, or switch editor.codeLens on and open the link again.');
+                }
+                telemetryManager.sendEvent('deeplink.prompt.opened', {});
               },
             });
           }
