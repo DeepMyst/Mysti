@@ -59,7 +59,11 @@ export function classifyToolAction(toolName: string): PermissionActionType {
     return known;
   }
 
-  if (READ_ONLY_TOOLS.has(key)) {
+  // The allowlist names the BACKEND'S OWN built-ins. A `search`/`read`/`list`
+  // on a third-party MCP server (mail, docs, a DeepMyst-brokered connection)
+  // shares the name but not the semantics, so provenance must match — same rule
+  // `classifyCanvasTool` applies. MCP tools fall through to the gated buckets.
+  if (parsed.mcpServer === undefined && READ_ONLY_TOOLS.has(key)) {
     return 'file-read';
   }
 
