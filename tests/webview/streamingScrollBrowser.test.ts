@@ -6,9 +6,9 @@ import { CHROMIUM_UNAVAILABLE } from './chromiumAvailability';
 describe('streaming transcript scroll ownership in the shipped browser', () => {
   let browser: Browser, page: Page, errors: string[];
   const history = Array.from({ length: 40 }, (_, index) => `History paragraph ${index}.`).join('\n\n');
-  beforeAll(async () => { if (!CHROMIUM_UNAVAILABLE) browser = await chromium.launch(); });
+  beforeAll(async () => { if (CHROMIUM_UNAVAILABLE) { return; } browser = await chromium.launch(); });
   beforeEach(async () => {
-    if (CHROMIUM_UNAVAILABLE) return;
+    if (CHROMIUM_UNAVAILABLE) { return; }
     errors = [];
     page = await browser.newPage({ viewport: { width: 700, height: 700 } });
     page.on('pageerror', error => errors.push(error.message));

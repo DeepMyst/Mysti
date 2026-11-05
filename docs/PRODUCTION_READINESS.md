@@ -106,6 +106,13 @@ independent run at the same source passed. The threshold remains in force.
 Investigate the frame-level cause before treating pan performance as uniformly
 qualified across hosts; a passing later run does not explain that observation.
 
+One [macOS source-editor run](https://github.com/DeepMyst/Mysti/actions/runs/42100707759)
+also failed its chat-initialization assertion before the conversation journey;
+the other three editor variants passed. The captured editor had README active
+and the Mysti tab inactive, with no composer found in the webview frames.
+The cause remains unassigned. Retain this startup/focus observation and qualify
+the actual editor journey before treating it as consistently reliable.
+
 ### Provider acceptance still needed
 
 | Provider | Current evidence or constraint | Required next evidence |
