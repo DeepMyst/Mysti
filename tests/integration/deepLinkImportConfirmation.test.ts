@@ -28,7 +28,7 @@ vi.mock('@vscode/extension-telemetry', () => ({
   TelemetryReporter: class { sendTelemetryEvent() {} sendTelemetryErrorEvent() {} dispose() {} },
 }));
 
-import { handleShareableImportLink, SHAREABLE_IMPORT_CONFIRM } from '../../src/extension';
+import { handleShareableImportLink, SHAREABLE_IMPORT_CANCEL, SHAREABLE_IMPORT_CONFIRM } from '../../src/extension';
 import type { Conversation } from '../../src/types';
 
 const FAKE: Conversation = {
@@ -55,11 +55,14 @@ describe('deep-link import asks before importing (P-3)', () => {
     const [message, options, ...items] = warn.mock.calls[0] as unknown as [string, { modal?: boolean }, ...Array<{ title: string; isCloseAffordance?: boolean }>];
     expect(options.modal).toBe(true);
     expect(message.toLowerCase()).toContain('import');
-    // Cancel is the FIRST (default) button and owns the close affordance; the
-    // confirming item is the only path that imports.
-    expect(items[0].isCloseAffordance).toBe(true);
-    expect(items.some(i => i.title === SHAREABLE_IMPORT_CONFIRM.title)).toBe(true);
-    expect(items[0].title).not.toBe(SHAREABLE_IMPORT_CONFIRM.title);
+    // The DEFAULT button denies. The editor gives Enter/Space to the first
+    // button that is NOT the close affordance, so the denying item must be
+    // first AND must not be the close affordance — marking it would hand the
+    // default to the importing item, and a dialog that takes focus while
+    // somebody is typing would be answered yes by their next keystroke.
+    expect(items[0]).toBe(SHAREABLE_IMPORT_CANCEL);
+    expect(items.indexOf(SHAREABLE_IMPORT_CONFIRM as { title: string })).toBe(1);
+    expect(items.every(i => !i.isCloseAffordance)).toBe(true);
     // The prompt closed with no choice (Escape / host dismissed it): nothing imported.
     expect(d.importFromShareable).not.toHaveBeenCalled();
     expect(d.onImported).not.toHaveBeenCalled();
