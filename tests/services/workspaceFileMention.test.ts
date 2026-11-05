@@ -12,6 +12,7 @@ const INSIDE = 'const selected = "IN_WORKSPACE_雪_🙂";\n';
 const OUTSIDE = 'OUTSIDE_BYTES_MUST_NOT_BE_READ';
 let base: string, firstRoot: string, secondRoot: string, outside: string, first: string, second: string, secret: string;
 let handles: Array<{ path: string; handle: FileHandle; reads: number; closes: number }>;
+let beforeOpen: () => Promise<void>;
 let afterOpen: (file: string) => Promise<void>;
 let beforeStat: () => Promise<void>;
 let beforeRead: () => Promise<void>;
@@ -34,9 +35,11 @@ beforeEach(() => {
   first = path.join(firstRoot, 'file.ts'); second = path.join(secondRoot, 'file.ts'); secret = path.join(outside, 'file.ts');
   fs.writeFileSync(first, INSIDE); fs.writeFileSync(second, 'SECOND_ROOT_BYTES'); fs.writeFileSync(secret, OUTSIDE);
   handles = []; substituteOpen = undefined;
+  beforeOpen = async () => undefined;
   afterOpen = async () => undefined; beforeStat = async () => undefined;
   beforeRead = async () => undefined; afterClose = async () => undefined;
   vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
+    await beforeOpen();
     const handle = await realOpen(substituteOpen ?? args[0], args[1], args[2]);
     const record = { path: String(args[0]), handle, reads: 0, closes: 0 }; handles.push(record);
     const stat = handle.stat.bind(handle), read = handle.read.bind(handle), close = handle.close.bind(handle);
@@ -50,7 +53,9 @@ beforeEach(() => {
       return result;
     });
     vi.spyOn(handle, 'close').mockImplementation(async () => { await close(); record.closes++; await afterClose(); });
-    await afterOpen(String(args[0]));
+    // The fixture owns this handle until open resolves to the production caller.
+    try { await afterOpen(String(args[0])); }
+    catch (error) { await handle.close(); throw error; }
     return handle;
   });
 });
@@ -178,8 +183,20 @@ describe('workspace file mention handle and path revalidation', () => {
   });
   it('rejects canonical parent replacement before reading the acquired handle', async () => {
     const dir = path.join(firstRoot, 'dir'); fs.mkdirSync(dir); const selected = path.join(dir, 'file.ts'); fs.writeFileSync(selected, INSIDE);
-    afterOpen = async () => { fs.renameSync(dir, dir + '-old'); fs.symlinkSync(outside, dir); };
-    await expect(readWorkspaceFileMention(selected, [firstRoot])).rejects.toThrow(/changed/); expect(reads()).toBe(0);
+    const admitted = fs.statSync(selected, { bigint: true });
+    let acquired: fs.BigIntStats | undefined;
+    // Windows forbids renaming an ancestor of an open file. Inject the race
+    // after admission metadata and before acquisition, then return a real
+    // handle to the preserved inode so path revalidation is still required.
+    beforeOpen = async () => {
+      fs.renameSync(dir, dir + '-old'); fs.symlinkSync(outside, dir);
+      substituteOpen = path.join(dir + '-old', 'file.ts');
+    };
+    afterOpen = async () => { acquired = await handles[0].handle.stat({ bigint: true }); };
+    await expect(readWorkspaceFileMention(selected, [firstRoot])).rejects.toThrow(/changed/);
+    expect(acquired).toMatchObject({ dev: admitted.dev, ino: admitted.ino });
+    expect(fs.realpathSync.native(selected)).toBe(secret);
+    expect(reads()).toBe(0); expect(handles).toHaveLength(1); expect(handles[0].closes).toBe(1);
   });
   it('revalidates a declared workspace alias independently of the file path', async () => {
     const alias = link(firstRoot, path.join(base, 'root-alias'));
@@ -187,11 +204,24 @@ describe('workspace file mention handle and path revalidation', () => {
     await expect(readWorkspaceFileMention(first, [alias])).rejects.toThrow(/changed/); expect(reads()).toBe(0);
   });
   it('rejects a replaced root inode even if the file is hard-linked into its old spelling', async () => {
-    afterOpen = async () => {
+    const admitted = fs.statSync(first, { bigint: true });
+    const admittedRoot = fs.statSync(firstRoot, { bigint: true });
+    let acquired: fs.BigIntStats | undefined;
+    // Preserve the admitted file identity while replacing only its root.
+    // As above, move the directory before opening its preserved child inode.
+    beforeOpen = async () => {
       fs.renameSync(firstRoot, firstRoot + '-old'); fs.mkdirSync(firstRoot);
-      fs.linkSync(path.join(firstRoot + '-old', 'file.ts'), first);
+      substituteOpen = path.join(firstRoot + '-old', 'file.ts');
+      fs.linkSync(substituteOpen, first);
     };
-    await expect(readWorkspaceFileMention(first, [firstRoot])).rejects.toThrow(/changed/); expect(reads()).toBe(0);
+    afterOpen = async () => { acquired = await handles[0].handle.stat({ bigint: true }); };
+    await expect(readWorkspaceFileMention(first, [firstRoot])).rejects.toThrow(/changed/);
+    expect(acquired).toMatchObject({ dev: admitted.dev, ino: admitted.ino });
+    expect(fs.statSync(first, { bigint: true })).toMatchObject({ dev: admitted.dev, ino: admitted.ino });
+    expect(fs.realpathSync.native(first)).toBe(first);
+    const replacedRoot = fs.statSync(firstRoot, { bigint: true });
+    expect({ dev: replacedRoot.dev, ino: replacedRoot.ino }).not.toEqual({ dev: admittedRoot.dev, ino: admittedRoot.ino });
+    expect(reads()).toBe(0); expect(handles).toHaveLength(1); expect(handles[0].closes).toBe(1);
   });
   for (const failure of ['stat', 'read', 'revalidation'] as const) {
     it(`closes the real handle when ${failure} fails`, async () => {

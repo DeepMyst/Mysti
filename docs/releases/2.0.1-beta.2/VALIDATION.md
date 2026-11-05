@@ -124,6 +124,20 @@ packaged-editor jobs. These failures are not waived. The release record below
 identifies the final source, qualifying workflow runs and artifact checksum;
 the failed attempts above remain part of the validation history.
 
+The second candidate, `65b8d288`, passed all four jobs in
+[editor integration 41996703114](https://github.com/DeepMyst/Mysti/actions/runs/41996703114),
+and its macOS unit phase no longer reported the teardown error. In
+[CI 41996698742](https://github.com/DeepMyst/Mysti/actions/runs/41996698742), Windows
+passed the npm/setup corrections and all 100 provider fixture checks, but still
+failed 11 cases in three file-reference suites. Their fixtures attempted illegal
+Windows filenames or directory renames while a child file handle was open.
+Follow-up fixtures retain literal-query, hostile-metadata, real-inode and
+exact-handle-cleanup assertions while respecting native filesystem semantics.
+Upstream `59aaf93` was also integrated before final qualification, including the
+Git-config credential-read restriction and newer build/test tooling. The final
+release therefore requires fresh results for the merged source, rather than
+reusing the earlier candidate's green jobs.
+
 ### Artifact identity and hosted checks
 
 Once qualified and published, the

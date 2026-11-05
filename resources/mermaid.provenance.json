@@ -2,7 +2,7 @@
   "source": "https://github.com/mermaid-js/mermaid/tree/mermaid%4012.2.0",
   "build": "npm ci && npm run build:vendor",
   "buildScriptSha256": "fb9543cdc6ef0d428f8cca84387e614c7fb316263b9cb722280e11faca426ab5",
-  "webpackVersion": "5.111.1",
+  "webpackVersion": "5.112.2",
   "buildPackages": {
     "node_modules/@jridgewell/gen-mapping": {
       "version": "0.3.13",
@@ -213,8 +213,8 @@
       "integrity": "sha512-Xf0nWe6RseziFMu+Ap9biiUbmplq6S9/p+7w7YXP/JBHhrUDDUhwa+vANyubuqfZWTveU//DYVGsDG7RKL/vEw=="
     },
     "node_modules/schema-utils": {
-      "version": "4.5.0",
-      "integrity": "sha512-zJlMCZ0cAR5p/Y4oVpRoqioDMJcGxaXRrQ/4rP4WyR84vc5z/DolXdbvXeDpTwbtocDFr2rhPqHPErDCUtz2kA=="
+      "version": "4.8.2",
+      "integrity": "sha512-iKlak3OFHF0dgD1nZRvgWQzG+P1TiEcMnLSBtIVBg937z5Jd6WE1c3SyZkXIyCfPHowL35yMsVvIjotm1c1qiw=="
     },
     "node_modules/source-map-support": {
       "version": "0.5.21",
@@ -245,12 +245,12 @@
       "integrity": "sha512-pJ2sYawQS0R/WI928Gj5GlPhTGzbMelq0+4INtSYNDV9ErKJcX6xjGWkoG/VnB3dpUm00zALaqkrUD77pO5TDQ=="
     },
     "node_modules/watchpack": {
-      "version": "2.5.2",
-      "integrity": "sha512-6i/00NBjP4yGPs+caKSyRfpTF/8Torsu0MOW3mMzIbhgISFder8i7xbqgHlLMwJrdiN8ndBV3UA1/AfzPSr+jg=="
+      "version": "2.6.3",
+      "integrity": "sha512-s3NZy0QpTY9qGqzc0wtz4qI28z3+5qKbbAec4MV4G9N3CfgZ9wgvQRr0cl2jh/tqkWG1NWHkmVMHZpCamev5Wg=="
     },
     "node_modules/webpack": {
-      "version": "5.111.1",
-      "integrity": "sha512-cNypaz0RP+S4cvQVi1M/3bRUkvNP0xZpL0TjFx+c6jg64VbxD+2weWDgY9UnjRI6dhZgtaj8DU76GGFcJ79xPQ=="
+      "version": "5.112.2",
+      "integrity": "sha512-B2tp1LI9D8GVpPDqprdt12ukTkXXahj9MzqSWJq4faSPgOUM7CdZaGAB6HrL/8E6UwbBpdj4vzWDbKoFnVoU6g=="
     },
     "node_modules/webpack-sources": {
       "version": "3.6.0",

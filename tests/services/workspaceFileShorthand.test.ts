@@ -163,8 +163,24 @@ describe('workspace shorthand searchable catalogue admission', () => {
     ['a{b}.ts', '**/*a[{]b[}].ts'], ['雪 "name".ts', '**/*雪 "name".ts'], ['a\\b.ts', '**/*b.ts'],
   ]) {
     it(`keeps ${JSON.stringify(name)} literal in the query and path filter`, async () => {
-      const selected = file(rootA, name); reply([selected]);
-      expect(await resolveWorkspaceFileShorthand(token(selected, name, true), [rootA, rootB])).toEqual(await expected(selected));
+      // Windows cannot create *, ? or double-quoted names. Exercise the same
+      // catalogue spelling against explicit metadata there; all legal names
+      // still use real files. This case checks literal query/path matching,
+      // not native support for those filenames.
+      const virtual = process.platform === 'win32' && /[*?"]/.test(name);
+      const selected = virtual ? path.join(rootA, name) : file(rootA, name);
+      const identity = await realLstat(virtual ? a : selected, { bigint: true });
+      if (virtual) {
+        vi.spyOn(fs.promises, 'realpath').mockImplementation((...args: any[]) =>
+          String(args[0]) === selected ? Promise.resolve(selected) : (realRealpath as any)(...args));
+        vi.spyOn(fs.promises, 'lstat').mockImplementation((...args: any[]) =>
+          String(args[0]) === selected ? Promise.resolve(identity) : (realLstat as any)(...args));
+      }
+      reply([selected]);
+      const expectedSelection = virtual
+        ? { kind: 'unique', selectedPath: selected, expected: { canonicalPath: selected, dev: identity.dev, ino: identity.ino } }
+        : await expected(selected);
+      expect(await resolveWorkspaceFileShorthand(token(selected, name, true), [rootA, rootB])).toEqual(expectedSelection);
       expect(find.mock.calls[0][0]).toBe(glob);
     });
   }
