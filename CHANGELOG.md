@@ -9,6 +9,13 @@
 - `vscode://DeepMyst.mysti/prompt?text=…` lets another tool hand Mysti a task: after you agree to read it, the whole text opens in a read-only tab, and a control under its last line puts it in the sidebar chat box. Nothing is sent until you send it.
 - The conversation import link's confirmation no longer imports on Enter or Space: its default button is now "Not now".
 
+### Security
+
+- MCP tools named like a built-in read (`search`, `read`, `list`, …) on a connected server — including DeepMyst-brokered `deepmyst-<slug>` servers — were classified as file reads, so they ran without a permission card, even in read-only mode. The read-only allowlist now applies only to a backend's own tools ([#77](https://github.com/DeepMyst/Mysti/pull/77)).
+- The coordinator's local read tools no longer read `.git/config` (including submodule and worktree configs), where a remote URL can carry a token.
+
+Thanks to [@tynianov1](https://github.com/tynianov1) for reporting both responsibly.
+
 
 All notable changes to the Mysti extension will be documented in this file.
 

@@ -242,6 +242,10 @@ describe('MystiLocalTools — credential path filter (Plan 21 Phase 0)', () => {
   const mustBlock = [
     '.mcp.json',
     '.git-credentials',
+    // remote URLs may embed a token (https://user:token@host/...)
+    '.git/config',
+    '.git/modules/vendor/lib/config',
+    '.git/worktrees/feature/config',
     'terraform.tfstate',
     'terraform.tfstate.backup',
     'prod.tfvars',

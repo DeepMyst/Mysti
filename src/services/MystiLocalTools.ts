@@ -60,7 +60,7 @@ const GREP_DEFAULT_EXCLUDE = '{**/node_modules/**,**/.git/**,**/dist/**,**/out/*
  * contents would flow to the free third-party coordinator model. Matched on the
  * workspace-relative POSIX path (review [2]).
  */
-const SECRET_FILE_RE = /(^|\/)(\.env(\.[^/]*)?|\.npmrc|\.netrc|\.pgpass|\.htpasswd|\.git-credentials|\.pypirc|\.dockercfg|\.docker\/config\.json|\.mcp\.json|kubeconfig|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|[^/]*\.(pem|key|pfx|p12|keystore|jks|tfvars)|[^/]*\.tfstate(\.backup)?|[^/]*(credential|secret|token)[^/]*\.(json|ya?ml|yml|txt|ini|cfg|conf|env|properties)|service[-_]?account.*\.json|[^/]*-adminsdk-[^/]*\.json)$/i;
+const SECRET_FILE_RE = /(^|\/)(\.env(\.[^/]*)?|\.npmrc|\.netrc|\.pgpass|\.htpasswd|\.git-credentials|\.git\/(?:[^/]+\/)*config|\.pypirc|\.dockercfg|\.docker\/config\.json|\.mcp\.json|kubeconfig|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|[^/]*\.(pem|key|pfx|p12|keystore|jks|tfvars)|[^/]*\.tfstate(\.backup)?|[^/]*(credential|secret|token)[^/]*\.(json|ya?ml|yml|txt|ini|cfg|conf|env|properties)|service[-_]?account.*\.json|[^/]*-adminsdk-[^/]*\.json)$/i;
 /** Directory names whose entire subtree is credential material. */
 const SECRET_DIR_RE = /(^|\/)(\.ssh|\.aws|\.gnupg|\.kube|\.docker|secrets|vault)(\/|$)/i;
 
