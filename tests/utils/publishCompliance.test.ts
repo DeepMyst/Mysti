@@ -145,6 +145,7 @@ describe('O-2: NOTICE attributes every vendored asset and ships', () => {
     expect(read('resources/mermaid.min.js.LICENSE.txt')).toContain(`DOMPurify ${embeddedSanitizerV}`);
     const markedV = /marked v(\d+\.\d+\.\d+)/.exec(marked)?.[1];
     const dompurifyV = /DOMPurify (\d+\.\d+\.\d+)/.exec(dompurify)?.[1];
+    expect(dompurifyV, 'Chat and Mermaid must ship the same audited sanitizer').toBe(embeddedSanitizerV);
     const reactV = /"(18\.\d+\.\d+)"/.exec(react)?.[1];
     expect(mermaidV && markedV && dompurifyV && reactV).toBeTruthy();
 

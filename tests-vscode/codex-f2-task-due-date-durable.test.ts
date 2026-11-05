@@ -7,12 +7,13 @@ import { chromium, type Browser, type Page, type Frame } from 'playwright';
 import { installCodexF2TaskDueDateDurableObserver } from './codex-f2-task-due-date-durable-observer';
 import { effortDom, assertLowEffort, selectLowEffort } from './codex-profile-compatibility-explicit-effort';
 const repo = process.env.MYSTI_PB02_F2_TASK_DUE_DATE_DURABLE_SEQUENTIAL_REPO || path.resolve(__dirname, '..');
-const contract = require(path.join(repo, 'scripts/validation/codex-f2-task-due-date-durable-campaign.cjs'));
-const compact = require(path.join(repo, 'scripts/validation/codex-f2-compact-store.cjs'));
-const { assertToolOutputProjection } = require(path.join(repo, 'scripts/validation/codex-full-oracle.cjs'));
-const { joinNativeAssistantMessages } = require(path.join(repo, 'scripts/validation/audit-vscode-codex-helper-quality.cjs'));
 
 if (process.env.MYSTI_PB02_F2_TASK_DUE_DATE_DURABLE_SEQUENTIAL === '1') {
+  // Native campaign imports may resolve pinned local evidence; require opt-in first.
+  const contract = require(path.join(repo, 'scripts/validation/codex-f2-task-due-date-durable-campaign.cjs'));
+  const compact = require(path.join(repo, 'scripts/validation/codex-f2-compact-store.cjs'));
+  const { assertToolOutputProjection } = require(path.join(repo, 'scripts/validation/codex-full-oracle.cjs'));
+  const { joinNativeAssistantMessages } = require(path.join(repo, 'scripts/validation/audit-vscode-codex-helper-quality.cjs'));
   describe('PB-02 actual F2 F02 task due date and save recovery segment', function () {
     const selectedSegment = compact.readJson(path.join(process.env.MYSTI_PB02_F2_TASK_DUE_DATE_DURABLE_SEQUENTIAL_ARTIFACT_DIR!, 'prepared.json')).segment.index;
     this.timeout(contract.timing.segmentPolicy(selectedSegment).editorSeconds * 1000);

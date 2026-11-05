@@ -1,13 +1,16 @@
 <p align="center">
   <a href="https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti">Install Mysti</a> ·
   <a href="docs/GETTING-STARTED.md">Get started</a> ·
-  <a href="docs/releases/2.0-beta/RELEASE-NOTES.md">2.0 BETA release notes</a> ·
+  <a href="docs/DEMO_GALLERY.md">Watch the demos</a> ·
+  <a href="docs/releases/2.0.1-beta.2/RELEASE-NOTES.md">Beta 2 release notes</a> ·
   <a href="CONTRIBUTING.md">Contribute</a>
 </p>
 
-![Mysti 2.0 BETA — Your agents. Working together.](docs/releases/2.0-beta/hero.png)
+![Mysti 2.0.1 Beta 2 — Your agents. Working together.](docs/releases/2.0.1-beta.2/media/hero.png)
 
-# Mysti 2.0 BETA
+# Mysti
+
+**2.0.1 · Beta 2**
 
 **An open-source coding workspace that brings your agents together inside VS Code.**
 
@@ -19,90 +22,52 @@ Mysti connects the coding tools you choose—CLI agents, local model servers, an
 [![Marketplace](https://img.shields.io/visual-studio-marketplace/v/DeepMyst.mysti?label=Marketplace)](https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti)
 [![License](https://img.shields.io/badge/license-Apache%202.0-9bdfc2)](LICENSE)
 
-> **2.0 is a beta.** This checkout prepares the 2.0.0 pre-release package. The Marketplace badge shows the currently published version. See [release status and limitations](docs/releases/2.0-beta/RELEASE-NOTES.md) before adopting it for important work.
+> **Beta release.** Version 2.0.1 focuses on reliability, recovery, and clearer controls. Download the [Beta 2 VSIX](https://github.com/DeepMyst/Mysti/releases/tag/v2.0.1-beta.2), or check the Marketplace badge for its currently published version. See [verified status and the path to stable](docs/PRODUCTION_READINESS.md); full production acceptance is still in progress.
 
 **16 provider adapters + the Mysti coordinator · Parallel opinions · Cross-agent handoffs · Connected tools · Proactive context**
 
 ## See it work
 
-[**Watch the product tour →**](https://github.com/DeepMyst/Mysti/blob/main/docs/releases/2.0-beta/mysti-2-beta-tour.mp4)
+[**Explore the feature recordings →**](docs/DEMO_GALLERY.md)
 
-The recordings below use the **shipped webviews with deterministic sample responses**. They demonstrate interaction and presentation; they are not live provider runs or performance benchmarks. [Capture details and video downloads](docs/releases/2.0-beta/README.md).
+Short, focused walkthroughs show the shipped interface with readable captions and a consistent layout. Pick the workflow you want to see:
 
-### Get a second opinion without rewriting the question
+| Start here | Then explore |
+| --- | --- |
+| **Set up your workspace** — onboarding, provider selection, model controls | **Give agents context** — files, attachments, access modes |
+| **Work with several agents** — independent opinions, ordered handoffs, Brainstorm | **Stay in control** — approvals, Stop, conversation history, fork and rewind |
+| **Build visually** — Canvas and Visual Test | **Connect your workflow** — tools, Proactive, settings |
 
-An answer is a starting point. On answers with a usage or session receipt, click **Second opinion**, choose another configured agent, and Mysti sends it the original question. Compare separately attributed answers in the same conversation; use Brainstorm when you want a discussion and synthesis.
+The gallery identifies which scenes use deterministic sample responses. These recordings demonstrate the interface; native-provider acceptance and remaining gaps are tracked separately in the [readiness report](docs/PRODUCTION_READINESS.md).
 
-![Getting a second opinion from Codex after Claude answers](docs/releases/2.0-beta/second-opinion.gif)
-
-### Ask two agents. Hear from both.
+### Independent opinions, one conversation
 
 ```text
 @claude @codex What are your opinions on adding a cache to this API?
 ```
 
-Explicit tags determine who does the work. Independent read-only assignments run concurrently within the configured limit. Each agent has its own live card and attributed answer—even if one of them is already your selected provider.
+Each named agent receives its own assignment and has a separately attributed answer. Independent read-only work can run concurrently. Failed participants remain visible.
 
-![Claude Code and Codex responding in separate agent cards](docs/releases/2.0-beta/agent-opinions.gif)
+[![Claude Code and Codex responding in separate agent cards](docs/releases/2.0.1-beta.2/media/agent-opinions.png)](docs/releases/2.0.1-beta.2/media/agent-opinions.mp4)
 
-A failed participant stays visible. Mysti does not invent its answer or quietly ask the other agent to impersonate it.
-
-### Turn tags into a workflow
+### A clear handoff when order matters
 
 ```text
 @claude Design a retry policy, then @codex review it for edge cases
 ```
 
-Use **then** to make the next assignment depend on the previous result. Claude designs the policy; Codex receives that result to review. Progress cards show the current step and who runs next. A failed dependency blocks its dependent step.
+The reviewer receives the first agent's completed result. A failed prerequisite blocks the dependent step. Work that may edit the shared workspace runs serially.
 
-![Claude completes a design before Codex reviews its result](docs/releases/2.0-beta/agent-workflow.gif)
+![Claude completes a design before Codex reviews its result](docs/releases/2.0.1-beta.2/media/agent-workflow.gif)
 
-Add roles such as `@claude:critic` or `@codex:reviewer` to make the perspective explicit. Independent advisory work can run in parallel; work that may edit a shared workspace runs serially. [Assignment and workflow guide](docs/MENTIONS.md).
-
-### Switch agents without losing your draft
-
-Choose from **16 registered provider adapters**, plus the **Mysti coordinator**. Move between coding CLIs, local model servers, and API providers from the composer. Your draft stays in place, and model controls follow the selected provider's capabilities.
-
-![Switching between Codex, Ollama and Claude while retaining the draft](docs/releases/2.0-beta/provider-switching.gif)
-
-[See all providers and setup requirements](#bring-your-preferred-agents).
-
-### Keep model choices close to your work
-
-Choose the model, adjust effort, and toggle Ultracode where the provider supports it. The model menu and action menu share the same settings. Dictation adds text to your draft for review before you send.
-
-![Model, effort and Ultracode controls in Mysti](docs/releases/2.0-beta/composer-controls.gif)
-
-### Bring your tools into the conversation
-
-Connect apps and MCP servers through **DeepMyst's Composio and Smithery catalogs**. Bring code, team discussions, email, and calendar context within reach of your agents through the tools you authorize. Browse and authorize in DeepMyst, then manage connections from Mysti.
-
-![DeepMyst connections for GitHub, Slack, Gmail and Google Calendar](docs/releases/2.0-beta/connected-tools.gif)
-
-The recording shows sample authorized connections, not a live OAuth flow. Catalog availability and tool permissions depend on the service and your account; local CLI access is opt-in for supported adapters. A connected app is not automatically a Proactive monitoring source.
-
-### Get context before you start
-
-Proactive brings selected local Git changes and DeepMyst-connected GitHub/Slack evidence into an inbox. The **Before you start** view helps you inspect relevant evidence for a responsibility, including source links and freshness information.
-
-![Proactive inbox and task-context controls](docs/releases/2.0-beta/proactive-inbox.gif)
-
-Cloud monitoring requires DeepMyst sign-in, a supported connection, and an explicitly configured responsibility. Coverage is bounded; evidence does not prove who owns a task. [Proactive setup and limits](docs/PROACTIVE.md).
-
-### Work through a decision with Brainstorm
-
-Choose two configured agents and a discussion strategy. **Quick** collects independent analyses and synthesizes a response; Debate, Red Team, Perspectives and Delphi provide other ways to examine a proposal. Keep the individual reasoning visible alongside the synthesis.
-
-![Two agents analyze a checkout caching decision before Brainstorm synthesizes a response](docs/releases/2.0-beta/brainstorm.gif)
-
-[Choose a Brainstorm strategy](docs/BRAINSTORM.md).
+These examples use deterministic sample responses in the shipped interface. [See the refreshed Beta 2 gallery](docs/DEMO_GALLERY.md) · [Assignment and workflow guide](docs/MENTIONS.md).
 
 ## More ways to move the work forward
 
 | Feature | Why it matters | Explore |
 | --- | --- | --- |
 | **Brainstorm** | Let two agents analyze, debate or challenge a proposal, then synthesize a response. | [Discussion strategies](docs/BRAINSTORM.md) |
-| **Canvas + Visual Test** | Iterate on visual artifacts and inspect a running app alongside the code. | [Visual workflows](docs/FEATURES.md) |
+| **Canvas + Visual Test** | Iterate on visual artifacts and inspect a running app alongside the code. | [Visual workflows](docs/DEMO_GALLERY.md#design-and-inspect-visually) |
 | **Personas, skills and roles** | Reuse project guidance and specialist perspectives instead of repeating instructions. | [Team practices](docs/PERSONAS-AND-SKILLS.md) |
 | **Checkpoints + visible approvals** | Inspect requested actions and recover supported local changes as you iterate. Checkpoints do not undo external actions. | [Access and lifecycle](docs/FEATURES.md#permission-system) |
 | **Dictation + context tools** | Speak a draft, mention files, or attach diagnostics and Git context before sending. | [Composer and context](docs/FEATURES.md#chat-interface) |
@@ -126,7 +91,7 @@ Parallelism follows the work: independent advisory requests may overlap; writers
 
 ## Get started
 
-1. **Install Mysti** from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti), or install the reviewed beta VSIX with **Extensions → Install from VSIX**. Choose the pre-release channel when 2.0 BETA is published.
+1. **Install Mysti** from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti), or install the reviewed beta VSIX with **Extensions → Install from VSIX**. The [GitHub release](https://github.com/DeepMyst/Mysti/releases/tag/v2.0.1-beta.2) provides the versioned Beta 2 VSIX; registry publication is tracked separately.
 2. **Open a trusted local workspace.** Mysti supports VS Code 1.86 or newer on Windows, macOS, and Linux. Native voice support and provider CLIs have their own host requirements.
 3. **Open Mysti and choose your agent.** The setup screen checks installation and authentication and provides the supported install, upgrade, or sign-in action. Mysti itself uses your DeepMyst account; CLI agents use their own credentials.
 4. **Start with a small task.** Try `@claude Explain the main entry point`, then add `@codex` for a second opinion when both are configured.
@@ -165,10 +130,12 @@ Provider requests transmit the prompt and supplied context to the configured pro
 | [Personas and skills](docs/PERSONAS-AND-SKILLS.md) | Reusable project practices |
 | [Proactive](docs/PROACTIVE.md) | Responsibilities, evidence, notification and coverage limits |
 | [Architecture](docs/ARCHITECTURE.md) | Host, webview, routing and provider boundaries |
-| [Release notes](docs/releases/2.0-beta/RELEASE-NOTES.md) | What's new, migration, known limitations |
+| [Release notes](docs/releases/2.0.1-beta.2/RELEASE-NOTES.md) | What's new, migration, known limitations |
+| [Production readiness](docs/PRODUCTION_READINESS.md) | Verified status, remaining work, portable checklist for every release |
+| [Demo gallery](docs/DEMO_GALLERY.md) | Feature recordings, coverage, capture instructions |
 | [Contributing](CONTRIBUTING.md) | Development, meaningful tests, demos and release work |
 
-**Translations:** [العربية](README.ar.md) · [中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md) · [Português](README.pt-BR.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · [Türkçe](README.tr.md) · [Русский](README.ru.md). Community translations may describe an earlier release; this README is the current 2.0 BETA reference.
+**Translations:** [العربية](README.ar.md) · [中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md) · [Português](README.pt-BR.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · [Türkçe](README.tr.md) · [Русский](README.ru.md). Community translations may describe an earlier release; this README is the current Beta 2 reference.
 
 ## Build with us
 

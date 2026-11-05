@@ -15,7 +15,8 @@ try {
       || !manifest.buildPackages?.['node_modules/webpack']
       || (!manifest.buildPackages?.['node_modules/terser-webpack-plugin']
         && !manifest.buildPackages?.['node_modules/minimizer-webpack-plugin'])
-      || !manifest.assets?.['mermaid.min.js'] || !manifest.assets?.['mermaid.min.js.LICENSE.txt']) {
+      || !manifest.assets?.['mermaid.min.js'] || !manifest.assets?.['mermaid.min.js.LICENSE.txt']
+      || !manifest.assets?.['dompurify.min.js']) {
     throw new Error('Vendor provenance is incomplete');
   }
   if (hash(path.join(__dirname, 'build-vendor.js')) !== manifest.buildScriptSha256) {

@@ -78,6 +78,26 @@ The autocomplete menu follows the registered provider catalog. Naming a provider
 
 Files are resolved once before the assignment group runs and supplied to all participants. They are transient context for this message. Unreadable files produce a warning. `@problems` and `@git` add bounded, read-only workspace summaries.
 
+File mentions also reach Mysti's inline answers, background jobs, orchestration participants, and brainstorm participants. Their contents are resolved for the request and are not added to the saved message's manual context. Stop or navigation during file resolution prevents that pending request from starting; an already detached background job keeps its own lifecycle.
+
+Referenced file contents and their path metadata are enclosed as untrusted reference data in outgoing prompts. Markdown fences or instruction-like text within a file do not end that reference boundary or grant permission to act. Existing context budgets and Mysti's directive-token redaction still apply. This separates the supplied data from the task; it does not guarantee how a model will interpret the text.
+
+Picking a file from the suggestions inserts its exact full path as a quoted mention. The visible path stays with the draft or queued message; another file with the same name cannot replace it when the workspace list changes. Typed filenames or relative paths must resolve to one workspace file. If the name is ambiguous or a quoted path is no longer listed, sending pauses with an explanation and preserves your draft.
+
+Typed paths, dotted filenames and dotfiles, such as `@src/file.ts`, `@file.ts` and `@.env`, also pause submission when they are unavailable in the current file suggestions. The file may still exist; select it from suggestions or add it through Context. Bare file references shorter than three characters, such as `@.a`, need selection from suggestions or a quoted full path. Unrecognized plain `@words` remain text. To send a file-like token literally, put it in backticks or escape its `@`.
+
+This validation runs before sending or adding a message to the queue, preserving the draft and its attachments on rejection. Rejected submissions do not release a queue held by Stop. Queued references are checked again before dispatch; if the file list changed, the queued item and any current draft remain available. Slash-command arguments follow their command's own handling.
+
+The host also checks that supplied file references match complete mentions in the message. A stale reference or a different absolute path is rejected before any file is read or request starts. Select the file again to repair the reference. A reference rejected at submission leaves an already running response alone. This check verifies the reference's consistency, not workspace containment or shorthand uniqueness.
+
+Before reading typed shorthand, the host checks it again against the current searchable workspace files. This uses the editor's search settings and the same `node_modules` exclusion as the suggestions. If the file list became ambiguous, the search cannot finish, or too many candidates prevent verification, that reference is omitted with an explanation; other valid references and manual Context remain available. Choose a file from the suggestions or use its quoted full path to select it explicitly. This check does not enumerate files excluded by the editor's search configuration or provide an atomic snapshot of concurrent filesystem changes.
+
+File mentions are then checked against the open workspace folders. Only regular files with a resolved target inside one of those folders are read; links within or between open folders are supported. Outside targets and unavailable files produce a warning while other readable references remain available. If the workspace folder list changes during resolution, all file references for that request are discarded with a warning. Explicit file-picker attachments and manually added Context items use their own handling.
+
+Each mentioned file may contain up to 5,000,000 bytes of text. Files containing a NUL byte are treated as binary, regardless of their extension. Binary and oversized files are omitted with an explanation; other valid references and manual Context remain available. The reader also enforces the byte limit if a file grows during reading, and never sends a partial file from a rejected reference. Use a smaller text file or add the relevant text excerpt. This is a per-file limit; it does not impose a total limit on all context in a message. Text is decoded as UTF-8, retaining replacement characters for invalid UTF-8 sequences.
+
+Quoted mentions support spaces and Unicode, such as `@"src/retry contract.ts"`. Quotes and backslashes within a path use JSON escaping, which the picker inserts for you. Agent names inside a quoted filename are part of that filename. Mentions inside code and email addresses are ignored.
+
 Composer attachments are currently not forwarded by collaborator dispatch. Mysti warns rather than silently implying the attachment was delivered. Use Context or a workspace file mention for these runs. Ordinary provider chat retains its provider-specific attachment support.
 
 ## Failures, cancellation and limits

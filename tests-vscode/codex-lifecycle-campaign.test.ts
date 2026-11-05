@@ -9,10 +9,11 @@ import { installCodexHelperQualityObserver } from './codex-helper-quality-observ
 import { effortDom, assertLowEffort, selectLowEffort } from './codex-profile-compatibility-explicit-effort';
 const prefix = 'MYSTI_PB02_LIFECYCLE_CAMPAIGN';
 const repo = process.env[prefix + '_REPO'] || path.resolve(__dirname, '..');
-const campaign = require(path.join(repo, 'scripts/validation/codex-lifecycle-campaign.cjs'));
-const contract = require(path.join(repo, 'scripts/validation/codex-helper-quality-contract.cjs'));
 const hash = (file: string): string => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 if (process.env[prefix] === '1') {
+  // Native campaign imports may resolve pinned local evidence; require opt-in first.
+  const campaign = require(path.join(repo, 'scripts/validation/codex-lifecycle-campaign.cjs'));
+  const contract = require(path.join(repo, 'scripts/validation/codex-helper-quality-contract.cjs'));
   describe('PB-02 bounded actual lifecycle campaign', function () {
     this.timeout(1_500_000);
     let manifest: any, owner: any, browser: Browser, workbench: Page, frame: Frame, ownedTab: vscode.Tab;

@@ -8,12 +8,13 @@ import * as vscode from 'vscode';
 import { chromium, type Browser, type Page, type Frame } from 'playwright';
 import { installCodexReviewObserver } from './codex-review-observer';
 const repo = process.env.MYSTI_PB02_REVIEW_REPO || path.resolve(__dirname, '..');
-const { exactCommand, patchScope, assertSourceRepair, verifyPreservedBase } = require(path.join(repo, 'scripts/validation/codex-review-contract.cjs'));
-const { assertToolOutputProjection } = require(path.join(repo, 'scripts/validation/codex-full-oracle.cjs'));
 const hash = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
 type Scope = { commands?: string[]; patch?: 'repair' };
 
 if (process.env.MYSTI_PB02_REVIEW === '1') {
+  // Native campaign imports may resolve pinned local evidence; require opt-in first.
+  const { exactCommand, patchScope, assertSourceRepair, verifyPreservedBase } = require(path.join(repo, 'scripts/validation/codex-review-contract.cjs'));
+  const { assertToolOutputProjection } = require(path.join(repo, 'scripts/validation/codex-full-oracle.cjs'));
   describe('PB-02 real editor preserved HTTP-date peer review and repair', function () {
     this.timeout(780_000);
     let manifest: any, owner: any, browser: Browser, workbench: Page, frame: Frame, sourceId: string, panelId: string, complete = false;

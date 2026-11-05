@@ -30,7 +30,7 @@ const warnings = () => page.locator('.mysti-toast').allTextContents();
 const contextFiles = () => context.getContext('owner').map(item => item.path);
 
 beforeAll(async () => {
-  if (CHROMIUM_UNAVAILABLE) throw new Error(CHROMIUM_UNAVAILABLE);
+  if (CHROMIUM_UNAVAILABLE) { return; }
   browser = await chromium.launch();
 });
 beforeEach(async () => {
@@ -95,26 +95,26 @@ async function assertContextFile(expected = file) {
 
 describe('EW06 actual browser drop targets into the host context reader', () => {
   for (const mime of ['text/uri-list', 'application/vnd.code.uri-list']) {
-    it(`${mime}: preserves encoded filename bytes and deduplicates comments/repeated links`, async () => {
+    it.skipIf(CHROMIUM_UNAVAILABLE)(`${mime}: preserves encoded filename bytes and deduplicates comments/repeated links`, async () => {
       const uri = pathToFileURL(file).href;
       await drop('context', { [mime]: '# comment\r\n' + uri + '\r\n' + uri + '\r\n' }); await bridge();
       await assertContextFile(); expect(await warnings()).toEqual([]);
     });
   }
   for (const prefix of ['file://localhost', 'FILE://LOCALHOST']) {
-    it(`resolves the native path from ${prefix} without inventing a relative path`, async () => {
+    it.skipIf(CHROMIUM_UNAVAILABLE)(`resolves the native path from ${prefix} without inventing a relative path`, async () => {
       const uri = prefix + new URL(pathToFileURL(file)).pathname;
       await drop('context', { 'text/uri-list': uri }); await bridge(); await assertContextFile();
       expect(probes.every(probe => path.isAbsolute(probe))).toBe(true);
     });
   }
-  it('decodes percent escapes once, retaining a literal percent-encoded filename', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('decodes percent escapes once, retaining a literal percent-encoded filename', async () => {
     const literal = path.join(root, '%2F.txt'); fs.writeFileSync(literal, content);
     await drop('context', { 'text/uri-list': pathToFileURL(literal).href }); await bridge(); await assertContextFile(literal);
   });
   for (const fault of ['relative', 'encoded separator', 'query', 'fragment', 'empty query', 'empty fragment',
     'backslash', 'raw tab', 'NUL', 'bad escape', 'non-file', ...(process.platform === 'win32' ? [] : ['remote authority'])]) {
-    it(`rejects ${fault} URI data before filesystem access and gives feedback`, async () => {
+    it.skipIf(CHROMIUM_UNAVAILABLE)(`rejects ${fault} URI data before filesystem access and gives feedback`, async () => {
       const valid = pathToFileURL(file).href;
       const uri = fault === 'relative' ? 'file:report.txt'
         : fault === 'encoded separator' ? pathToFileURL(root).href + '/dir%2Ffile.txt'
@@ -132,31 +132,31 @@ describe('EW06 actual browser drop targets into the host context reader', () => 
       expect(contextFiles()).toEqual([]); expect(probes).toEqual([]); expect((await warnings()).length).toBeGreaterThan(0);
     });
   }
-  it('keeps a valid file from the secondary URI format when the standard format contains an unsupported URL', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('keeps a valid file from the secondary URI format when the standard format contains an unsupported URL', async () => {
     await drop('context', { 'text/uri-list': 'https://example.invalid/no-file', 'application/vnd.code.uri-list': pathToFileURL(file).href });
     await bridge(); await assertContextFile(); expect((await warnings()).length).toBeGreaterThan(0);
   });
-  it('retains valid files in a mixed URI batch and reports the unreadable item', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('retains valid files in a mixed URI batch and reports the unreadable item', async () => {
     await drop('context', { 'text/uri-list': [pathToFileURL(path.join(root, 'missing.txt')).href, pathToFileURL(file).href].join('\r\n') });
     await bridge(); await assertContextFile(); expect((await warnings()).join(' ')).toContain('missing.txt');
   });
-  it('deduplicates equivalent URI forms and later drops without false unreadable warnings', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('deduplicates equivalent URI forms and later drops without false unreadable warnings', async () => {
     const uri = pathToFileURL(file).href;
     const alias = 'file://localhost' + new URL(uri).pathname;
     await drop('context', { 'text/uri-list': uri, 'application/vnd.code.uri-list': alias }); await bridge();
     await drop('context', { 'text/uri-list': alias }); await bridge();
     await assertContextFile(); expect(probes).toEqual([file]); expect(await warnings()).toEqual([]);
   });
-  it('expands a folder URI through the real context reader', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('expands a folder URI through the real context reader', async () => {
     await drop('context', { 'text/uri-list': pathToFileURL(root).href }); await bridge();
     await assertContextFile(); expect(await warnings()).toEqual([]);
   });
-  it('explains empty context drops rather than silently ignoring them', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('explains empty context drops rather than silently ignoring them', async () => {
     await drop('context', { 'text/uri-list': '# just a comment\r\n' }); await bridge();
     expect(contextFiles()).toEqual([]); expect(probes).toEqual([]);
     expect((await warnings()).join(' ')).toContain('+ Add');
   });
-  it('clears the document overlay after a context-target drop and resets nested drag accounting', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('clears the document overlay after a context-target drop and resets nested drag accounting', async () => {
     await page.evaluate(() => document.dispatchEvent(new DragEvent('dragenter', { bubbles: true, cancelable: true })));
     await drop('context', { 'text/uri-list': pathToFileURL(file).href }); await bridge();
     expect(await page.locator('#drop-overlay').evaluate(node => node.classList.contains('visible'))).toBe(false);
@@ -167,7 +167,7 @@ describe('EW06 actual browser drop targets into the host context reader', () => 
     expect(await page.locator('#drop-overlay').evaluate(node => node.classList.contains('visible'))).toBe(false);
   });
   for (const target of ['composer', 'context'] as const) {
-    it(`${target}: the same file keeps its intended lifetime across two sends`, async () => {
+    it.skipIf(CHROMIUM_UNAVAILABLE)(`${target}: the same file keeps its intended lifetime across two sends`, async () => {
       await drop(target, { 'text/uri-list': pathToFileURL(file).href }, true); await bridge();
       await page.waitForFunction(() => !document.querySelector('.attachment-reading'));
       for (const text of ['First question', 'Follow-up']) {
@@ -188,18 +188,18 @@ describe('EW06 actual browser drop targets into the host context reader', () => 
       }
     });
   }
-  it('explains the attachment fallback when a context drop has file bytes but no disk path', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('explains the attachment fallback when a context drop has file bytes but no disk path', async () => {
     await drop('context', {}, true); await bridge();
     await page.waitForFunction(() => !document.querySelector('.attachment-reading'));
     expect(contextFiles()).toEqual([]); expect(await page.locator('.attachment-name').textContent()).toBe(path.basename(file));
     expect((await warnings()).join(' ')).toMatch(/message attachments/i);
   });
-  it('explains how to attach a URI-only composer drop without silently adding persistent context', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('explains how to attach a URI-only composer drop without silently adding persistent context', async () => {
     await drop('composer', { 'text/uri-list': pathToFileURL(file).href }); await bridge();
     expect(contextFiles()).toEqual([]); expect(await page.locator('.attachment-preview-item').count()).toBe(0);
     expect((await warnings()).join(' ')).toMatch(/Context.*Attach/);
   });
-  it('keeps a delayed context read out of a replacement conversation', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('keeps a delayed context read out of a replacement conversation', async () => {
     let entered!: () => void, release!: () => void;
     const started = new Promise<void>(resolve => { entered = resolve; });
     const held = new Promise<void>(resolve => { release = resolve; });
@@ -215,7 +215,7 @@ describe('EW06 actual browser drop targets into the host context reader', () => 
     } finally { release(); await pending; }
     expect(contextFiles()).toEqual([]); expect(hostMessages).toEqual([]);
   });
-  it('suppresses malformed-link and read-failure warnings after navigation during a mixed batch', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('suppresses malformed-link and read-failure warnings after navigation during a mixed batch', async () => {
     let entered!: () => void, release!: () => void;
     const started = new Promise<void>(resolve => { entered = resolve; });
     const held = new Promise<void>(resolve => { release = resolve; });

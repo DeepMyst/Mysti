@@ -7,12 +7,13 @@ import { chromium, type Browser, type Page, type Frame } from 'playwright';
 import { installCodexF2F05Observer } from './codex-f2-f05-observer';
 import { effortDom, assertLowEffort, selectLowEffort } from './codex-profile-compatibility-explicit-effort';
 const repo = process.env.MYSTI_PB02_F2_F05_REPO || path.resolve(__dirname, '..');
-const contract = require(path.join(repo, 'scripts/validation/codex-f2-f05-campaign.cjs'));
-const compact = require(path.join(repo, 'scripts/validation/codex-f2-compact-store.cjs'));
-const { assertToolOutputProjection } = require(path.join(repo, 'scripts/validation/codex-full-oracle.cjs'));
-const { joinNativeAssistantMessages } = require(path.join(repo, 'scripts/validation/audit-vscode-codex-helper-quality.cjs'));
 
 if (process.env.MYSTI_PB02_F2_F05 === '1') {
+  // Native campaign imports may resolve pinned local evidence; require opt-in first.
+  const contract = require(path.join(repo, 'scripts/validation/codex-f2-f05-campaign.cjs'));
+  const compact = require(path.join(repo, 'scripts/validation/codex-f2-compact-store.cjs'));
+  const { assertToolOutputProjection } = require(path.join(repo, 'scripts/validation/codex-full-oracle.cjs'));
+  const { joinNativeAssistantMessages } = require(path.join(repo, 'scripts/validation/audit-vscode-codex-helper-quality.cjs'));
   describe('PB-02 actual F2 F05 signed-webhook segment', function () {
     this.timeout(3_900_000);
     let manifest: any, owner: any, campaign: any, browser: Browser, workbench: Page, frame: Frame;

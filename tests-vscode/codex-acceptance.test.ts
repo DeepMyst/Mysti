@@ -8,18 +8,19 @@ import * as vscode from 'vscode';
 import { chromium, type Browser, type Page, type Frame } from 'playwright';
 import { installCodexAcceptanceObserver } from './codex-acceptance-observer';
 const validationRoot = path.join(process.env.MYSTI_PB02_ACCEPTANCE_REPO || path.resolve(__dirname, '..'), 'scripts/validation');
-const { exactCommand, patchScope, readonlyOutcome, readonlyProbeOutcome, assertToolOutputProjection } = require(path.join(validationRoot, 'codex-full-followup-oracle.cjs')) as {
-  readonlyOutcome: (value: any) => string;
-  readonlyProbeOutcome: (value: any) => string;
-  assertToolOutputProjection: (value: any) => any;
-  exactCommand: (actual: unknown, expected: string) => boolean;
-  patchScope: (changes: unknown, workspace: string, purpose: 'fix' | 'deny' | 'revision' | 'tests') => boolean;
-};
 const hash = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
 type Scope = { commands?: string[]; patch?: 'fix' | 'deny' | 'revision' | 'tests'; readonly?: boolean; holdPatch?: boolean; attachments?: boolean };
 type Panel = { frame: Frame; tab: vscode.Tab; conversationId: string; panelId: string; effort: string };
 
 if (process.env.MYSTI_PB02_ACCEPTANCE === '1') {
+  // Native campaign imports may resolve pinned local evidence; require opt-in first.
+  const { exactCommand, patchScope, readonlyOutcome, readonlyProbeOutcome, assertToolOutputProjection } = require(path.join(validationRoot, 'codex-full-followup-oracle.cjs')) as {
+    readonlyOutcome: (value: any) => string;
+    readonlyProbeOutcome: (value: any) => string;
+    assertToolOutputProjection: (value: any) => any;
+    exactCommand: (actual: unknown, expected: string) => boolean;
+    patchScope: (changes: unknown, workspace: string, purpose: 'fix' | 'deny' | 'revision' | 'tests') => boolean;
+  };
   describe('PB-02 real editor full25 Codex developer turns', function () {
     this.timeout(3_300_000);
     let manifest: any, owner: any, browser: Browser, workbench: Page, frame: Frame, sourceId: string, panelId: string, complete = false;

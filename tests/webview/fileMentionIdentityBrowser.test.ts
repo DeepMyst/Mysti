@@ -26,7 +26,7 @@ describe('selected file mention identity in the shipped browser', () => {
   const posted = () => page.evaluate(() => (window as any).__posted.filter((m: any) => m.type === 'sendMessage'));
 
   beforeAll(async () => {
-    if (CHROMIUM_UNAVAILABLE) return;
+    if (CHROMIUM_UNAVAILABLE) { return; }
     fixtureRoot = process.env.MYSTI_FILE_MENTION_FIXTURE_ROOT || mkdtempSync(path.join(tmpdir(), 'mysti-file-mention-'));
     const fixtureSpecs = [
       ['a', 'packages/a/utils.ts', 'export const identity = "EW04_PACKAGE_A";\n'],

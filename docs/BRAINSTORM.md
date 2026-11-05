@@ -5,7 +5,7 @@ Brainstorm Mode lets two AI agents work together on your problem, combining thei
 ## How It Works
 
 1. You send a message with Brainstorm Mode enabled
-2. Your message is sent to **both** selected agents simultaneously
+2. Your message, plus the earlier chat (the same history an agent you switch to receives), is sent to **both** selected agents simultaneously
 3. Agents analyze independently, then collaborate based on the chosen strategy
 4. A synthesis combines the best ideas into one refined response
 

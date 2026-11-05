@@ -7,15 +7,16 @@ import { execFileSync } from 'child_process';
 import * as vscode from 'vscode';
 import { chromium, type Browser, type Frame, type Page } from 'playwright';
 import { installClaudeObserver } from './claude-observer';
-const { matchingNativeQuestionDeliveries, classifyReadonlyCanary } = require('../scripts/validation/claude-interaction-oracle.cjs') as {
-  matchingNativeQuestionDeliveries: (events: any[], receipts: any[]) => any[];
-  classifyReadonlyCanary: (evidence: any) => 'PASS_NATIVE_TOOL_DENIAL' | 'PARTIAL_MODEL_REFUSAL_NO_NATIVE_WRITE_ATTEMPT';
-};
 
 const hash = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
 type Scope = { read?: string[]; edit?: string[]; bash?: boolean; denyCanary?: boolean; holdCanaryEdit?: boolean; interactive?: 'question' | 'plan'; attachments?: boolean };
 type Panel = { frame: Frame; tab: vscode.Tab; conversationId: string; panelId: string };
 if (process.env.MYSTI_PB01 === '1') {
+  // Native campaign imports may resolve pinned local evidence; require opt-in first.
+  const { matchingNativeQuestionDeliveries, classifyReadonlyCanary } = require('../scripts/validation/claude-interaction-oracle.cjs') as {
+    matchingNativeQuestionDeliveries: (events: any[], receipts: any[]) => any[];
+    classifyReadonlyCanary: (evidence: any) => 'PASS_NATIVE_TOOL_DENIAL' | 'PARTIAL_MODEL_REFUSAL_NO_NATIVE_WRITE_ATTEMPT';
+  };
   describe('PB-01 real editor Claude developer baseline', function () {
     this.timeout(3_000_000);
     let manifest: any, owner: any, browser: Browser, workbench: Page, complete = false;

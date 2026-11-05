@@ -55,7 +55,8 @@ chromium`. Run `npm run typecheck`, `npm run lint`, `npm test`, and
 `npm run compile:release` before requesting review. CI requires Chromium and
 blocks on lint, test, build and package-shape failures. See
 [maintenance and releases](docs/MAINTENANCE.md) for the complete verification
-workflow and [architecture](docs/ARCHITECTURE.md) for module boundaries.
+workflow, [production readiness](docs/PRODUCTION_READINESS.md) for current gaps and
+the reusable release checklist, [demo gallery](docs/DEMO_GALLERY.md) for recording guidance and [architecture](docs/ARCHITECTURE.md) for module boundaries.
 
 ### Project Structure
 
@@ -224,4 +225,4 @@ npm run lint
 
 For release presentation, update the README, feature-specific guide, CHANGELOG and versioned release notes together. Keep account requirements and beta limitations visible. Do not claim platform or live-provider validation from mocked tests. Community translations should link the current canonical guide until updated.
 
-Record new visual changes with `npm run demo:record` after installing Chromium and FFmpeg. Review every frame for secrets, clipping, and unsupported claims. Preserve the sample-data label on fixture captures. See the [media kit](docs/releases/2.0-beta/README.md) for reproducibility and the [maintenance guide](docs/MAINTENANCE.md) for packaging and exact-commit release checks.
+Record new visual changes with `npm run demo:record` after installing Chromium and FFmpeg. Review every frame for secrets, clipping, and unsupported claims. Preserve the sample-data label on fixture captures. See the [demo gallery](docs/DEMO_GALLERY.md) for coverage and reproducibility and the [maintenance guide](docs/MAINTENANCE.md) for packaging and exact-commit release checks.

@@ -8,9 +8,10 @@ import { chromium, type Browser, type Page, type Frame } from 'playwright';
 import { installCodexHelperQualityObserver, captureHelperQualityDom } from './codex-helper-quality-observer';
 import { effortDom, assertLowEffort, selectLowEffort } from './codex-profile-compatibility-explicit-effort';
 const repo = process.env.MYSTI_PB02_HELPER_QUALITY_REPO || path.resolve(__dirname, '..');
-const { verifyPreservedBase, verifyCopiedFixture } = require(path.join(repo, 'scripts/validation/codex-helper-quality-contract.cjs'));
 const hash = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
 if (process.env.MYSTI_PB02_HELPER_QUALITY === '1') {
+  // Native campaign imports may resolve pinned local evidence; require opt-in first.
+  const { verifyPreservedBase, verifyCopiedFixture } = require(path.join(repo, 'scripts/validation/codex-helper-quality-contract.cjs'));
   describe('PB-02 real editor helper quality', function () {
     this.timeout(900_000);
     let manifest: any, owner: any, browser: Browser, workbench: Page, frame: Frame, ownedTab: vscode.Tab;

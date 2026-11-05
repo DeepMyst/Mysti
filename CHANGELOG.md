@@ -1,25 +1,39 @@
 # Changelog
 
-## Unreleased — issue review
+All notable changes to the Mysti extension are documented here.
 
-- OpenCode remote HTTP/SSE connections for WSL, Docker and HTTPS servers, with setup and connection-test commands, SecretStorage credentials and native tool approvals.
-- Remember each provider's selected model when switching agents, and apply custom-model changes to the correct panel provider.
-- Allow Brainstorm deliberation beyond 90 seconds; bound and parallelize provider-readiness checks so discovery cannot leave analysis waiting indefinitely.
-- Prepare publication of the exact tested beta VSIX to Open VSX (publisher credentials still required).
-- `vscode://DeepMyst.mysti/prompt?text=…` lets another tool hand Mysti a task: after you agree to read it, the whole text opens in a read-only tab, and a control under its last line puts it in the sidebar chat box. Nothing is sent until you send it.
-- The conversation import link's confirmation no longer imports on Enter or Space: its default button is now "Not now".
+## [2.0.1] — 2026-11-05 · Beta 2 (pre-release)
 
+This release collects the reliability work since Beta 1. It remains a beta;
+[production readiness](docs/PRODUCTION_READINESS.md) records acceptance gaps.
 
-All notable changes to the Mysti extension will be documented in this file.
+### Fixed
 
-## Unreleased — review follow-up
+- Bound setup, discovery, authentication, and update checks; cancelled or superseded setup flows no longer apply late results to another panel.
+- Preserve model and credential ownership across provider switches, settings changes, queued work, process reuse, and authentication recovery.
+- Preserve drafts, interrupted answers, original second-opinion questions and attachments; prevent stale events from updating a replacement conversation.
+- Harden conversation history, forks, transfers, checkpoints, and edit reversion around ownership, persistence failures, and unrelated workspace changes.
+- Refresh context before dispatch, retain request snapshots, resolve exact file mentions, and bound file/attachment reads with clearer feedback.
+- Improve provider completion, cancellation, usage attribution, protocol compatibility, and credential redaction across CLI and HTTP adapters.
+- Clean up abandoned OpenCode remote sessions after server restarts while preserving sessions owned by other clients.
+- Stop local OpenCode tool descendants even when their shell runs in a separate process group; verify ownership before signalling them.
+- Preserve Brainstorm failure and cancellation boundaries, participant attribution, and session context across asynchronous work.
+- Render model content and attachment metadata safely without allowing it to impersonate trusted UI controls.
+- Keep MCP look-alike tool names out of the built-in read-only allowlist; default shared-conversation import confirmations to “Not now”.
 
-- Integrate Russian command/settings catalogs and webview chrome while preserving user and agent text.
-- Add MiniMax API setup with SecretStorage, model routing, reasoning/usage streaming and isolated cancellation.
-- Repair translated README star-history links using the official service.
-- Reconcile dependency updates, patch browser libraries, and preserve VS Code 1.86 runtime support.
+### Security and dependencies
 
-## [2.0.0] — Mysti 2.0 BETA (pre-release candidate)
+- Update DOMPurify to 3.4.17, Mermaid to 12.2.0 and vulnerable compatible transitive dependencies. Refresh the browser sanitizer and diagram bundle, with hash checks for both. The release audit has zero runtime advisories; bounded development-tool exceptions are documented in the maintenance guide.
+
+### Added and updated
+
+- Prompt deep links show the entire bounded task in a read-only review before placing it in the composer; they never send it automatically.
+- OpenCode remote HTTP/SSE setup for WSL, containers, and HTTPS servers, with SecretStorage credentials and native tool approvals.
+- A portable production-readiness report and repeatable release checklist, backed by the 130-case feature acceptance ledger.
+- Expanded feature recordings, a compact demo gallery, refreshed README and release documentation, and a new pre-release extension build.
+- Regression, browser, real-editor and native-provider test harnesses accumulated during the reliability review. Long-duration and broader platform/account acceptance remain outstanding.
+
+## [2.0.0] — 2026-10-03 · Beta 1 (pre-release)
 
 ### Fixed
 
@@ -39,8 +53,6 @@ All notable changes to the Mysti extension will be documented in this file.
 
 See [2.0 BETA release notes](docs/releases/2.0-beta/RELEASE-NOTES.md) and [validation](docs/releases/2.0-beta/VALIDATION.md).
 
-
-## [Unreleased]
 
 ## [0.5.1] - 2026-09-05
 

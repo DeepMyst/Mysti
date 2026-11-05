@@ -1,0 +1,2768 @@
+{
+  "schemaVersion": 1,
+  "preparedOn": "2026-10-09",
+  "gitHead": "a3d9338258c33b45e5232b5bf2a28927fc45dc19",
+  "basis": "Current worktree including prior uncommitted reliability changes; source inventory, not executed behavior.",
+  "purpose": "Traceability of the comprehensive feature test plan. NOT_RUN is deliberate; no new feature/soak execution is claimed.",
+  "catalogs": [
+    "plans/47-feature-tests/providers-and-conversations.md",
+    "plans/47-feature-tests/agents-and-runtime.md",
+    "plans/47-feature-tests/editor-and-workspace.md",
+    "plans/47-feature-tests/canvas-and-integrations.md"
+  ],
+  "features": [
+    {
+      "id": "PC-01",
+      "title": "First-run setup, zero-install path and onboarding",
+      "catalog": "plans/47-feature-tests/providers-and-conversations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "PC-02",
+      "title": "Provider discovery, installation, updates and diagnostics",
+      "catalog": "plans/47-feature-tests/providers-and-conversations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "PC-03",
+      "title": "Backend authentication, expiration and recovery",
+      "catalog": "plans/47-feature-tests/providers-and-conversations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "PC-04",
+      "title": "Provider/model selection, effort, thinking, profiles and Ultracode",
+      "catalog": "plans/47-feature-tests/providers-and-conversations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "PC-05",
+      "title": "Streaming answers, rich rendering and message actions",
+      "catalog": "plans/47-feature-tests/providers-and-conversations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "PC-06",
+      "title": "Composer, draft preservation, queued follow-ups and second opinions",
+      "catalog": "plans/47-feature-tests/providers-and-conversations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "PC-07",
+      "title": "Stop, clear session, shutdown and next-turn recovery",
+      "catalog": "plans/47-feature-tests/providers-and-conversations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "PC-08",
+      "title": "Conversation history, persistence, delete and recovery",
+      "catalog": "plans/47-feature-tests/providers-and-conversations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "PC-09",
+      "title": "Multi-panel, multi-window and workspace isolation",
+      "catalog": "plans/47-feature-tests/providers-and-conversations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "PC-10",
+      "title": "Conversation forks and branch history",
+      "catalog": "plans/47-feature-tests/providers-and-conversations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "PC-11",
+      "title": "Export, import, share links and clipboard",
+      "catalog": "plans/47-feature-tests/providers-and-conversations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "PC-12",
+      "title": "Capability truthfulness and unsupported backend controls",
+      "catalog": "plans/47-feature-tests/providers-and-conversations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "PB-01",
+      "title": "Claude Code",
+      "catalog": "plans/47-feature-tests/providers-and-conversations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "PB-02",
+      "title": "OpenAI Codex",
+      "catalog": "plans/47-feature-tests/providers-and-conversations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "PB-03",
+      "title": "Google Gemini",
+      "catalog": "plans/47-feature-tests/providers-and-conversations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "PB-04",
+      "title": "Cline",
+      "catalog": "plans/47-feature-tests/providers-and-conversations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "PB-05",
+      "title": "GitHub Copilot",
+      "catalog": "plans/47-feature-tests/providers-and-conversations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "PB-06",
+      "title": "Cursor",
+      "catalog": "plans/47-feature-tests/providers-and-conversations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "PB-07",
+      "title": "OpenClaw",
+      "catalog": "plans/47-feature-tests/providers-and-conversations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "PB-08",
+      "title": "OpenCode",
+      "catalog": "plans/47-feature-tests/providers-and-conversations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "PB-09",
+      "title": "Qwen Code",
+      "catalog": "plans/47-feature-tests/providers-and-conversations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "PB-10",
+      "title": "Hermes",
+      "catalog": "plans/47-feature-tests/providers-and-conversations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "PB-11",
+      "title": "Kimi Code",
+      "catalog": "plans/47-feature-tests/providers-and-conversations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "PB-12",
+      "title": "Continue",
+      "catalog": "plans/47-feature-tests/providers-and-conversations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "PB-13",
+      "title": "Ollama",
+      "catalog": "plans/47-feature-tests/providers-and-conversations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "PB-14",
+      "title": "LocalAI",
+      "catalog": "plans/47-feature-tests/providers-and-conversations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "PB-15",
+      "title": "OpenRouter backend",
+      "catalog": "plans/47-feature-tests/providers-and-conversations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "PB-16",
+      "title": "MiniMax",
+      "catalog": "plans/47-feature-tests/providers-and-conversations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-01",
+      "title": "Explicit agent assignments and independent collaboration",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-02",
+      "title": "Ordered handoffs and dependency failure propagation",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-03",
+      "title": "Role-based collaboration, /consult, and role authority",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-04",
+      "title": "Child scheduling, cancellation, questions, authentication, and retry",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-05",
+      "title": "Legacy Brainstorm: quick strategy and synthesis fallback",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-06",
+      "title": "Legacy Brainstorm: debate and convergence",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-07",
+      "title": "Legacy Brainstorm: red-team challenge and defense",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-08",
+      "title": "Legacy Brainstorm: risk/opportunity perspectives",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-09",
+      "title": "Legacy Brainstorm: Delphi facilitation and refinement",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-10",
+      "title": "/review: independent diff review and merged findings",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-11",
+      "title": "/panel: multiple independent perspectives and promised synthesis",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-12",
+      "title": "/critique: proposer, attackers, and verdict semantics",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-13",
+      "title": "/race: competing candidate solutions and user selection",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-14",
+      "title": "/brainstorm: bounded multi-agent refinement session",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-15",
+      "title": "Mysti inline coordinator, model selection, and fallback",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-16",
+      "title": "Coordinator tool loop, output continuation, and run budgets",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-17",
+      "title": "Native Mysti subagents and bounded parallel delegation",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-18",
+      "title": "CLI delegation, advisor escalation, cross-review, and verification",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-19",
+      "title": "Explicit Mysti orchestration DAG and lane scheduling",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-20",
+      "title": "Plan modes, plan options, native exit-plan, and approval handoff",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-21",
+      "title": "Effective trust modes and permission lifecycle",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-22",
+      "title": "Autonomous goals, task queues, safety decisions, and continuation",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-23",
+      "title": "Semi-autonomous permission, question, and plan decisions",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-24",
+      "title": "Learned preferences, project auto-memory, and project context",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-25",
+      "title": "Coordinator cross-backend memory and user pruning",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-26",
+      "title": "Checkpoints, code rewind, conversation forks, and undo",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-27",
+      "title": "Manual and automatic compaction with provider-owned history",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-28",
+      "title": "Smart compaction, incremental summaries, and history retrieval",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-29",
+      "title": "Token/cache accounting, cost attribution, and paid-call consent",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-30",
+      "title": "Boost profiles, explicit-setting precedence, and savings ledger",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-31",
+      "title": "Detached background jobs, ownership, persistence, and recovery",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-32",
+      "title": "Agent lifecycle, idle shutdown, active-child protection, and restart",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-33",
+      "title": "Agent map, workflow activity, needs, and actionable ownership",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-34",
+      "title": "Executable skill publication, registered calls, integrity, and health",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-35",
+      "title": "Changes dock, real disk differences, attribution, and revert boundaries",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "AR-36",
+      "title": "Direct local reads, edits, multi-file patches, shell, and OS sandbox",
+      "catalog": "plans/47-feature-tests/agents-and-runtime.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "EW-01",
+      "title": "Add files, editor selections, and folders to context",
+      "catalog": "plans/47-feature-tests/editor-and-workspace.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "EW-02",
+      "title": "Context isolation, refresh, persistence, and cleanup",
+      "catalog": "plans/47-feature-tests/editor-and-workspace.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "EW-03",
+      "title": "Automatic active-file and selection context",
+      "catalog": "plans/47-feature-tests/editor-and-workspace.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "EW-04",
+      "title": "@file context resolution and referenced-file transport",
+      "catalog": "plans/47-feature-tests/editor-and-workspace.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "EW-05",
+      "title": "File/image attachment picker and capability handling",
+      "catalog": "plans/47-feature-tests/editor-and-workspace.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "EW-06",
+      "title": "Paste, drag/drop, URI drops, and attachment lifetime",
+      "catalog": "plans/47-feature-tests/editor-and-workspace.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "EW-07",
+      "title": "Agent, role, and workspace-file autocomplete",
+      "catalog": "plans/47-feature-tests/editor-and-workspace.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "EW-08",
+      "title": "Suggested follow-ups and quick actions",
+      "catalog": "plans/47-feature-tests/editor-and-workspace.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "EW-09",
+      "title": "Prompt enhancement and stale-draft protection",
+      "catalog": "plans/47-feature-tests/editor-and-workspace.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "EW-10",
+      "title": "Editor-backed dictation",
+      "catalog": "plans/47-feature-tests/editor-and-workspace.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "EW-11",
+      "title": "Actions menu, command palette, and built-in slash entry routes",
+      "catalog": "plans/47-feature-tests/editor-and-workspace.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "EW-12",
+      "title": "Provider-native slash discovery and pass-through",
+      "catalog": "plans/47-feature-tests/editor-and-workspace.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "EW-13",
+      "title": "Agent/persona/role catalog, precedence, selection, and prompt budget",
+      "catalog": "plans/47-feature-tests/editor-and-workspace.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "EW-14",
+      "title": "Create, edit, reload, and remove custom personas, skills, and roles",
+      "catalog": "plans/47-feature-tests/editor-and-workspace.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "EW-15",
+      "title": "GitHub skill discovery, provenance, import, and overwrite",
+      "catalog": "plans/47-feature-tests/editor-and-workspace.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "EW-16",
+      "title": "Skill search, category index, automatic suggestion, and retrieval quality",
+      "catalog": "plans/47-feature-tests/editor-and-workspace.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "EW-17",
+      "title": "Staged skill review, promotion, quarantine, and local skill report",
+      "catalog": "plans/47-feature-tests/editor-and-workspace.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "EW-18",
+      "title": "Project instructions, scoped rules, and team initialization",
+      "catalog": "plans/47-feature-tests/editor-and-workspace.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "EW-19",
+      "title": "Function CodeLens: explain, refactor, and write tests",
+      "catalog": "plans/47-feature-tests/editor-and-workspace.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "EW-20",
+      "title": "Explorer file modification decorations",
+      "catalog": "plans/47-feature-tests/editor-and-workspace.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "EW-21",
+      "title": "AI commit detection and commit-signature setting contract",
+      "catalog": "plans/47-feature-tests/editor-and-workspace.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "EW-22",
+      "title": "Settings hub binding, synchronization, and safe message routing",
+      "catalog": "plans/47-feature-tests/editor-and-workspace.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "EW-23",
+      "title": "Localization and language-safe rendering",
+      "catalog": "plans/47-feature-tests/editor-and-workspace.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "EW-24",
+      "title": "Keyboard access, screen readers, contrast, motion, and responsive layout",
+      "catalog": "plans/47-feature-tests/editor-and-workspace.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "EW-25",
+      "title": "Getting started, tips, searchable help, support, and workspace recommendation",
+      "catalog": "plans/47-feature-tests/editor-and-workspace.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "EW-26",
+      "title": "Badges, streaks, milestone prompts, and sharing engagement state",
+      "catalog": "plans/47-feature-tests/editor-and-workspace.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "EW-27",
+      "title": "Remote announcements and model/update notices",
+      "catalog": "plans/47-feature-tests/editor-and-workspace.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "EW-28",
+      "title": "Telemetry, privacy, opt-out, and exported diagnostic content",
+      "catalog": "plans/47-feature-tests/editor-and-workspace.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "EW-29",
+      "title": "Performance instrumentation, debug controls, and bounded resources",
+      "catalog": "plans/47-feature-tests/editor-and-workspace.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "EW-30",
+      "title": "Packaged release, upgrade/recovery, and editor/platform compatibility",
+      "catalog": "plans/47-feature-tests/editor-and-workspace.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-01",
+      "title": "Canvas opening, artifact switching, persistence, and recovery",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-02",
+      "title": "Canvas pages, scaffolds, board navigation, and rail",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-03",
+      "title": "Document editing, selection, text, properties, and structural changes",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-04",
+      "title": "Themes, tokens, device formats, and responsive preview",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-05",
+      "title": "Human ownership pins, concurrent edits, and pin release gap",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-06",
+      "title": "Staged Canvas changes and approval decisions",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-07",
+      "title": "Shared undo/redo, checkpoints, restore, and history integrity",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-08",
+      "title": "Design variants and compare/adopt reachability",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-09",
+      "title": "Canvas agent tools, chat linkage, MCP transport, and scope isolation",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-10",
+      "title": "Canvas comments, agent activity, job cancellation, and diagnostics",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-11",
+      "title": "Canvas compilation, legacy pages, sandbox rendering, and validation",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-12",
+      "title": "Assets, provenance, Figma payload import, and handoff consistency",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-13",
+      "title": "Present and self-contained HTML export",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-14",
+      "title": "Image generation, broker/local routing, and insertion",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-15",
+      "title": "Video generation and mixed media sessions",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-16",
+      "title": "Canvas capability claims: Stitch, Canva, code generation, vision QA, PNG/PDF",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-17",
+      "title": "Canvas credentials and legacy-setting migration",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-18",
+      "title": "Visual Test Dashboard observation and reporting",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-19",
+      "title": "Dev-server discovery, approval, ownership, stop, and restart",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-20",
+      "title": "Agent visual looks, browser interactions, and network policy",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-21",
+      "title": "DeepMyst sign-in, sign-out, URI callback, and account isolation",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-22",
+      "title": "Connections catalog, authorization completion, disconnect, and refresh",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-23",
+      "title": "\u201cUse in local CLIs\u201d MCP configuration reconciliation",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-24",
+      "title": "Brokered MCP discovery, schemas, pins, approval, and execution",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-25",
+      "title": "OpenClaw channels: connection, outbound approval, asks, replies, and queues",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-26",
+      "title": "Desk identity, manual pairing, local roster, and revocation",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-27",
+      "title": "Desk transport, remote status/locate, and presence boundary",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-28",
+      "title": "Desk served work, budgets, security, boards, standups, proposals, and audit",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-29",
+      "title": "Proactive local repository watch lifecycle",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-30",
+      "title": "Proactive cloud responsibilities and insight lifecycle",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-31",
+      "title": "Proactive task briefings and evidence freshness",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-32",
+      "title": "Proactive notifications, deduplication, restart, and quiet periods",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-33",
+      "title": "Proactive checkout and continued-work boundary",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-34",
+      "title": "Plugin catalog, backend capabilities, search, details, and scopes",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-35",
+      "title": "Plugin install/update/toggle/remove, marketplaces, and next-turn activation",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    },
+    {
+      "id": "CI-36",
+      "title": "Active Mode daemon lifecycle, status, integration gating, and polling",
+      "catalog": "plans/47-feature-tests/canvas-and-integrations.md",
+      "executionStatus": "NOT_RUN"
+    }
+  ],
+  "coverage": {
+    "commands": {
+      "mysti.deskPair": [
+        "CI-26"
+      ],
+      "mysti.deskRoster": [
+        "CI-26"
+      ],
+      "mysti.getStarted": [
+        "PC-01",
+        "EW-25"
+      ],
+      "mysti.openChat": [
+        "PC-01",
+        "PC-09",
+        "EW-24"
+      ],
+      "mysti.openInNewTab": [
+        "PC-01",
+        "PC-09",
+        "EW-24"
+      ],
+      "mysti.boostSummary": [
+        "AR-30"
+      ],
+      "mysti.newConversation": [
+        "PC-08",
+        "PC-09"
+      ],
+      "mysti.addToContext": [
+        "EW-01",
+        "EW-02"
+      ],
+      "mysti.clearContext": [
+        "EW-01",
+        "EW-02"
+      ],
+      "mysti.createPersona": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.createSkill": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.createRole": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.reloadAgents": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.importSkills": [
+        "EW-15"
+      ],
+      "mysti.setCoordinatorModel": [
+        "AR-15",
+        "PC-04"
+      ],
+      "mysti.viewMystiMemory": [
+        "AR-24",
+        "AR-25"
+      ],
+      "mysti.revokeCapabilities": [
+        "EW-17"
+      ],
+      "mysti.reviewSkillProposals": [
+        "EW-17"
+      ],
+      "mysti.skillReport": [
+        "EW-17"
+      ],
+      "mysti.updateClis": [
+        "PC-02"
+      ],
+      "mysti.debugSetup": [
+        "PC-02"
+      ],
+      "mysti.debugSetupFailure": [
+        "PC-02"
+      ],
+      "mysti.toggleAutonomous": [
+        "AR-22",
+        "AR-23"
+      ],
+      "mysti.codeLensAction": [
+        "EW-19"
+      ],
+      "mysti.openVisualTestDashboard": [
+        "CI-18",
+        "CI-19"
+      ],
+      "mysti.openCanvas": [
+        "CI-01",
+        "CI-02"
+      ],
+      "mysti.canvasAddScaffold": [
+        "CI-01",
+        "CI-02"
+      ],
+      "mysti.openConnections": [
+        "CI-22"
+      ],
+      "mysti.managePlugins": [
+        "CI-34",
+        "CI-35"
+      ],
+      "mysti.deepmyst.signIn": [
+        "CI-21"
+      ],
+      "mysti.deepmyst.signOut": [
+        "CI-21"
+      ],
+      "mysti.canvasDiagnostics": [
+        "CI-10"
+      ],
+      "mysti.openProactive": [
+        "CI-29",
+        "CI-30",
+        "CI-31",
+        "CI-32",
+        "CI-33"
+      ],
+      "mysti.configureOpenCodeRemote": [
+        "PB-08"
+      ],
+      "mysti.testOpenCodeConnection": [
+        "PB-08"
+      ]
+    },
+    "settings": {
+      "mysti.defaultProvider": [
+        "PC-04",
+        "PC-12"
+      ],
+      "mysti.defaultAgent": [
+        "PC-04",
+        "PC-12"
+      ],
+      "mysti.claudeCodePath": [
+        "PB-01",
+        "PC-02"
+      ],
+      "mysti.codexPath": [
+        "PB-02",
+        "PC-02"
+      ],
+      "mysti.geminiPath": [
+        "PB-03",
+        "PC-02"
+      ],
+      "mysti.clinePath": [
+        "PB-04",
+        "PC-02"
+      ],
+      "mysti.copilotPath": [
+        "PB-05",
+        "PC-02"
+      ],
+      "mysti.cursorPath": [
+        "PB-06",
+        "PC-02"
+      ],
+      "mysti.cursorApiKey": [
+        "PB-06"
+      ],
+      "mysti.openclawPath": [
+        "PB-07",
+        "PC-02"
+      ],
+      "mysti.openclawGatewayUrl": [
+        "PB-07"
+      ],
+      "mysti.openclawUseGateway": [
+        "PB-07"
+      ],
+      "mysti.opencodePath": [
+        "PB-08",
+        "PC-02"
+      ],
+      "mysti.qwenCodePath": [
+        "PB-09",
+        "PC-02"
+      ],
+      "mysti.hermesPath": [
+        "PB-10",
+        "PC-02"
+      ],
+      "mysti.continuePath": [
+        "PB-12",
+        "PC-02"
+      ],
+      "mysti.kimiCodePath": [
+        "PB-11",
+        "PC-02"
+      ],
+      "mysti.ollamaEndpoint": [
+        "PB-13"
+      ],
+      "mysti.ollamaModel": [
+        "PB-13",
+        "PC-04"
+      ],
+      "mysti.ollamaTemperature": [
+        "PB-13"
+      ],
+      "mysti.ollamaContextLength": [
+        "PB-13"
+      ],
+      "mysti.ollamaKeepAlive": [
+        "PB-13"
+      ],
+      "mysti.ollamaRequestTimeout": [
+        "PB-13"
+      ],
+      "mysti.localaiEndpoint": [
+        "PB-14"
+      ],
+      "mysti.localaiModel": [
+        "PB-14",
+        "PC-04"
+      ],
+      "mysti.localaiTemperature": [
+        "PB-14"
+      ],
+      "mysti.localaiMaxTokens": [
+        "PB-14"
+      ],
+      "mysti.localaiApiKey": [
+        "PB-14"
+      ],
+      "mysti.localaiRequestTimeout": [
+        "PB-14"
+      ],
+      "mysti.defaultMode": [
+        "AR-21",
+        "AR-23",
+        "PC-04"
+      ],
+      "mysti.defaultThinkingLevel": [
+        "PC-04",
+        "PC-12"
+      ],
+      "mysti.claudeUltracode": [
+        "PB-01",
+        "PC-04"
+      ],
+      "mysti.defaultEffortLevel": [
+        "PC-04",
+        "PC-12"
+      ],
+      "mysti.updates.notifyNewModels": [
+        "PC-02",
+        "PC-04",
+        "EW-27"
+      ],
+      "mysti.updates.checkCliUpdates": [
+        "PC-02",
+        "PC-04",
+        "EW-27"
+      ],
+      "mysti.defaultModel": [
+        "PC-04",
+        "PC-12"
+      ],
+      "mysti.claudeCodeModel": [
+        "PB-01",
+        "PC-04"
+      ],
+      "mysti.claude.backgroundWaitCeilingMs": [
+        "PB-01"
+      ],
+      "mysti.codexModel": [
+        "PB-02",
+        "PC-04"
+      ],
+      "mysti.codexProfile": [
+        "PB-02",
+        "PC-04"
+      ],
+      "mysti.geminiModel": [
+        "PB-03",
+        "PC-04"
+      ],
+      "mysti.clineModel": [
+        "PB-04",
+        "PC-04"
+      ],
+      "mysti.copilotModel": [
+        "PB-05",
+        "PC-04"
+      ],
+      "mysti.cursorModel": [
+        "PB-06",
+        "PC-04"
+      ],
+      "mysti.openclawModel": [
+        "PB-07",
+        "PC-04"
+      ],
+      "mysti.opencodeModel": [
+        "PB-08",
+        "PC-04"
+      ],
+      "mysti.qwenCodeModel": [
+        "PB-09",
+        "PC-04"
+      ],
+      "mysti.hermesModel": [
+        "PB-10",
+        "PC-04"
+      ],
+      "mysti.continueModel": [
+        "PB-12",
+        "PC-04"
+      ],
+      "mysti.openrouterModel": [
+        "PB-15",
+        "PC-04"
+      ],
+      "mysti.kimiCodeModel": [
+        "PB-11",
+        "PC-04"
+      ],
+      "mysti.customModels": [
+        "PC-04",
+        "PC-12"
+      ],
+      "mysti.codeLens.enabled": [
+        "EW-19"
+      ],
+      "mysti.accessLevel": [
+        "AR-21",
+        "AR-23",
+        "PC-04"
+      ],
+      "mysti.autoContext": [
+        "EW-03"
+      ],
+      "mysti.planDetection.enabled": [
+        "AR-20"
+      ],
+      "mysti.checkpoints.enabled": [
+        "AR-26",
+        "AR-35",
+        "PC-10"
+      ],
+      "mysti.checkpoints.maxFiles": [
+        "AR-26",
+        "AR-35",
+        "PC-10"
+      ],
+      "mysti.checkpoints.maxSnapshots": [
+        "AR-26",
+        "AR-35",
+        "PC-10"
+      ],
+      "mysti.tips.enabled": [
+        "EW-25"
+      ],
+      "mysti.compaction.enabled": [
+        "AR-27",
+        "AR-28"
+      ],
+      "mysti.compaction.threshold": [
+        "AR-27",
+        "AR-28"
+      ],
+      "mysti.compaction.smart.enabled": [
+        "AR-27",
+        "AR-28"
+      ],
+      "mysti.compaction.smart.cheapModel": [
+        "AR-27",
+        "AR-28"
+      ],
+      "mysti.compaction.smart.minSummaryTokens": [
+        "AR-27",
+        "AR-28"
+      ],
+      "mysti.compaction.smart.retrieval.enabled": [
+        "AR-27",
+        "AR-28"
+      ],
+      "mysti.deepmyst.gatewayUrl": [
+        "CI-21",
+        "CI-22",
+        "AR-15"
+      ],
+      "mysti.boost.enabled": [
+        "AR-30"
+      ],
+      "mysti.boost.profile": [
+        "AR-30"
+      ],
+      "mysti.models.autoRefresh": [
+        "PC-04",
+        "PC-12"
+      ],
+      "mysti.mysti.coordinatorModel": [
+        "AR-15"
+      ],
+      "mysti.mysti.freeModels": [
+        "AR-15"
+      ],
+      "mysti.mysti.subagentModel": [
+        "AR-17",
+        "AR-18"
+      ],
+      "mysti.mysti.advisorAgents": [
+        "AR-18"
+      ],
+      "mysti.mysti.advisorModel": [
+        "AR-18"
+      ],
+      "mysti.mysti.paidBudgetPerTurnUsd": [
+        "AR-29",
+        "AR-16"
+      ],
+      "mysti.mysti.maxDelegations": [
+        "AR-16"
+      ],
+      "mysti.mysti.maxTurns": [
+        "AR-16"
+      ],
+      "mysti.mysti.memory": [
+        "AR-24",
+        "AR-25"
+      ],
+      "mysti.mysti.crossReview": [
+        "AR-18"
+      ],
+      "mysti.mysti.verify": [
+        "AR-18"
+      ],
+      "mysti.mysti.localExecution": [
+        "AR-36",
+        "AR-21",
+        "AR-23"
+      ],
+      "mysti.mysti.bashNetwork": [
+        "AR-36",
+        "AR-21",
+        "AR-23"
+      ],
+      "mysti.mysti.skills": [
+        "EW-13",
+        "EW-16",
+        "EW-17",
+        "AR-34"
+      ],
+      "mysti.mysti.mcpTools": [
+        "CI-24",
+        "AR-16"
+      ],
+      "mysti.mysti.maxMcpCalls": [
+        "CI-24",
+        "AR-16"
+      ],
+      "mysti.mysti.fallbackModel": [
+        "AR-15"
+      ],
+      "mysti.openrouter.apiKey": [
+        "PB-15",
+        "AR-15"
+      ],
+      "mysti.openrouter.coordinatorModel": [
+        "PB-15",
+        "PC-04",
+        "AR-15"
+      ],
+      "mysti.deepmyst.apiUrl": [
+        "CI-21",
+        "CI-22",
+        "AR-15"
+      ],
+      "mysti.deepmyst.webUrl": [
+        "CI-21",
+        "CI-22",
+        "AR-15"
+      ],
+      "mysti.deepmyst.useInLocalClis": [
+        "CI-23"
+      ],
+      "mysti.activeMode.enabled": [
+        "CI-36",
+        "CI-25"
+      ],
+      "mysti.activeMode.pollInterval": [
+        "CI-36",
+        "CI-25"
+      ],
+      "mysti.activeMode.activityLimit": [
+        "CI-36",
+        "CI-25"
+      ],
+      "mysti.activeMode.autoStartDaemon": [
+        "CI-36",
+        "CI-25"
+      ],
+      "mysti.lifecycle.enabled": [
+        "AR-32",
+        "PC-07"
+      ],
+      "mysti.lifecycle.idleTimeoutMinutes": [
+        "AR-32",
+        "PC-07"
+      ],
+      "mysti.lifecycle.processTreeTracking": [
+        "AR-32",
+        "PC-07"
+      ],
+      "mysti.lifecycle.protectActiveChildren": [
+        "AR-32",
+        "PC-07"
+      ],
+      "mysti.lifecycle.checkIntervalSeconds": [
+        "AR-32",
+        "PC-07"
+      ],
+      "mysti.showSuggestions": [
+        "EW-08"
+      ],
+      "mysti.brainstorm.enabled": [
+        "AR-05",
+        "AR-06",
+        "AR-07",
+        "AR-08",
+        "AR-09"
+      ],
+      "mysti.brainstorm.strategy": [
+        "AR-05",
+        "AR-06",
+        "AR-07",
+        "AR-08",
+        "AR-09"
+      ],
+      "mysti.brainstorm.discussionMode": [
+        "AR-05",
+        "AR-06",
+        "AR-07",
+        "AR-08",
+        "AR-09"
+      ],
+      "mysti.brainstorm.maxDiscussionRounds": [
+        "AR-05",
+        "AR-06",
+        "AR-07",
+        "AR-08",
+        "AR-09"
+      ],
+      "mysti.brainstorm.discussionRounds": [
+        "AR-05",
+        "AR-06",
+        "AR-07",
+        "AR-08",
+        "AR-09"
+      ],
+      "mysti.brainstorm.autoConverge": [
+        "AR-05",
+        "AR-06",
+        "AR-07",
+        "AR-08",
+        "AR-09"
+      ],
+      "mysti.brainstorm.synthesisAgent": [
+        "AR-05",
+        "AR-06",
+        "AR-07",
+        "AR-08",
+        "AR-09"
+      ],
+      "mysti.brainstorm.agents": [
+        "AR-05",
+        "AR-06",
+        "AR-07",
+        "AR-08",
+        "AR-09"
+      ],
+      "mysti.agents.claudePersona": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.agents.claudeCustomPrompt": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.agents.codexPersona": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.agents.codexCustomPrompt": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.agents.geminiPersona": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.agents.geminiCustomPrompt": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.agents.clinePersona": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.agents.clineCustomPrompt": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.agents.copilotPersona": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.agents.copilotCustomPrompt": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.agents.cursorPersona": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.agents.cursorCustomPrompt": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.agents.openclawPersona": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.agents.openclawCustomPrompt": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.agents.opencodePersona": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.agents.opencodeCustomPrompt": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.agents.ollamaPersona": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.agents.ollamaCustomPrompt": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.agents.localaiPersona": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.agents.localaiCustomPrompt": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.agents.qwenCodePersona": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.agents.qwenCodeCustomPrompt": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.agents.hermesPersona": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.agents.hermesCustomPrompt": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.agents.continuePersona": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.agents.continueCustomPrompt": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.agents.openrouterPersona": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.agents.openrouterCustomPrompt": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.agents.kimiCodePersona": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.agents.kimiCodeCustomPrompt": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.agents.autoSuggest": [
+        "EW-13",
+        "EW-16"
+      ],
+      "mysti.agents.maxTokenBudget": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.agents.skillSources": [
+        "EW-15"
+      ],
+      "mysti.collab.maxConcurrent": [
+        "AR-01",
+        "AR-03",
+        "AR-04",
+        "AR-10",
+        "AR-11",
+        "AR-12"
+      ],
+      "mysti.permission.timeout": [
+        "AR-21",
+        "AR-23",
+        "PC-04"
+      ],
+      "mysti.permission.timeoutBehavior": [
+        "AR-21",
+        "AR-23",
+        "PC-04"
+      ],
+      "mysti.semiAutonomous.timeout": [
+        "AR-22",
+        "AR-23"
+      ],
+      "mysti.useShellForCli": [
+        "PC-02",
+        "PC-07",
+        "EW-30"
+      ],
+      "mysti.debugVerbose": [
+        "EW-28",
+        "EW-29"
+      ],
+      "mysti.debug.performanceLogging": [
+        "EW-28",
+        "EW-29"
+      ],
+      "mysti.autonomous.safetyMode": [
+        "AR-22",
+        "AR-23"
+      ],
+      "mysti.autonomous.maxSessionDuration": [
+        "AR-22",
+        "AR-23"
+      ],
+      "mysti.autonomous.maxMemoryEntries": [
+        "AR-22",
+        "AR-23"
+      ],
+      "mysti.autonomous.blockPatterns": [
+        "AR-22",
+        "AR-23"
+      ],
+      "mysti.autonomous.allowFileCreation": [
+        "AR-22",
+        "AR-23"
+      ],
+      "mysti.autonomous.allowFileEdit": [
+        "AR-22",
+        "AR-23"
+      ],
+      "mysti.autonomous.allowBashCommands": [
+        "AR-22",
+        "AR-23"
+      ],
+      "mysti.autonomous.continuationMode": [
+        "AR-22",
+        "AR-23"
+      ],
+      "mysti.commitSignature.enabled": [
+        "EW-21"
+      ],
+      "mysti.fileDecorations.enabled": [
+        "EW-20"
+      ],
+      "mysti.fileDecorations.duration": [
+        "EW-20"
+      ],
+      "mysti.projectContext.enabled": [
+        "EW-18"
+      ],
+      "mysti.autoMemory.enabled": [
+        "AR-24",
+        "AR-25"
+      ],
+      "mysti.visualTest.enabled": [
+        "CI-18",
+        "CI-19",
+        "CI-20"
+      ],
+      "mysti.visualTest.devServerCommand": [
+        "CI-19"
+      ],
+      "mysti.visualTest.url": [
+        "CI-18",
+        "CI-19",
+        "CI-20"
+      ],
+      "mysti.visualTest.maxIterations": [
+        "CI-18",
+        "CI-19",
+        "CI-20"
+      ],
+      "mysti.visualTest.browser": [
+        "CI-18",
+        "CI-19",
+        "CI-20"
+      ],
+      "mysti.visualTest.headless": [
+        "CI-18",
+        "CI-19",
+        "CI-20"
+      ],
+      "mysti.visualTest.viewportWidth": [
+        "CI-18",
+        "CI-19",
+        "CI-20"
+      ],
+      "mysti.visualTest.viewportHeight": [
+        "CI-18",
+        "CI-19",
+        "CI-20"
+      ],
+      "mysti.visualTest.serverReadyPattern": [
+        "CI-19"
+      ],
+      "mysti.visualTest.allowedOrigins": [
+        "CI-20",
+        "CI-18"
+      ],
+      "mysti.visualTest.allowModelDevServerCommand": [
+        "CI-19"
+      ],
+      "mysti.visualTest.agentInteractions": [
+        "CI-20",
+        "CI-18"
+      ],
+      "mysti.visualTest.interactions": [
+        "CI-20",
+        "CI-18"
+      ],
+      "mysti.desk.enabled": [
+        "CI-26",
+        "CI-27",
+        "CI-28"
+      ],
+      "mysti.desk.serve": [
+        "CI-26",
+        "CI-27",
+        "CI-28"
+      ],
+      "mysti.desk.servingBudgetUsdPerDay": [
+        "CI-26",
+        "CI-27",
+        "CI-28"
+      ],
+      "mysti.desk.minRetentionClass": [
+        "CI-26",
+        "CI-27",
+        "CI-28"
+      ],
+      "mysti.mysti.visualTools": [
+        "CI-20"
+      ],
+      "mysti.mysti.maxVisualLooks": [
+        "CI-20"
+      ],
+      "mysti.canvas.imageGenerationProvider": [
+        "CI-14",
+        "CI-16"
+      ],
+      "mysti.canvas.videoGenerationProvider": [
+        "CI-15",
+        "CI-16"
+      ],
+      "mysti.canvas.openaiApiKey": [
+        "CI-17"
+      ],
+      "mysti.canvas.geminiApiKey": [
+        "CI-17"
+      ],
+      "mysti.canvas.stitchApiKey": [
+        "CI-17"
+      ],
+      "mysti.canvas.stitchModel": [
+        "CI-16",
+        "CI-17"
+      ],
+      "mysti.canvas.stitchCreativeRange": [
+        "CI-16",
+        "CI-17"
+      ],
+      "mysti.minimaxBaseUrl": [
+        "PB-16"
+      ],
+      "mysti.minimaxModel": [
+        "PB-16",
+        "PC-04"
+      ],
+      "mysti.minimaxTemperature": [
+        "PB-16"
+      ],
+      "mysti.minimaxMaxTokens": [
+        "PB-16"
+      ],
+      "mysti.minimaxRequestTimeout": [
+        "PB-16"
+      ],
+      "mysti.agents.minimaxPersona": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.agents.minimaxCustomPrompt": [
+        "EW-13",
+        "EW-14"
+      ],
+      "mysti.opencodeEndpoint": [
+        "PB-08"
+      ],
+      "mysti.opencodeRemoteDirectory": [
+        "PB-08"
+      ],
+      "mysti.opencodeRemoteUsername": [
+        "PB-08"
+      ]
+    },
+    "chatActions": {
+      "addContextUris": [
+        "EW-01",
+        "EW-06"
+      ],
+      "startDictation": [
+        "EW-10"
+      ],
+      "finishDictation": [
+        "EW-10"
+      ],
+      "cancelDictation": [
+        "EW-10"
+      ],
+      "dictationSettings": [
+        "EW-10"
+      ],
+      "installDictationSupport": [
+        "EW-10"
+      ],
+      "sendMessage": [
+        "PC-05",
+        "PC-06",
+        "PC-09"
+      ],
+      "startSession": [
+        "AR-10",
+        "AR-11",
+        "AR-12",
+        "AR-13",
+        "AR-14"
+      ],
+      "stopSessionLane": [
+        "AR-10",
+        "AR-11",
+        "AR-12",
+        "AR-13",
+        "AR-14"
+      ],
+      "quickActionWithConfig": [
+        "EW-08"
+      ],
+      "executeQuickAction": [
+        "EW-08"
+      ],
+      "executeSuggestion": [
+        "EW-08"
+      ],
+      "cancelRequest": [
+        "PC-07",
+        "AR-32"
+      ],
+      "clearSession": [
+        "PC-07",
+        "AR-32"
+      ],
+      "shutdownAgent": [
+        "PC-07",
+        "AR-32"
+      ],
+      "cancelJob": [
+        "AR-31",
+        "AR-33"
+      ],
+      "requestJobs": [
+        "AR-31",
+        "AR-33"
+      ],
+      "openSettingKey": [
+        "EW-22",
+        "PC-04"
+      ],
+      "openSettingsHub": [
+        "EW-22",
+        "PC-04"
+      ],
+      "updateSettings": [
+        "EW-22",
+        "PC-04"
+      ],
+      "signInDeepMyst": [
+        "CI-21",
+        "AR-15"
+      ],
+      "signInDeepMystAgain": [
+        "CI-21",
+        "AR-15"
+      ],
+      "openDeepMystSignup": [
+        "CI-21",
+        "AR-15"
+      ],
+      "openDeepMystBilling": [
+        "CI-21",
+        "AR-15"
+      ],
+      "openOpenRouterSettings": [
+        "PB-15",
+        "AR-15"
+      ],
+      "switchAgentAndRetry": [
+        "PC-03",
+        "PC-04",
+        "PC-07"
+      ],
+      "retrySubAgent": [
+        "AR-04",
+        "AR-17",
+        "AR-18"
+      ],
+      "sendBrainstormMessage": [
+        "AR-05",
+        "AR-06",
+        "AR-07",
+        "AR-08",
+        "AR-09"
+      ],
+      "addToContext": [
+        "EW-01",
+        "EW-02"
+      ],
+      "addContextPaths": [
+        "EW-01",
+        "EW-02"
+      ],
+      "addContextFile": [
+        "EW-01",
+        "EW-02"
+      ],
+      "requestFileAttachment": [
+        "EW-05",
+        "EW-06"
+      ],
+      "removeFromContext": [
+        "EW-02"
+      ],
+      "setContextItemEnabled": [
+        "EW-02"
+      ],
+      "clearContext": [
+        "EW-02"
+      ],
+      "requestSlashCommands": [
+        "EW-11",
+        "EW-12"
+      ],
+      "executeSlashCommand": [
+        "EW-11",
+        "EW-12"
+      ],
+      "requestModels": [
+        "PC-04"
+      ],
+      "requestCustomModel": [
+        "PC-04"
+      ],
+      "requestSessionChanges": [
+        "AR-26",
+        "AR-35",
+        "PC-05"
+      ],
+      "requestUpdateStatus": [
+        "PC-04",
+        "EW-27"
+      ],
+      "selectAnnouncedModel": [
+        "PC-04",
+        "EW-27"
+      ],
+      "dismissModelAnnouncement": [
+        "PC-04",
+        "EW-27"
+      ],
+      "runCliUpdate": [
+        "PC-02"
+      ],
+      "upgradeModelCli": [
+        "PC-02"
+      ],
+      "requestAgentLists": [
+        "EW-13",
+        "EW-14"
+      ],
+      "updateAgentConfig": [
+        "EW-13",
+        "EW-14"
+      ],
+      "getAgentDetails": [
+        "EW-13",
+        "EW-14"
+      ],
+      "openExternal": [
+        "EW-25",
+        "EW-28"
+      ],
+      "enhancePrompt": [
+        "EW-09"
+      ],
+      "deskRequestRoster": [
+        "CI-26"
+      ],
+      "deskCreateInvite": [
+        "CI-26"
+      ],
+      "deskPairBegin": [
+        "CI-26"
+      ],
+      "deskPairVerify": [
+        "CI-26"
+      ],
+      "deskPairFinish": [
+        "CI-26"
+      ],
+      "deskPairCancel": [
+        "CI-26"
+      ],
+      "deskRevoke": [
+        "CI-26"
+      ],
+      "newConversation": [
+        "PC-08",
+        "PC-09"
+      ],
+      "getConversationHistory": [
+        "PC-08",
+        "PC-09"
+      ],
+      "switchConversation": [
+        "PC-08",
+        "PC-09"
+      ],
+      "deleteConversation": [
+        "PC-08",
+        "PC-09"
+      ],
+      "manualCompact": [
+        "AR-27",
+        "AR-28"
+      ],
+      "requestPermission": [
+        "AR-21",
+        "AR-23"
+      ],
+      "permissionResponse": [
+        "AR-21",
+        "AR-23"
+      ],
+      "permissionCustomInstruction": [
+        "AR-21",
+        "AR-23"
+      ],
+      "inAppMessageAction": [
+        "EW-27"
+      ],
+      "planOptionSelected": [
+        "AR-20"
+      ],
+      "planOptionsSkipped": [
+        "AR-20"
+      ],
+      "questionAnswered": [
+        "AR-04",
+        "AR-21",
+        "AR-23"
+      ],
+      "askUserQuestionResponse": [
+        "AR-04",
+        "AR-21",
+        "AR-23"
+      ],
+      "askUserQuestionSkipped": [
+        "AR-04",
+        "AR-21",
+        "AR-23"
+      ],
+      "subAgentQuestionResponse": [
+        "AR-04",
+        "AR-21",
+        "AR-23"
+      ],
+      "subAgentQuestionSkipped": [
+        "AR-04",
+        "AR-21",
+        "AR-23"
+      ],
+      "openFile": [
+        "PC-05"
+      ],
+      "applyEdit": [
+        "PC-05"
+      ],
+      "copyToClipboard": [
+        "PC-05"
+      ],
+      "revertFileEdit": [
+        "PC-05"
+      ],
+      "getFileLineNumber": [
+        "PC-05"
+      ],
+      "getWorkspaceFiles": [
+        "EW-04",
+        "EW-07"
+      ],
+      "openInNewTab": [
+        "PC-09",
+        "EW-24"
+      ],
+      "openProactive": [
+        "CI-29",
+        "CI-30",
+        "CI-31",
+        "CI-32",
+        "CI-33"
+      ],
+      "openConnections": [
+        "CI-22"
+      ],
+      "connectService": [
+        "CI-22"
+      ],
+      "openPlugins": [
+        "CI-34",
+        "CI-35"
+      ],
+      "setCoordinatorModel": [
+        "AR-15",
+        "PC-04"
+      ],
+      "checkSetup": [
+        "PC-01",
+        "PC-02",
+        "PC-03"
+      ],
+      "retrySetup": [
+        "PC-01",
+        "PC-02",
+        "PC-03"
+      ],
+      "authConfirm": [
+        "PC-01",
+        "PC-02",
+        "PC-03"
+      ],
+      "authSkip": [
+        "PC-01",
+        "PC-02",
+        "PC-03"
+      ],
+      "skipSetup": [
+        "PC-01",
+        "PC-02",
+        "PC-03"
+      ],
+      "requestWizardStatus": [
+        "PC-01",
+        "PC-02",
+        "PC-03"
+      ],
+      "startProviderSetup": [
+        "PC-01",
+        "PC-02",
+        "PC-03"
+      ],
+      "selectAuthMethod": [
+        "PC-01",
+        "PC-02",
+        "PC-03"
+      ],
+      "selectProvider": [
+        "PC-01",
+        "PC-02",
+        "PC-03"
+      ],
+      "dismissWizard": [
+        "PC-01",
+        "PC-02",
+        "PC-03"
+      ],
+      "refreshProviderDetection": [
+        "PC-01",
+        "PC-02",
+        "PC-03"
+      ],
+      "runDiagnostics": [
+        "PC-01",
+        "PC-02",
+        "PC-03"
+      ],
+      "openTerminal": [
+        "PC-01",
+        "PC-02",
+        "PC-03"
+      ],
+      "requestProviderInstallInfo": [
+        "PC-01",
+        "PC-02",
+        "PC-03"
+      ],
+      "tipSeen": [
+        "EW-25",
+        "PC-01"
+      ],
+      "tipsOff": [
+        "EW-25",
+        "PC-01"
+      ],
+      "hideGettingStarted": [
+        "EW-25",
+        "PC-01"
+      ],
+      "openWalkthrough": [
+        "EW-25",
+        "PC-01"
+      ],
+      "requestOnboarding": [
+        "EW-25",
+        "PC-01"
+      ],
+      "forkConversation": [
+        "PC-10"
+      ],
+      "rewindToCheckpoint": [
+        "PC-10",
+        "AR-26",
+        "AR-35"
+      ],
+      "forkAndRewind": [
+        "PC-10",
+        "AR-26",
+        "AR-35"
+      ],
+      "getAgentRecommendations": [
+        "EW-16",
+        "EW-25"
+      ],
+      "createAgent": [
+        "EW-14"
+      ],
+      "reloadAgents": [
+        "EW-14"
+      ],
+      "importSkills": [
+        "EW-15"
+      ],
+      "toggleAutonomous": [
+        "AR-22",
+        "AR-23",
+        "AR-21"
+      ],
+      "confirmAutonomousActivation": [
+        "AR-22",
+        "AR-23",
+        "AR-21"
+      ],
+      "cancelAutonomousActivation": [
+        "AR-22",
+        "AR-23",
+        "AR-21"
+      ],
+      "deactivateAutonomous": [
+        "AR-22",
+        "AR-23",
+        "AR-21"
+      ],
+      "autonomyLevelChanged": [
+        "AR-22",
+        "AR-23",
+        "AR-21"
+      ],
+      "getAuditLog": [
+        "AR-22",
+        "AR-23",
+        "AR-21"
+      ],
+      "getAutonomousStats": [
+        "AR-22",
+        "AR-23",
+        "AR-21"
+      ],
+      "connectChannel": [
+        "CI-25"
+      ],
+      "disconnectChannel": [
+        "CI-25"
+      ],
+      "toggleIntegration": [
+        "CI-36",
+        "CI-25"
+      ],
+      "refreshActiveMode": [
+        "CI-36",
+        "CI-25"
+      ],
+      "startDaemon": [
+        "CI-36",
+        "CI-25"
+      ],
+      "requestBadges": [
+        "EW-26"
+      ],
+      "getBadgeShareText": [
+        "EW-26"
+      ],
+      "exportConversation": [
+        "PC-11"
+      ],
+      "copyMessageMarkdown": [
+        "PC-11"
+      ],
+      "exportToFile": [
+        "PC-11"
+      ],
+      "importFromFile": [
+        "PC-11"
+      ],
+      "triggerShareLink": [
+        "PC-11"
+      ],
+      "triggerInitTeam": [
+        "EW-18"
+      ],
+      "triggerOpenRules": [
+        "EW-18"
+      ],
+      "triggerOpenMemory": [
+        "AR-24",
+        "AR-25",
+        "EW-18"
+      ],
+      "startVisualTest": [
+        "CI-18",
+        "CI-20"
+      ],
+      "openVisualTestDashboard": [
+        "CI-18",
+        "CI-20"
+      ],
+      "cancelVisualTest": [
+        "CI-18",
+        "CI-20"
+      ],
+      "getVisualTestReport": [
+        "CI-18",
+        "CI-20"
+      ],
+      "openCanvas": [
+        "CI-01"
+      ],
+      "stopVisualTestServer": [
+        "CI-19"
+      ],
+      "uiReady": [
+        "EW-29"
+      ],
+      "perfMark": [
+        "EW-29"
+      ],
+      "perfReport": [
+        "EW-29"
+      ]
+    },
+    "providers": {
+      "claude-code": [
+        "PB-01",
+        "PC-12"
+      ],
+      "openai-codex": [
+        "PB-02",
+        "PC-12"
+      ],
+      "google-gemini": [
+        "PB-03",
+        "PC-12"
+      ],
+      "cline": [
+        "PB-04",
+        "PC-12"
+      ],
+      "github-copilot": [
+        "PB-05",
+        "PC-12"
+      ],
+      "cursor": [
+        "PB-06",
+        "PC-12"
+      ],
+      "openclaw": [
+        "PB-07",
+        "PC-12"
+      ],
+      "opencode": [
+        "PB-08",
+        "PC-12"
+      ],
+      "ollama": [
+        "PB-13",
+        "PC-12"
+      ],
+      "localai": [
+        "PB-14",
+        "PC-12"
+      ],
+      "qwen-code": [
+        "PB-09",
+        "PC-12"
+      ],
+      "hermes": [
+        "PB-10",
+        "PC-12"
+      ],
+      "continue": [
+        "PB-12",
+        "PC-12"
+      ],
+      "minimax": [
+        "PB-16",
+        "PC-12"
+      ],
+      "openrouter": [
+        "PB-15",
+        "PC-12"
+      ],
+      "kimi-code": [
+        "PB-11",
+        "PC-12"
+      ]
+    },
+    "canvasOperations": {
+      "page.add": [
+        "CI-02",
+        "CI-06",
+        "CI-07"
+      ],
+      "page.remove": [
+        "CI-02",
+        "CI-06",
+        "CI-07"
+      ],
+      "page.duplicate": [
+        "CI-02",
+        "CI-06",
+        "CI-07"
+      ],
+      "page.setMeta": [
+        "CI-02",
+        "CI-06",
+        "CI-07"
+      ],
+      "page.move": [
+        "CI-02",
+        "CI-06",
+        "CI-07"
+      ],
+      "page.reorder": [
+        "CI-02",
+        "CI-06",
+        "CI-07"
+      ],
+      "page.setDoc": [
+        "CI-03",
+        "CI-06",
+        "CI-07"
+      ],
+      "el.setText": [
+        "CI-03",
+        "CI-06",
+        "CI-07"
+      ],
+      "el.setStyle": [
+        "CI-03",
+        "CI-06",
+        "CI-07"
+      ],
+      "el.setProp": [
+        "CI-03",
+        "CI-06",
+        "CI-07"
+      ],
+      "el.insert": [
+        "CI-03",
+        "CI-06",
+        "CI-07"
+      ],
+      "el.remove": [
+        "CI-03",
+        "CI-06",
+        "CI-07"
+      ],
+      "el.move": [
+        "CI-03",
+        "CI-06",
+        "CI-07"
+      ],
+      "el.replace": [
+        "CI-03",
+        "CI-06",
+        "CI-07"
+      ],
+      "theme.set": [
+        "CI-04",
+        "CI-06",
+        "CI-07"
+      ],
+      "theme.setToken": [
+        "CI-04",
+        "CI-06",
+        "CI-07"
+      ],
+      "artifact.setFormat": [
+        "CI-04",
+        "CI-06",
+        "CI-07"
+      ],
+      "asset.add": [
+        "CI-12",
+        "CI-06",
+        "CI-07"
+      ]
+    },
+    "sessionShapes": {
+      "review": [
+        "AR-10"
+      ],
+      "panel": [
+        "AR-11"
+      ],
+      "critique": [
+        "AR-12"
+      ],
+      "race": [
+        "AR-13"
+      ],
+      "brainstorm": [
+        "AR-14"
+      ]
+    },
+    "slashAliases": {
+      "clear": [
+        "EW-11",
+        "PC-07"
+      ],
+      "help": [
+        "EW-11",
+        "EW-25"
+      ],
+      "context": [
+        "EW-11",
+        "EW-02"
+      ],
+      "mode": [
+        "EW-11",
+        "AR-21",
+        "AR-23"
+      ],
+      "model": [
+        "EW-11",
+        "PC-04"
+      ],
+      "agent": [
+        "EW-11",
+        "PC-04"
+      ],
+      "brainstorm": [
+        "EW-11",
+        "AR-14"
+      ],
+      "review": [
+        "EW-11",
+        "AR-10"
+      ],
+      "panel": [
+        "EW-11",
+        "AR-11"
+      ],
+      "critique": [
+        "EW-11",
+        "AR-12"
+      ],
+      "race": [
+        "EW-11",
+        "AR-13"
+      ],
+      "exit-plan-mode": [
+        "EW-11",
+        "AR-20"
+      ],
+      "exit-plan": [
+        "EW-11",
+        "AR-20"
+      ],
+      "compact": [
+        "EW-11",
+        "AR-27",
+        "AR-28"
+      ],
+      "export": [
+        "EW-11",
+        "PC-11"
+      ],
+      "import": [
+        "EW-11",
+        "PC-11"
+      ],
+      "share": [
+        "EW-11",
+        "PC-11"
+      ],
+      "init-team": [
+        "EW-11",
+        "EW-18"
+      ],
+      "memory": [
+        "EW-11",
+        "AR-24",
+        "AR-25"
+      ],
+      "rules": [
+        "EW-11",
+        "EW-18"
+      ],
+      "visual-test": [
+        "EW-11",
+        "CI-18"
+      ],
+      "update": [
+        "EW-11",
+        "PC-02"
+      ],
+      "update-clis": [
+        "EW-11",
+        "PC-02"
+      ],
+      "canvas": [
+        "EW-11",
+        "CI-01"
+      ]
+    },
+    "coreAssets": {
+      "personas/accessibility-advocate.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "personas/architect.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "personas/builder.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "personas/canvas-designer.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "personas/code-reviewer.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "personas/data-engineer.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "personas/debugger.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "personas/designer.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "personas/devops.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "personas/domain-expert.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "personas/fullstack.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "personas/integrator.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "personas/mentor.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "personas/performance.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "personas/product-centric.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "personas/prototyper.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "personas/refactorer.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "personas/researcher.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "personas/security.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "personas/toolsmith.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "roles/advisor.md": [
+        "EW-13",
+        "EW-16",
+        "AR-03"
+      ],
+      "roles/collaborator.md": [
+        "EW-13",
+        "EW-16",
+        "AR-03"
+      ],
+      "roles/coworker.md": [
+        "EW-13",
+        "EW-16",
+        "AR-03"
+      ],
+      "roles/critic.md": [
+        "EW-13",
+        "EW-16",
+        "AR-03"
+      ],
+      "roles/reviewer.md": [
+        "EW-13",
+        "EW-16",
+        "AR-03"
+      ],
+      "roles/second-opinion.md": [
+        "EW-13",
+        "EW-16",
+        "AR-03"
+      ],
+      "skills/api-design-first.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "skills/auto-commit.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "skills/auto-compact.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "skills/canvas-design.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "skills/concise.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "skills/dependency-aware.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "skills/doc-reflexes.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "skills/first-principles.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "skills/graceful-degradation.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "skills/observability.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "skills/organized.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "skills/repo-hygiene.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "skills/rollback-ready.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "skills/scope-discipline.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "skills/secure-coding.md": [
+        "EW-13",
+        "EW-16"
+      ],
+      "skills/test-driven.md": [
+        "EW-13",
+        "EW-16"
+      ]
+    }
+  },
+  "counts": {
+    "commands": 35,
+    "settings": 199,
+    "chatActions": 141,
+    "providers": 16,
+    "canvasOperations": 18,
+    "sessionShapes": 5,
+    "slashAliases": 24,
+    "coreAssets": 42
+  },
+  "manualReviewSurfaces": [
+    "Canvas typed protocol, tool surface and production UI",
+    "Connections, Proactive, Plugins and Desk production handlers",
+    "Provider-specific capability contracts and all registered transports",
+    "Bundled agent assets and dynamic native slash command discovery",
+    "Settings hub, editor contributions, onboarding, accessibility and privacy",
+    "Unwired source modules and documentation/implementation contract gaps"
+  ],
+  "limitations": [
+    "Identifier coverage proves a plan mapping, not correct implementation or successful test execution.",
+    "Dynamic/native/tool catalogs must also be enumerated from the exact installed runtime during execution.",
+    "No all-feature stability certification until mandatory real and long-duration case results exist."
+  ]
+}

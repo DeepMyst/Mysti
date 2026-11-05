@@ -7,11 +7,12 @@ import { chromium, type Browser, type Page, type Frame } from 'playwright';
 import { installCodexF2Observer } from './codex-f2-observer';
 import { effortDom, assertLowEffort, selectLowEffort } from './codex-profile-compatibility-explicit-effort';
 const repo = process.env.MYSTI_PB02_F2_REPO || path.resolve(__dirname, '..');
-const contract = require(path.join(repo, 'scripts/validation/codex-f2-campaign.cjs'));
-const { assertToolOutputProjection } = require(path.join(repo, 'scripts/validation/codex-full-oracle.cjs'));
-const { joinNativeAssistantMessages } = require(path.join(repo, 'scripts/validation/audit-vscode-codex-helper-quality.cjs'));
 
 if (process.env.MYSTI_PB02_F2 === '1') {
+  // Native campaign imports may resolve pinned local evidence; require opt-in first.
+  const contract = require(path.join(repo, 'scripts/validation/codex-f2-campaign.cjs'));
+  const { assertToolOutputProjection } = require(path.join(repo, 'scripts/validation/codex-full-oracle.cjs'));
+  const { joinNativeAssistantMessages } = require(path.join(repo, 'scripts/validation/audit-vscode-codex-helper-quality.cjs'));
   describe('PB-02 actual F2 short-session segment', function () {
     this.timeout(3_900_000);
     let manifest: any, owner: any, campaign: any, browser: Browser, workbench: Page, frame: Frame;

@@ -1,6 +1,6 @@
 # Mysti Features Guide
 
-Feature reference for Mysti 2.0 BETA. Start with [Getting started](GETTING-STARTED.md); see [release notes](releases/2.0-beta/RELEASE-NOTES.md) for beta scope.
+Feature reference for Mysti 2.0.1 Beta 2. Start with [Getting started](GETTING-STARTED.md), watch the [feature recordings](DEMO_GALLERY.md), and see [release notes](releases/2.0.1-beta.2/RELEASE-NOTES.md) and [production readiness](PRODUCTION_READINESS.md) for scope and remaining validation.
 
 Explicit agent assignments now honor every tagged provider. Independent advisory work can run in parallel; dependent handoffs and writers serialize. The [assignment guide](MENTIONS.md) is the authoritative syntax and behavior reference.
 
@@ -61,11 +61,34 @@ Add relevant code context to improve AI responses.
 - Right-click selected code in Editor -> "Add to Mysti Context"
 - Use `@filename` mentions for transient file context
 
+Dropping local file links into the Context panel keeps their contents available across messages in that chat. Invalid links and unreadable files show a warning; valid files in the same drop are still added. If a drop supplies file bytes without disk paths, Mysti explains that it uses them as message attachments instead. A file-link-only drop into the composer shows guidance to use Context or Attach.
+
+Adding a folder considers at most the first 20 files encountered. Reaching this limit shows a notice that more files may remain; use **+ Add** for additional individual files. Files already in Context and unreadable files still count toward the limit. An unreadable subfolder does not prevent readable siblings from being added, and failed files or folders are named in the warning. Folder scans skip symbolic links and the common generated directories `node_modules`, `.git`, `dist`, `build`, `.next`, and `__pycache__`; this is not full `.gitignore` filtering.
+
+Each folder addition also examines at most 200 folders and 10,000 directory entries, including ignored entries. A scan that reaches either work limit reports that more files may remain; add a smaller folder or individual files to include them. Complete listings use filename order within each folder. If a large listing is interrupted by the entry limit, only entries already observed are considered, so the result may be a partial selection. Directory reads use bounded batches and close before descending or after cancellation.
+
+Files added to Context must be UTF-8 text without NUL bytes and no larger than 10 MiB each. Empty files, Unicode and a UTF-8 BOM are preserved. Files that grow past the limit during reading are rejected. Adding or restoring a rejected file shows the reason and keeps other valid files; use message attachments for binary files. Saved file context is validated again on restoration. These file rules do not change selected editor-text snapshots.
+
+Enabled files already in the panel's Context are reread while preparing each new request, including sessions and brainstorms. Missing or rejected files are removed with a warning; other files remain. Disabling a file excludes it from the prompt. Clearing or removing context during a refresh cancels that submission. The submitted list stays fixed during preparation, so adding another file affects the next request. Selected text, earlier messages, second opinions and internally supplied task snapshots keep their captured contents. Files are read once for a request; later collaboration rounds reuse those bytes.
+
+If a submitted message is cancelled or rejected before it reaches conversation history, an **Unsent message** card keeps its text and message attachments in that conversation. **Restore draft** makes them editable again once the composer is free; it never sends automatically or replaces a newer draft. Session briefs are restored as their slash command. **Dismiss** removes the saved submission. These recovery cards are held only for the current view's lifetime, including navigation away and back; closing or reloading the view discards them. Messages already recorded in history remain there instead of becoming recovery cards.
+
 **Auto-Context:**
-When enabled (`mysti.autoContext: true`), Mysti automatically tracks your active editor and includes relevant context.
+When enabled (`mysti.autoContext: true`), a direct provider message includes the current selection, or the whole unsaved buffer when nothing is selected. A detached chat remembers the editor used when opening or entering that chat, while it remains visible and open. Switching between chats preserves each chat's editor choice. Changing conversation clears that remembered choice.
+
+The text is captured when you submit and follows that request through Mysti coordination, collaboration, user-started sessions, and explicitly requested background jobs. Explicit context for the same file takes precedence, including a disabled attachment. Automatic snapshots are not saved as attachments or reused by second opinions. Disabling Auto Context is rechecked at the final provider send, after preparation, connection and credential waits, including coordinator retries, collaborator question replies, and later session rounds. Obsolete requests are cancelled before sending. Internally started session tasks use their supplied context without acquiring the current editor.
+
+Selection labels use one-based line numbers. A selection ending at the start of the next line excludes that empty final line from its label; older saved selections without an end column retain their recorded final line.
 
 **Per-Panel Isolation:**
 Each chat panel (sidebar or tab) maintains its own independent context. Adding a file to one panel doesn't affect others.
+
+**File Picker Attachments:**
+The attachment picker accepts up to 10 MiB (10,485,760 bytes) per file. A file that grows beyond that limit while being read is omitted with a warning; other valid files in the selection remain available. Attachment size reflects the bytes actually captured. Changing conversation, replacing the panel or sending the draft during a pending read discards that old selection. Provider attachment capabilities still apply.
+Captured file contents, including empty files, are prepared for CLI providers independently of later changes to or deletion of the source file. Second opinions can reuse an empty attachment when its captured bytes are still available; a missing payload is not inferred from size metadata.
+
+**Pasted and Dropped Attachments:**
+The composer accepts up to ten attachments, including files still loading. Pasted and dropped images are limited to 5 MiB each; other files are limited to 10 MiB. Loading files show a removable preview. Sending or queueing that draft waits until its files finish loading or are removed. Switching conversations cancels unfinished reads; delayed results cannot populate another conversation. Read failures show a message and leave other attachments available. Queued turns and second opinions keep their own attachments while a separate draft loads.
 
 ### Conversation Management
 
@@ -97,7 +120,7 @@ Mysti offers its coordinator plus 16 registered backends through CLI, ACP, WebSo
 | **OpenCode** | Configurable model backends |
 | **Qwen Code** | Coding CLI |
 | **Hermes** | ACP agent with native approval requests |
-| **Kimi Code** | ACP agent with native approval requests |
+| **Kimi Code** | ACP agent with confirmed session model selection; requires explicit Full Access |
 | **Continue** | Configurable CLI workflows |
 | **Ollama** | Local inference; tool proposals are displayed, not executed |
 | **LocalAI** | Self-hosted inference; tool proposals are displayed, not executed |
@@ -187,6 +210,8 @@ Route tasks to specific agents and reference files inline. See [MENTIONS.md](MEN
 ```
 
 Adds the file as transient context (not persisted).
+
+Selecting a file from the suggestions inserts its full path in quotes, preserving the selected file through draft edits and queued sends. Typed names such as `@utils.ts` must identify one workspace file; if several files match, choose a suggestion or use a full path. Use quotes for spaces or Unicode, for example `@"src/retry contract.ts"`.
 
 ### Agent Mentions
 

@@ -1,0 +1,252 @@
+{
+  "date": "2026-10-09",
+  "timezone": "Asia/Amman",
+  "baseCommit": "a3d9338",
+  "scope": "Conversational reliability review with actual provider inference, disposable developer repositories, shipped Chromium webviews, and a real VS Code extension host.",
+  "environment": {
+    "platform": "macOS arm64",
+    "developmentNode": "22.23.3 (.nvmrc)",
+    "vscode": "1.141.0",
+    "cliVersions": {
+      "claude": "2.1.288",
+      "codex": "0.153.4",
+      "copilot": "1.0.90",
+      "gemini": "0.58.0"
+    }
+  },
+  "automatedVerification": {
+    "baseline": {
+      "files": 452,
+      "tests": 13967,
+      "status": "passed"
+    },
+    "final": {
+      "status": "passed",
+      "files": 457,
+      "tests": 14017,
+      "skipped": 0,
+      "addedRegressionTests": 50,
+      "node": "22.23.3",
+      "workers": 2,
+      "requireBrowser": true,
+      "durationSeconds": 148.34
+    },
+    "editor": {
+      "status": "passed",
+      "latestFullRun": {
+        "passed": 14,
+        "failed": 0,
+        "includesLiveProviders": true,
+        "productionBuild": "final"
+      },
+      "finalFixtureFocusedRun": {
+        "passed": 3,
+        "failed": 0,
+        "scope": "Dictation followed by deterministic conversation journey with a deliberate editor focus change."
+      },
+      "liveProviderJourneys": "passed",
+      "harnessChanges": "Wait for the specific chat tab-open event, exclude pre-existing frames, reveal the recorded editor tab before composer actions, and use always-available Brainstorm/Mysti for the ordinary draft-preservation test. Live suites separately exercise Claude/Codex.",
+      "investigation": "An earlier full run had one intermittent 30-second frame-discovery timeout. Diagnostics did not reproduce that exact timeout. Focus probes established asynchronous tab creation, inner DOM visibility differing from editor selection, and agent availability depending on prior test configuration. The final fixture removes those assumptions; no timeout increase or retry was added."
+    },
+    "typecheck": {
+      "status": "passed",
+      "command": "tsc --noEmit"
+    },
+    "lint": {
+      "status": "passed",
+      "errors": 0,
+      "existingWarnings": 467
+    },
+    "releasePackage": {
+      "status": "passed",
+      "artifact": "mysti-2.0.0.vsix",
+      "packageShape": "passed",
+      "published": false
+    },
+    "subprocess": {
+      "status": "passed",
+      "tests": 3,
+      "scope": "Real disposable Copilot-style wrapper/native processes: Stop, recovery, pause/resume, frozen child termination and escalation after launcher exit."
+    }
+  },
+  "liveScenarios": [
+    {
+      "scenario": "Claude and Codex independently find the bug, then remember a follow-up constraint",
+      "status": "passed",
+      "turns": 2
+    },
+    {
+      "scenario": "Claude implements, Codex reviews the handoff, then Codex handles a revised requirement",
+      "status": "passed",
+      "turns": 2
+    },
+    {
+      "scenario": "separate conversation panels keep their context after switching providers",
+      "status": "passed",
+      "turns": 4
+    },
+    {
+      "scenario": "google-gemini joins Claude and Codex for an attributed three-agent review",
+      "status": "failed",
+      "availability": {
+        "found": true,
+        "authenticated": true
+      },
+      "turns": 1
+    },
+    {
+      "scenario": "cursor joins Claude and Codex for an attributed three-agent review",
+      "status": "failed",
+      "availability": {
+        "found": true,
+        "authenticated": true
+      },
+      "turns": 1
+    },
+    {
+      "scenario": "Quick Brainstorm obtains both real analyses and a synthesis",
+      "status": "passed",
+      "turns": 0
+    },
+    {
+      "scenario": "opencode joins Claude and Codex for an attributed three-agent review",
+      "status": "skipped",
+      "reason": "opencode is not installed/authenticated",
+      "availability": {
+        "found": true,
+        "authenticated": false
+      },
+      "turns": 0
+    },
+    {
+      "scenario": "qwen-code joins Claude and Codex for an attributed three-agent review",
+      "status": "skipped",
+      "reason": "qwen-code is not installed/authenticated",
+      "availability": {
+        "found": true,
+        "authenticated": false
+      },
+      "turns": 0
+    },
+    {
+      "scenario": "Stop cancels a real approval, prevents the queued writer, and permits the next turn",
+      "status": "passed",
+      "turns": 1
+    },
+    {
+      "scenario": "github-copilot joins Claude and Codex for an attributed three-agent review",
+      "status": "passed",
+      "availability": {
+        "found": true,
+        "authenticated": true
+      },
+      "turns": 1
+    }
+  ],
+  "otherLiveChecks": [
+    {
+      "scenario": "Claude and Codex transport, two-turn recall, process restart, denied/approved edits, Stop/recovery and read-only enforcement",
+      "tests": 2,
+      "status": "passed",
+      "source": "tests-live/providers.test.ts"
+    },
+    {
+      "scenario": "Claude and Codex read both text and image attachments",
+      "tests": 2,
+      "status": "passed",
+      "source": "tests-live/menuAttachments.test.ts"
+    },
+    {
+      "scenario": "Actual editor: Claude and Codex each remember prior turns and enforce real Deny/Allow cards",
+      "tests": 2,
+      "status": "passed",
+      "source": "tests-vscode/providers.test.ts"
+    },
+    {
+      "scenario": "Actual editor: both named agents give independent, visibly attributed answers",
+      "tests": 1,
+      "status": "passed",
+      "source": "tests-vscode/mentions.test.ts"
+    },
+    {
+      "scenario": "Actual Gemini and Cursor errors leave both healthy Claude/Codex answers visible without substitution",
+      "status": "passed",
+      "source": "out-test/live-conversations-additional.json"
+    }
+  ],
+  "fixes": [
+    "Keep Stop and follow-up queueing available after the first streamed token; clear stale streaming indicators on cancellation.",
+    "Render final-only answers immediately, including completed multi-agent reviews.",
+    "Preserve unfinished drafts and attachments when requesting a second opinion; queue that request while another turn runs.",
+    "Keep queued messages with their originating conversation.",
+    "Resolve sentence-ending agent tags and preserve per-agent file targets in task briefs.",
+    "Retain completed answers when a later handoff setup fails; block its dependent work and preserve independent assignments.",
+    "Cancel queued collaborators, hung streams/readiness checks, pending questions and approvals; prevent work restarting after Stop.",
+    "Clear native provider history and stop all foreground child managers when switching, deleting, forking or clearing conversations.",
+    "Reject stale provider chunks, errors and cleanup from superseded turns.",
+    "Report expired authentication and empty Brainstorm/follow-up output as failures while preserving useful sibling results.",
+    "Use Copilot Auto for fresh/default selection and omit its unsupported effort argument; preserve explicit model choices.",
+    "Give Copilot ownership of its POSIX process group so Stop and permission pause reach its native child; preserve replacement requests during late cleanup."
+  ],
+  "providerLimits": [
+    {
+      "provider": "google-gemini",
+      "status": "service-rejected",
+      "reason": "The installed CLI/account was rejected as UNSUPPORTED_CLIENT by the service. Reproduced with a trusted workspace."
+    },
+    {
+      "provider": "cursor",
+      "status": "authentication-required",
+      "reason": "Cached local identity looked signed in, but actual inference required agent login."
+    },
+    {
+      "provider": "opencode",
+      "status": "skipped",
+      "reason": "No authenticated provider available in this environment."
+    },
+    {
+      "provider": "qwen-code",
+      "status": "skipped",
+      "reason": "No authenticated provider available in this environment."
+    }
+  ],
+  "limitations": [
+    "This pass ran on macOS. Windows/Linux behavior and older installed CLI versions were not live-tested.",
+    "The DeepMyst-backed Mysti coordinator and nine remaining provider adapters were not exercised with live accounts in this pass.",
+    "Live manager tests use a mocked VS Code API and disposable synthetic repositories; separate editor tests use the actual shipped extension/webview and actual Claude/Codex inference.",
+    "The stress caused by overlapping unrestricted test processes led to timing/browser-launch failures. Final verification uses the pinned Node and two workers with CI browser enforcement; no assertions/timeouts were relaxed.",
+    "This is evidence for the exercised workflows, not a guarantee covering every model, account, project size or production workload."
+  ],
+  "reproduce": {
+    "automated": "CI=true npm test -- --maxWorkers=2 (with Node from .nvmrc)",
+    "liveConversations": "npm run test:live:conversations",
+    "liveTransportAndAttachments": "npx vitest run --config vitest.live.config.ts tests-live/providers.test.ts tests-live/menuAttachments.test.ts",
+    "liveEditor": "MYSTI_LIVE_PROVIDERS=1 MYSTI_LIVE_MENTIONS=1 npm run test:vscode",
+    "transcripts": "out-test/live-conversations-reviewed.json (ignored, local evidence)",
+    "copilotAutoReference": "https://docs.github.com/en/copilot/concepts/models/auto-model-selection"
+  },
+  "liveSummary": {
+    "scenarios": 10,
+    "passed": 6,
+    "failed": 2,
+    "skipped": 2,
+    "failedReasons": "Gemini service eligibility and Cursor authentication; neither is counted as passing inference."
+  },
+  "evidenceFiles": {
+    "automated": "/tmp/mysti-acceptance-tests.log",
+    "editor": "/tmp/mysti-native-focus-full-diagnostics.log",
+    "typecheck": "/tmp/mysti-final-typecheck.log",
+    "lint": "/tmp/mysti-final-source-lint.log",
+    "package": "/tmp/mysti-final-package.log",
+    "packageShape": "/tmp/mysti-final-package-shape.log",
+    "transcripts": "out-test/live-conversations-reviewed.json",
+    "editorFinalFixture": "/tmp/mysti-native-focus-fixed.log"
+  },
+  "review": {
+    "status": "no-blocking-findings",
+    "scope": [
+      "Conversational draft, queue, stream and cancellation ownership",
+      "POSIX process-group ownership, Windows compatibility and replacement-request cleanup"
+    ]
+  }
+}

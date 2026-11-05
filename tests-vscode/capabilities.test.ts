@@ -7,13 +7,14 @@ import { execFileSync } from 'child_process';
 import * as vscode from 'vscode';
 import { chromium, type Browser, type Frame, type Page } from 'playwright';
 import { installCapabilitiesObserver } from './capabilities-observer';
-const { assertCopilotPromptHistoryRequest, matchesPublicModelSelection, assertUnavailableCopilotModelAttempt, assertClaudePeerHandoff } = require('../scripts/validation/capabilities-request-oracle.cjs') as {
-  assertCopilotPromptHistoryRequest: (request: any) => void; matchesPublicModelSelection: (evidence: any) => boolean; assertUnavailableCopilotModelAttempt: (evidence: any) => void; assertClaudePeerHandoff: (evidence: any) => void;
-};
 
 const hash = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
 const ids = ['claude-code', 'openai-codex', 'google-gemini', 'cline', 'github-copilot', 'cursor', 'openclaw', 'opencode', 'ollama', 'localai', 'qwen-code', 'hermes', 'continue', 'openrouter', 'minimax', 'kimi-code'];
 if (process.env.MYSTI_PC12 === '1') {
+  // Native campaign imports may resolve pinned local evidence; require opt-in first.
+  const { assertCopilotPromptHistoryRequest, matchesPublicModelSelection, assertUnavailableCopilotModelAttempt, assertClaudePeerHandoff } = require('../scripts/validation/capabilities-request-oracle.cjs') as {
+    assertCopilotPromptHistoryRequest: (request: any) => void; matchesPublicModelSelection: (evidence: any) => boolean; assertUnavailableCopilotModelAttempt: (evidence: any) => void; assertClaudePeerHandoff: (evidence: any) => void;
+  };
   describe('PC-12 real editor capability truthfulness', function () {
     this.timeout(780_000);
     let manifest: any, owner: any, browser: Browser, workbench: Page, frame: Frame, sourceId: string, complete = false;

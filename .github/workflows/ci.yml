@@ -60,12 +60,15 @@ jobs:
         run: npm ci
       - name: Install Chromium for the browser suites
         run: npm exec --no -- playwright install --with-deps chromium
-      - name: Test
-        run: npm test -- --exclude tests/webview/canvasPerfBrowser.test.ts
-      # Frame timing is not meaningful while hundreds of unrelated suites compete
-      # for the runner's CPU. Run the same performance assertions in isolation.
+      - name: Unit and integration tests
+        run: npm run test:release:unit
+      # Browser actions must not compete with hundreds of source/native fixtures.
+      # Keep every assertion and deadline; schedule the browser suites serially.
+      - name: Browser behavior
+        run: npm run test:release:browser
+      # Frame timing is measured after all other suites have finished.
       - name: Canvas performance
-        run: npm test -- tests/webview/canvasPerfBrowser.test.ts
+        run: npm run test:release:performance
 
   lint:
     name: lint

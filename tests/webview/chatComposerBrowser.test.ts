@@ -29,7 +29,7 @@
  * This is not a substitute for the F5 pass — nothing here proves the extension
  * host wiring. It is the part of that gate a machine can hold.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { CHROMIUM_UNAVAILABLE } from './chromiumAvailability';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -180,9 +180,14 @@ async function send(msg: Record<string, unknown>): Promise<void> {
  * `handleSetupStatus` never touches that flag. Its own page is the honest fix.
  */
 const spawnedDirs: string[] = [];
-async function newPanelPage(): Promise<import('playwright').Page> {
+async function newPanelPage(options: { pauseClockAt?: Date } = {}): Promise<import('playwright').Page> {
   const ctx = await browser!.newContext({ permissions: ['clipboard-write'] });
   const pg = await ctx.newPage();
+  if (options.pauseClockAt) {
+    // Install before product code schedules timers, then let navigation finish
+    // naturally. The one-hour lead leaves the full setup budget available.
+    await pg.clock.install({ time: new Date(options.pauseClockAt.getTime() - 3600000) });
+  }
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-panel-'));
   spawnedDirs.push(dir);
   const file = path.join(dir, 'chat.html');
@@ -195,6 +200,7 @@ async function newPanelPage(): Promise<import('playwright').Page> {
       providerManifest, messages: [], context: [], conversations: [],
     } } }));
   }, fixtureManifest);
+  if (options.pauseClockAt) { await pg.clock.pauseAt(options.pauseClockAt); }
   return pg;
 }
 
@@ -237,9 +243,21 @@ afterAll(async () => {
 });
 
 describe('chat webview boots', () => {
-  it.skipIf(CHROMIUM_UNAVAILABLE)('shows the actual timeout denial when a forced card overrides auto-accept', async () => {
-    const pg = await newPanelPage();
-    try {
+  describe('forced native permissions on fresh panels', () => {
+    let pg: Page;
+    // Document/context boot owns the same budget as the suite's other panel
+    // setup. The default five-second test body measures permission behavior,
+    // without charging Chromium setup or context teardown against that budget.
+    beforeEach(async () => {
+      // Expired cards disappear after three browser seconds. Pause before
+      // dispatch so host scheduling cannot consume that observation window.
+      pg = await newPanelPage({ pauseClockAt: new Date('2026-01-01T00:00:00Z') });
+    }, 60000);
+    afterEach(async () => {
+      await pg?.context().close();
+    }, 60000);
+
+    it.skipIf(CHROMIUM_UNAVAILABLE)('shows the actual timeout denial when a forced card overrides auto-accept', async () => {
       await pg.evaluate(() => {
         const receive = (type: string, payload: unknown) => window.dispatchEvent(new MessageEvent('message', { data: { type, payload } }));
         receive('permissionRequest', {
@@ -249,12 +267,9 @@ describe('chat webview boots', () => {
         receive('permissionExpired', { requestId: 'native-timeout', behavior: 'auto-accept', approved: false });
       });
       expect(await pg.locator('.permission-card[data-id="native-timeout"] .permission-footer').textContent()).toContain('Auto-denied (timeout)');
-    } finally { await pg.context().close(); }
-  });
+    });
 
-  it.skipIf(CHROMIUM_UNAVAILABLE)('a forced native permission supports approve or deny without a hidden session-grant shortcut', async () => {
-    const pg = await newPanelPage();
-    try {
+    it.skipIf(CHROMIUM_UNAVAILABLE)('a forced native permission supports approve or deny without a hidden session-grant shortcut', async () => {
       await pg.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: {
         type: 'permissionRequest', payload: {
           id: 'native-card', actionType: 'file-edit', title: 'Write', description: 'Write a file',
@@ -270,7 +285,7 @@ describe('chat webview boots', () => {
       expect(await replies()).toEqual([]);
       await pg.keyboard.press('3');
       expect(await replies()).toMatchObject([{ payload: { requestId: 'native-card', decision: 'deny', scope: 'this-action' } }]);
-    } finally { await pg.context().close(); }
+    });
   });
 
   it.skipIf(CHROMIUM_UNAVAILABLE)('loads chat.js with no uncaught exception', async () => {

@@ -1,0 +1,23 @@
+{
+  "version": "2.0.1",
+  "release": "Beta 2",
+  "checkedAt": "2026-11-05T08:04:33.197652+00:00",
+  "scenes": 15,
+  "tourDurationSeconds": 140.04,
+  "chapters": 15,
+  "checks": {
+    "sceneInteractionAssertions": "pass",
+    "sampleCaptionVisible": "pass",
+    "uncaughtBrowserErrors": 0,
+    "brokenVisibleImages": 0,
+    "completeSceneAndTourDecode": "pass",
+    "h264Yuv420p1120x840": "pass",
+    "posterDimensions": "pass",
+    "sceneDurationsAndSizes": "pass",
+    "clipAndSourceSha256": "pass",
+    "chapterCaptions": "pass",
+    "galleryAndChapterLocalLinks": "pass"
+  },
+  "visualReview": "All posters reviewed in contact sheet; individual setup, context, history, Stop, settings, Canvas, Visual Test and model-control posters inspected; provider-switching mid-scene frame inspected; hero inspected.",
+  "scope": "Shipped webview interaction demonstrations with sample host data. No live providers, OAuth, native subprocess cleanup, disk rewind or exported design file validated by these recordings."
+}

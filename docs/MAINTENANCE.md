@@ -1,5 +1,11 @@
 # Maintaining and releasing Mysti
 
+Start with the [production-readiness status and portable release checklist](PRODUCTION_READINESS.md)
+for current acceptance gaps, provider limits and the reusable release record.
+This guide explains the repository's checks and runtime constraints. Record
+actual results against the exact release commit and VSIX; existing workflow
+definitions and historical passing runs do not qualify a newer build.
+
 ## Reproducible development
 
 Use the Node version in `.nvmrc`, then `npm ci`. `package-lock.json` is committed;
@@ -13,14 +19,25 @@ credentials. Browser suites use the installed Playwright version and Chromium:
 npx playwright install chromium
 npm run typecheck
 npm run lint
-npm test
+npm run test:release:unit
+npm run test:release:browser
+npm run test:release:performance
 npm run check:vendor
 npm run compile:release
 ```
 
-CI requires browser availability, so a missing browser fails rather than silently
-removing coverage. Local test runs may skip browser tests when Chromium is not
-available; report those skips. On Linux CI, install Chromium with `--with-deps`.
+The three release phases run sequentially: unit/integration suites use two
+workers; named browser suites use one; Canvas frame-performance checks run last
+in isolation. This avoids the action/setup starvation observed when browser and
+native-process suites competed in the broad run. Assertions and deadlines stay
+unchanged; the runner adds no retries. Additional Vitest reporter arguments can
+be passed after `--`, for example `--reporter=json --outputFile=release-unit.json`.
+
+Release phases require browser availability, so a missing browser fails rather
+than silently removing coverage. Ordinary `npm test` runs may skip browser tests
+when Chromium is unavailable; report those skips. On Linux CI, install Chromium
+with `--with-deps`. Do not run recording or other browser workloads alongside the
+browser/performance phases.
 
 `compile:release` checks the committed core-agent integrity manifest before
 building. `compile` and `watch` regenerate it for development. Regenerate and
@@ -48,6 +65,72 @@ speed separately before making a performance claim.
 Warnings remain useful debt signals. Do not suppress lint errors, make a failing
 job advisory, or add retries to get a green result. Fix the cause or document an
 explicitly bounded follow-up with evidence.
+
+### Live developer conversations
+
+Run `npm run test:live:conversations` explicitly with authenticated Claude Code
+and Codex CLIs. This consumes existing provider quota. It exercises the real
+mention planner, collaboration pool, ProviderManager, provider prompts and CLI
+transports against disposable synthetic repositories. The VS Code API is mocked;
+use `npm run test:vscode` separately for editor-host behavior.
+
+The journeys cover independent code reviews, follow-up context, implementation
+handed to another agent for review, a revised requirement checked against the
+resulting code, conversation isolation while changing agents, Stop during a
+native approval with another writer queued, and Quick Brainstorm synthesis.
+Three-agent reviews include Gemini, Copilot, Cursor, OpenCode and Qwen when they
+are installed and authenticated; unavailable providers are reported as skipped.
+
+Transcripts, attributed events and scenario outcomes are written to the ignored
+`out-test/live-conversations.json`. Set `MYSTI_LIVE_REPORT` to preserve another
+run separately. `MYSTI_LIVE_CLAUDE`, `MYSTI_LIVE_CODEX`,
+`MYSTI_LIVE_CLAUDE_MODEL`, `MYSTI_LIVE_CODEX_MODEL`, and
+`MYSTI_LIVE_GEMINI_MODEL` override local CLI/model choices. The fixture disables
+Claude hooks and removes its temporary workspace after each scenario.
+
+For native approvals, process restart, cancellation/recovery and attachments,
+also run:
+
+```sh
+npx vitest run --config vitest.live.config.ts tests-live/providers.test.ts tests-live/menuAttachments.test.ts
+```
+
+Report account/model failures and skips separately from passing tests. A green
+mocked suite or an installed adapter does not establish live provider support.
+
+### Cline adapter contract
+
+Cline receives Mysti persona, agent and channel instructions as context in each
+request, through the shared prompt builder. This is not a native system-prompt
+override: Cline keeps its own system/tool/mode guidance and project rules. Mysti
+does not write, replace or restore `.clinerules`. Native slash commands retain
+the shared builder's command behavior and bypass added request context.
+
+When testing Cline, preserve existing rule bytes and file type during the request
+as well as afterwards. Cover manual edits, concurrent panels, cancellation during
+context preparation, and late cleanup after a replacement request. Test credential
+redaction in both stderr and legacy structured errors using synthetic secrets.
+
+Known Cline 1.x versions keep model selection in the CLI. Modern versions accept
+custom model IDs for the configured backend; an unknown version provisionally
+uses the same modern contract as the argument builder. Discovery refreshes open
+panels when the selected executable or detected version changes. Neither a model
+label nor a successful version probe proves backend availability or tool-policy
+enforcement; those require separate native evidence.
+
+### Complete feature and long-session acceptance
+
+Use the [comprehensive test plan](../plans/47-comprehensive-feature-test-plan.md)
+and [feature checklist](../plans/47-feature-inventory.md) to plan real developer
+journeys, workday/endurance runs, and multi-day recovery. Every case identifies
+its source, faults, acceptance evidence, existing coverage and new work needed.
+Account-dependent or unwired paths are explicitly separated from runnable cases.
+
+Run `node scripts/validation/feature-plan.cjs` to check the plan's identifier
+coverage and local links against current commands, settings, provider identities,
+chat actions, Canvas operations, session shapes, slash aliases and core assets.
+This validates traceability only; it does not run or certify feature behavior.
+Record real/soak results separately before claiming all-feature reliability.
 
 ## Dependency updates
 
@@ -89,7 +172,7 @@ For an update:
 Do not publish as part of a dependency bot update. Publishing requires the release
 review below.
 
-### Editor test runtime and audit exception
+### Editor test runtime and audit exceptions
 
 The test CLI runs under development Node, but its Mocha runner executes inside
 the editor. Mocha 10.8.2 supports the minimum editor's Node 18.17.1; Mocha 11
@@ -98,21 +181,22 @@ requires at least 18.18 and Mocha 12 requires a newer major runtime. The
 dependency. Recheck this override when either package or the minimum editor
 changes. Do not raise the production editor minimum solely to update a test tool.
 
-The current residual audit chain is development-only:
-`@vscode/test-cli → mocha → serialize-javascript@6.0.2`. The serializer has
-[crafted-object code execution](https://github.com/advisories/GHSA-5c6j-r48x-rmvq)
-and [CPU exhaustion](https://github.com/advisories/GHSA-qj8w-gfj5-8c6v) advisories.
-Mocha loads it in its optional parallel worker pool. Our editor tests explicitly
-run serially, and none of these packages ships in the VSIX. The release maintainer
-owns this exception: keep parallel execution disabled and remove the exception
-when a compatible patched serializer is available or the runner is replaced.
-Mocha's optional watch path also brings in `chokidar 3 → braces 3.0.3`
-([deep-pattern stack exhaustion](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm)).
-There is no compatible upstream fix yet. Our editor runner does not enable watch
-or accept user-provided globs, and this development graph is excluded from the
-VSIX. The release maintainer owns removing this exception when patched.
-Serializer 7.0.5 requires Node 20, so overriding it into the minimum editor would
-violate its declared runtime support.
+On 5 November 2026, the patched lockfile reports **zero runtime advisories** with
+`npm audit --omit=dev`. The full graph reports **16 affected package entries**
+(15 moderate, one high), including propagated findings, in these development-only
+families. Keep their exclusions verified against the VSIX archive.
+
+| Family | Exposure and bounded exception | Removal condition |
+| --- | --- | --- |
+| Mocha 10 → serialize-javascript 6.0.2 | The serializer has [crafted-object code execution](https://github.com/advisories/GHSA-5c6j-r48x-rmvq), [CPU exhaustion](https://github.com/advisories/GHSA-qj8w-gfj5-8c6v) and [function-body escaping](https://github.com/advisories/GHSA-m5mm-p8h7-m29v) findings. Its Mocha path is the optional parallel worker pool; editor tests remain serial, with watch disabled. Patched serializer 7.1.3+ requires Node 20, outside the minimum editor's runtime. | Compatible patched serializer/runner, or a separately reviewed runtime migration. Do not force a Node 20 dependency into the Node 18 editor. |
+| minimatch 10 through lint, packaging and test tooling | [Globparts amplification](https://github.com/isaacs/minimatch/security/advisories/GHSA-g3hv-75wg-m249). Patterns come from the reviewed repository/tool configuration; do not expose these developer commands as a service accepting untrusted patterns. The patched 11.x line is outside the parents' declared ranges. | Parent packages adopt the patched major, or a separately qualified override covers all affected callers. |
+| glob 13 through the test CLI and coverage tools | [Cancellation bypass](https://github.com/isaacs/node-glob/security/advisories/GHSA-3g3m-2fjr-6pw4). Test discovery uses bounded repository paths, not a public glob endpoint. Patched 14.x also moves to minimatch 11. | Upgrade the parent test/coverage tooling or qualify the coupled major changes, retaining editor compatibility. |
+
+The release maintainer owns these exceptions and rechecks them before each
+release. They are residual development risks, not suppressed findings or runtime
+acceptance. Do not use `npm audit fix --force` to replace reviewed toolchain majors.
+The `vite` override requires patched 8.3.6+ within the current major; remove it
+when the parent dependency guarantees that floor and the lock remains patched.
 
 ESLint 10 uses `eslint.config.cjs`; typescript-eslint 8 replaces the older parser
 and removes the estree-only minimatch override. New recommended rules remain
@@ -133,8 +217,10 @@ the shipped asset and its nested libraries as well as the dependency audit.
 `NOTICE` records vendored versions and attribution.
 
 Mermaid is built from the locked npm graph with the same patched DOMPurify used
-by chat. The upstream prebuilt Mermaid bundle has its own sanitizer; copying it
-would bypass that pin. After changing a bundled input, run:
+by chat. `build:vendor` also copies the standalone chat sanitizer and records its
+hash, so both copies update together. The upstream prebuilt Mermaid bundle has
+its own sanitizer; copying it would bypass that pin. After changing a bundled
+input, run:
 
 ```sh
 npm ci
@@ -148,20 +234,29 @@ Review `resources/mermaid.provenance.json`, the generated asset/license file and
 assets; browser tests exercise actual rendering, the chat CSP and malicious HTML
 labels. Neither is a substitute for inspecting upstream advisories.
 
+The 2.0.1 Beta 2 update uses [DOMPurify 3.4.17](https://github.com/cure53/DOMPurify/releases/tag/3.4.17)
+and [Mermaid 12.2.0](https://github.com/mermaid-js/mermaid/releases/tag/mermaid%4012.2.0),
+whose KaTeX range admits the [patched trust handling](https://github.com/KaTeX/KaTeX/security/advisories/GHSA-238p-pmpm-9mq7).
+The lock also refreshes compatible body-parser, qs, fast-uri, Zod, ip-address and
+Undici releases. Recheck the audit when preparing another version rather than
+carrying this dated result forward.
+
 Prism retains the existing language grammars with the patched 1.30.0 core. Keep
 its mixed-version provenance explicit when updating it. The other standalone
 browser assets must also be checked and updated independently of npm resolution.
 
 ## Release checklist
 
-1. Select the exact commit, set the version and update release notes. Keep feature
+1. Select the exact commit and release channel, set the version and update release notes. Keep feature
    claims tied to reachable behavior and distinguish experimental integrations.
 2. Require green CI and real-editor integration for that commit on all supported
    platforms. Repository branch protection must require the relevant status checks;
    workflow YAML alone cannot prevent an administrator from merging a red branch.
-3. Run `npm run package`, then
+3. Run `npm run package:pre-release` for beta releases, or `npm run package` for
+   a stable release, then
    `node scripts/check-package-shape.js mysti-<version>.vsix`. Check the built archive,
-   not only a listing of the working directory.
+   not only a listing of the working directory. Verify the channel flag and retain
+   its SHA-256 alongside the source commit and validation report.
 4. Install that VSIX into a clean VS Code profile. Exercise startup, setup, a normal
    streamed turn, Stop, two simultaneous panels, conversation restoration, Canvas,
    and expected failure paths with credentials absent.

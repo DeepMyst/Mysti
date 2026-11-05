@@ -7,14 +7,15 @@ import { execFileSync } from 'child_process';
 import * as vscode from 'vscode';
 import { chromium, type Browser, type Page, type Frame } from 'playwright';
 import { installCodexObserver } from './codex-observer';
-const { exactCommand, patchScope } = require('../scripts/validation/codex-stage-oracle.cjs') as {
-  exactCommand: (actual: unknown, expected: string) => boolean;
-  patchScope: (changes: unknown, workspace: string, purpose: 'fix' | 'deny') => boolean;
-};
 const hash = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
 type Scope = { commands?: string[]; patch?: 'fix' | 'deny' };
 
 if (process.env.MYSTI_PB02 === '1') {
+  // Native campaign imports may resolve pinned local evidence; require opt-in first.
+  const { exactCommand, patchScope } = require('../scripts/validation/codex-stage-oracle.cjs') as {
+    exactCommand: (actual: unknown, expected: string) => boolean;
+    patchScope: (changes: unknown, workspace: string, purpose: 'fix' | 'deny') => boolean;
+  };
   describe('PB-02 real editor first eight Codex developer turns', function () {
     this.timeout(1_500_000);
     let manifest: any, owner: any, browser: Browser, workbench: Page, frame: Frame, sourceId: string, panelId: string, complete = false;

@@ -7,12 +7,13 @@ import * as vscode from 'vscode';
 import { chromium, type Browser, type Page, type Frame } from 'playwright';
 import { installCodexProfileCompatibilityObserver } from './codex-profile-compatibility-observer';
 const repo = process.env.MYSTI_PB02_PROFILE_COMPATIBILITY_REPO || path.resolve(__dirname, '..');
-const { exactCommand, verifyPreservedBase, verifyCopiedFixture, verifyOwnedProfiles } = require(path.join(repo, 'scripts/validation/codex-profile-validation-contract.cjs'));
-const { assertToolOutputProjection } = require(path.join(repo, 'scripts/validation/codex-full-oracle.cjs'));
 const hash = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
 type Scope = { commands?: string[] };
 
 if (process.env.MYSTI_PB02_PROFILE_COMPATIBILITY === '1') {
+  // Native campaign imports may resolve pinned local evidence; require opt-in first.
+  const { exactCommand, verifyPreservedBase, verifyCopiedFixture, verifyOwnedProfiles } = require(path.join(repo, 'scripts/validation/codex-profile-validation-contract.cjs'));
+  const { assertToolOutputProjection } = require(path.join(repo, 'scripts/validation/codex-full-oracle.cjs'));
   describe('PB-02 real editor named profile compatibility', function () {
     this.timeout(780_000);
     let manifest: any, owner: any, browser: Browser, workbench: Page, frame: Frame, sourceId: string, panelId: string, complete = false;

@@ -257,6 +257,32 @@ Use the model dropdown for the current bundled/discovered catalog and any provid
 
 ## OpenClaw
 
+Gateway authentication resolves exported environment references in `gateway.auth.token`, including `$NAME`, `${NAME}` and env SecretRef objects, with named provider allowlists. Mysti refreshes the token when connecting or reconnecting. Unavailable references fall back to `OPENCLAW_GATEWAY_TOKEN`; they are not sent as literal credentials. This resolution does not execute file, command or plugin secret providers, or load config-defined environment variables, includes or dotenv files.
+
+Local authentication readiness recognizes exported keys for configured built-in backends, including OpenAI, Google, OpenRouter and their supported auth aliases. It follows explicit agent model selection, configured model aliases and fallback overrides. An unrelated provider key does not qualify an explicit backend. When selection cannot be resolved offline, core OpenAI and Anthropic credentials remain generic readiness hints. Stored credentials also remain eligibility hints; OpenClaw validates the selected backend and credentials when it runs. Custom runtime plugins, file-based auth evidence and profile-pinned model resolution are not established by these environment checks.
+
+Readiness also recognizes a selected provider's configured API key, exported environment references and known environment markers. Complete local provider configurations can qualify without a key when native OpenClaw supports that configuration. An unavailable explicit key reference does not become a no-auth configuration, and an existing profile id is not counted as a literal key. These checks do not contact the model endpoint or validate the credential; native OpenClaw still resolves and authenticates the request.
+
+Stored-profile readiness follows the selected backend, configured fallbacks, profile declarations and profile order, including the SQLite runtime-state table and agent-local overrides. An explicit `@profile` or provider-entry profile binding cannot silently use an alternative credential when it is missing, expired or incompatible. Native model-version and quantization suffixes containing `@` remain part of the model name. Deliberate cross-provider `@profile` selection follows OpenClaw's rules; provider-entry bindings require a compatible provider or matching configured base URL. Store format follows the selected CLI: releases through 2026.6.1 use JSON; releases from 2026.6.5 use SQLite and ignore retired JSON even when the database is absent. The selected package's declared executable and current version take precedence over cached discovery. Unknown or unqualified transition builds retain compatibility: an existing database is authoritative, otherwise JSON is a readiness hint. These checks never migrate stores, refresh OAuth credentials or execute secret resolvers.
+
+For JSON installations, a valid `auth-profiles.json` envelope is authoritative even when its profile map is empty or contains unusable credentials. `auth.json` is a fallback only when that envelope is missing or malformed. Profile order from `auth-state.json` overrides embedded order for the same provider; invalid or empty order entries are ignored. SQLite installations never combine retired JSON state with their database.
+
+Prompt enhancement uses OpenClaw's text-only inference interfaces and respects `mysti.openclawUseGateway`. It preserves your draft if the selected CLI or gateway does not support those interfaces, returns an error, or times out. Enhancement does not reuse your chat sessions, and its requests stop when Mysti shuts down.
+
+When OpenClaw reports them, Mysti shows the actual backend model, its context window, and usage including cached tokens. Run totals appear in the usage footer; context fill uses the latest model call or OpenClaw's explicit prompt measurement. If that measurement is missing, context fill stays unavailable even when run totals are present. The backend model remains configured in OpenClaw.
+
+For chat requests, gateway and local CLI diagnostics redact exported secrets and API keys, credential headers, and URL credentials from locally readable backend configuration. Locally stored JSON and SQLite profile keys and OAuth tokens are also captured read-only, including expired, retired and inherited profiles, because diagnostic privacy is separate from authentication eligibility. Each request retains its credential snapshot so rotation during a request does not expose the old value. Diagnostic redaction preserves ordinary reply text and does not execute native secret resolvers.
+
+CLI stdout and stderr share the standard inactivity allowance: 30 minutes, or four hours in autonomous mode. A silent open output pipe now ends with a timeout error; completed native JSON and streamed partial text remain visible. Stderr progress extends the allowance without consuming the next stdout reply.
+
+Nonzero CLI exits include the process exit code alongside redacted diagnostics. In OpenClaw 2026.6.34, a gateway restart can resume an interrupted request without another Mysti send. A disconnected or failed Mysti stream therefore does not establish that native execution has stopped.
+
+If the gateway disconnects or reports missing stream events, Mysti preserves the partial reply and reports an incomplete response. A detected event gap cancels the affected run; a connection-wide gap cancels its active runs. Mysti can reconnect for the next request, but does not automatically replay interrupted work.
+
+Stop targets the request's run ID, including during native gateway setup before acknowledgment. Repeated Stop calls share the same cancellation request, keeping other work in the session separate.
+
+Gateway replies can arrive as text deltas or complete text snapshots. Mysti applies revisions to the live reply and saved history, keeps thinking separate, and retains tool activity when text changes. Later snapshots can restore missing text within the current message. If a delta and snapshot disagree about a stable message boundary, Mysti preserves the visible text and reports the reply as incomplete. Provisional replies are reconciled with the final answer. Background features receive finalized text while tool activity continues to stream. Revised or provisional text does not replay text-triggered actions. Gateway commentary and supported progress updates appear as temporary status text, separate from answers, thinking and tool cards. They do not enter saved replies or suppress the final answer. An already-running agent response is reported as incomplete, without retrying or cancelling the existing run. Aborted gateway tasks remain unsuccessful even when the RPC transport reports success.
+
 Dual-transport provider with real-time WebSocket streaming and CLI fallback.
 
 ### Installation
@@ -444,7 +470,9 @@ Use the model dropdown for the current bundled/discovered catalog and any provid
 
 Install/configure the relevant CLI through Mysti's provider setup flow, then refresh detection. Configure a nonstandard executable with `mysti.hermesPath`, `mysti.kimiCodePath`, or `mysti.continuePath`. Each provider has a matching model override: `mysti.hermesModel`, `mysti.kimiCodeModel`, or `mysti.continueModel`.
 
-Hermes and Kimi use ACP permission requests scoped to the current process and turn. Continue uses restrictive native flags where an interactive host approval is unavailable. OpenRouter requires no CLI: configure `mysti.openrouter.apiKey`, select an available model, and optionally set `mysti.openrouterModel`.
+Hermes and Kimi scope emitted ACP permission requests to the current process and turn. Kimi currently requires an explicit Full Access choice: native saved permissions can skip those requests, so Mysti cannot enforce Ask, Auto, or Plan through this connection. Unsupported selections preserve the draft and do not dispatch. Kimi confirms explicit model selections through the session API before sending a prompt; unavailable selections fail without falling back to another model. With no selection, the native account model is used.
+
+Continue uses restrictive native flags where an interactive host approval is unavailable. OpenRouter requires no CLI: configure `mysti.openrouter.apiKey`, select an available model, and optionally set `mysti.openrouterModel`.
 
 ## Switching Providers
 

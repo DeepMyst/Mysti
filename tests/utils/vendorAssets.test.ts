@@ -23,12 +23,17 @@ function fixture() {
     buildScriptSha256: digest('// build'), webpackVersion: '1.0.0',
     packages: { 'node_modules/mermaid': record, 'node_modules/dompurify': record },
     buildPackages: { 'node_modules/webpack': record, 'node_modules/terser-webpack-plugin': record },
-    assets: { 'mermaid.min.js': digest('// asset'), 'mermaid.min.js.LICENSE.txt': digest('MIT') },
+    assets: {
+      'mermaid.min.js': digest('// asset'),
+      'mermaid.min.js.LICENSE.txt': digest('MIT'),
+      'dompurify.min.js': digest('// sanitizer'),
+    },
   };
   const lock = { packages: { ...manifest.packages, ...manifest.buildPackages } };
   fs.writeFileSync(path.join(dir, 'scripts/build-vendor.js'), '// build');
   fs.writeFileSync(path.join(dir, 'resources/mermaid.min.js'), '// asset');
   fs.writeFileSync(path.join(dir, 'resources/mermaid.min.js.LICENSE.txt'), 'MIT');
+  fs.writeFileSync(path.join(dir, 'resources/dompurify.min.js'), '// sanitizer');
   const save = () => {
     fs.writeFileSync(path.join(dir, 'resources/mermaid.provenance.json'), JSON.stringify(manifest));
     fs.writeFileSync(path.join(dir, 'package-lock.json'), JSON.stringify(lock));
@@ -84,11 +89,11 @@ describe('vendored asset verification', () => {
     expect(result.stderr).toContain('Bundled dependency changed: node_modules/dompurify');
   });
 
-  it('rejects an asset modified without rebuilding its provenance', () => {
+  it.each(['mermaid.min.js', 'dompurify.min.js'])('rejects %s modified without rebuilding its provenance', (asset) => {
     const f = fixture();
-    fs.appendFileSync(path.join(f.dir, 'resources/mermaid.min.js'), 'corruption');
+    fs.appendFileSync(path.join(f.dir, 'resources', asset), 'corruption');
     const result = f.check();
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain('Vendored asset changed: mermaid.min.js');
+    expect(result.stderr).toContain(`Vendored asset changed: ${asset}`);
   });
 });

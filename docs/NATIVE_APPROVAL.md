@@ -7,7 +7,7 @@ Claude Code, Codex, Hermes and Kimi route native permission requests through a r
 ## Implemented ownership and policy
 
 - Added `src/providers/base/NativeApprovalPolicy.ts`; it uses the shared permission classifier and keeps native plan/read-only restrictions first.
-- Hermes/Kimi require interactive approval for edit/execute/delete/fetch permission requests in `ask-before-edit + full-access`. A missing owner denies these requests; an explicit host approval permits the one operation. Their former unconditional full-access branch approved them before any UI interaction.
+- The Hermes/Kimi callback policy requires interactive approval for emitted edit/execute/delete/fetch permission requests in `ask-before-edit + full-access`. A missing owner denies these requests; an explicit host approval permits the one operation. Kimi's public adapter rejects this mode before dispatch because native saved allows can bypass the callback policy.
 - Continue and legacy plain-text Copilot no longer receive unrestricted auto-approval in `edit-automatically + ask-permission`. Continue uses `--readonly`; legacy Copilot denies shell/write because these transports cannot present native requests.
 - Modern Copilot's existing stream-pause behavior is unchanged. Correcting its policy predicate does not establish pre-execution approval.
 - `shouldGateToolUse` accepts only the mode/access fields it actually uses; classifier behavior is unchanged.
@@ -18,6 +18,7 @@ Claude Code, Codex, Hermes and Kimi route native permission requests through a r
 - A single card can select only a native `allow_once` option. Persistent native grants are not silently substituted; the option kind is authoritative when supplied.
 - The normal stream inactivity clock is paused while a native approval is pending; permission timeout policy belongs to the host card. Request signals abort on settlement and disposal so card listeners can be removed.
 - Tests include a real local ACP fixture process (`tests/fixtures/acpPermissionAgent.cjs`). The fixture writes a marker only after a matching native allow response. It uses no model API or provider account.
+- Kimi’s current ACP connection is limited to explicitly unrestricted authority. Source inspection of installed Kimi 2.1.1 found that native saved allows can bypass callbacks and its Plan guard does not deny every command or delegate. Kimi callback fixtures therefore use Full Access with a deliberately cooperative child and custom host; they prove ownership of emitted requests, not native Ask enforcement. Separate public preflight and composer tests preserve unsupported selections and drafts without dispatching or silently broadening authority.
 
 ## Registered-provider matrix
 
@@ -35,7 +36,7 @@ Claude Code, Codex, Hermes and Kimi route native permission requests through a r
 | OpenCode | Chooses `--agent build`; local native permissions remain externally configured; notifications are used for stream gate | Chooses configurable `--agent plan` | No request/response bridge; build/plan labels are not immutable permission policies | `src/providers/opencode/OpenCodeProvider.ts` |
 | Qwen Code | `--approval-mode auto-edit`, including ask-before-edit; edits are natively auto-approved | `--approval-mode plan` | No; installed CLI supports ACP | `src/providers/qwen/QwenCodeProvider.ts` |
 | Hermes | ACP permission request held until the scoped host card resolves; explicit native denials remain blocked | Non-read permission requests denied | Yes, for emitted ACP permission requests | `src/providers/hermes/HermesProvider.ts`; `src/providers/base/AcpApproval.ts` |
-| Kimi Code | Same scoped ACP native request/card/response bridge | Non-read permission requests denied | Yes, for emitted ACP permission requests | `src/providers/kimi/KimiCodeProvider.ts`; `src/providers/base/AcpApproval.ts` |
+| Kimi Code | Rejected before dispatch; only explicitly unrestricted mode/access combinations can execute | Rejected before dispatch; unsupported eager warming does nothing | Bridge retained for emitted requests; native saved allows can bypass it, so Ask/Auto/Plan are unsupported | `src/providers/kimi/KimiCodeProvider.ts`; `src/providers/base/AcpApproval.ts` |
 | Continue | `--readonly` in ask/auto-edit-with-ask tiers; `--auto` only in unrestricted tiers after this fix | `--readonly` | No; plain final-text transport | `src/providers/continue/ContinueProvider.ts` |
 | Ollama | Receives model tool-call proposals but never executes them | No local execution | Not applicable to execution; `supportsToolUse: true` means proposal reporting here | `src/providers/ollama/OllamaProvider.ts` |
 | LocalAI | Receives model tool-call proposals but never executes them | No local execution | Not applicable to execution; `supportsToolUse: true` means proposal reporting here | `src/providers/localai/LocalAIProvider.ts` |

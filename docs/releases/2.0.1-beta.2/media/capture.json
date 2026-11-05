@@ -1,0 +1,288 @@
+{
+  "version": "2.0.1",
+  "releaseLabel": "2.0.1 · Beta 2",
+  "capturedAt": "2026-11-05T08:01:35.597Z",
+  "sourceAssetHashes": {
+    "media/chat/chat.js": "08d8b554952060b9342fff92103813271ebc414b1f555c8a95b819ad956cbe06",
+    "media/chat/chat.css": "5512af0f96910ae14c907369accd9dec72040df3a90316b3e78ebb234f9b8731",
+    "media/chat/index.html": "27c7827cee57f3c97a24e5beb9f7e17058cb6edea6f3792f46fabf0d42302a96",
+    "media/chat/markdownRenderer.js": "979e5c2748a8f42b6d48e7012b46c9144bf1091d90aeccb3931b197d9b9da806",
+    "media/chat/subAgentCards.js": "8dab8f8a39d983aef2d2be69b6873b74b001befd324db3c7e630a7329c1d2745",
+    "media/canvas/canvas.css": "8bb7822af5eb7260305441b2a80bc0ba5b1786934652a83402bab2abc74815c7",
+    "media/canvas/index.html": "b7fc0b60056289e91a54c791d80c05acc5666ec0b0ee0ccb98eeb9750741e79b",
+    "media/vt-dashboard/vt-dashboard.js": "6c708b59de76d5fa22ae9768648be8953e0d67624e689721c2034504eb2d1f31",
+    "media/connections/connections.js": "a08aea60419a2a2b51b9fab85d2e73867938ff9c8bf4e789ba5367323ef3cab0",
+    "media/proactive/proactive.js": "eb27167e374b4a1eece9e97ef8b22b46ced58696023e3abe98cc8a3b955ee660",
+    "resources/dompurify.min.js": "cd37898f9782adf54820c413191b5691803f0f137c799d6edcfd38523b4c2c31",
+    "scripts/record-release-demos.cjs": "1ad282c00128a2023873400353a0746d485149c734c5fd2ef00c7e6ead872c48",
+    "scripts/release-demo-scenes.cjs": "8b0fd2d53ce7fb805892e00ff0e83b9580d8c94e883fbd458323d6c400b3443d"
+  },
+  "source": "Shipped chat, Canvas, Visual Test, Connections and Proactive webviews",
+  "recordings": [
+    {
+      "name": "getting-started",
+      "title": "Connect an agent and choose a mode",
+      "posterMoment": "Permission mode choices",
+      "features": [
+        "PC-01",
+        "PC-02",
+        "AR-21"
+      ],
+      "durationSeconds": 9.32,
+      "bytes": 257647,
+      "startSeconds": 0,
+      "capturedAt": "2026-11-05T07:58:52.327Z",
+      "recorderSourceHashes": {
+        "scripts/record-release-demos.cjs": "af2537ced333b5d72e3bc79285f4003a7a8f04eb5e9816970d174a768ebff455",
+        "scripts/release-demo-scenes.cjs": "8b0fd2d53ce7fb805892e00ff0e83b9580d8c94e883fbd458323d6c400b3443d"
+      },
+      "sha256": "0a35c768497dbf43cf191a202f4120d476ab5c0a3e04ef10980e698599ac8c2c"
+    },
+    {
+      "name": "provider-switching",
+      "title": "Switch providers without losing your draft",
+      "features": [
+        "PC-04",
+        "PC-06"
+      ],
+      "capturedAt": "2026-11-05T08:01:27.811Z",
+      "recorderSourceHashes": {
+        "scripts/record-release-demos.cjs": "1ad282c00128a2023873400353a0746d485149c734c5fd2ef00c7e6ead872c48",
+        "scripts/release-demo-scenes.cjs": "8b0fd2d53ce7fb805892e00ff0e83b9580d8c94e883fbd458323d6c400b3443d"
+      },
+      "durationSeconds": 11.64,
+      "bytes": 223501,
+      "sha256": "eee62705c36f63d33359e36badf5197c9b61ab9e9bb4eb1d634d88dd16202187",
+      "startSeconds": 9.32
+    },
+    {
+      "name": "context-and-trust",
+      "title": "Give the agent the right context",
+      "features": [
+        "EW-01",
+        "EW-02",
+        "EW-05",
+        "AR-21"
+      ],
+      "durationSeconds": 9.56,
+      "bytes": 141554,
+      "startSeconds": 20.96,
+      "capturedAt": "2026-11-05T07:58:52.327Z",
+      "recorderSourceHashes": {
+        "scripts/record-release-demos.cjs": "af2537ced333b5d72e3bc79285f4003a7a8f04eb5e9816970d174a768ebff455",
+        "scripts/release-demo-scenes.cjs": "8b0fd2d53ce7fb805892e00ff0e83b9580d8c94e883fbd458323d6c400b3443d"
+      },
+      "sha256": "172f86ecd9d3075d0f8d5b39a023e32ef66dc4a0f02719786ffdd5151a85bcee"
+    },
+    {
+      "name": "composer-controls",
+      "title": "Choose model, reasoning effort and Ultracode",
+      "features": [
+        "PC-04"
+      ],
+      "capturedAt": "2026-11-05T08:01:35.087Z",
+      "recorderSourceHashes": {
+        "scripts/record-release-demos.cjs": "1ad282c00128a2023873400353a0746d485149c734c5fd2ef00c7e6ead872c48",
+        "scripts/release-demo-scenes.cjs": "8b0fd2d53ce7fb805892e00ff0e83b9580d8c94e883fbd458323d6c400b3443d"
+      },
+      "durationSeconds": 6.76,
+      "bytes": 167404,
+      "sha256": "43cbe95b978335af5f1703b760fd951364fa5136047d7004327e97a375202ef5",
+      "startSeconds": 30.52
+    },
+    {
+      "name": "agent-workflow",
+      "title": "Design, then review with another agent",
+      "features": [
+        "AR-02"
+      ],
+      "durationSeconds": 9.08,
+      "bytes": 153985,
+      "startSeconds": 37.28,
+      "capturedAt": "2026-11-05T07:58:52.327Z",
+      "recorderSourceHashes": {
+        "scripts/record-release-demos.cjs": "af2537ced333b5d72e3bc79285f4003a7a8f04eb5e9816970d174a768ebff455",
+        "scripts/release-demo-scenes.cjs": "8b0fd2d53ce7fb805892e00ff0e83b9580d8c94e883fbd458323d6c400b3443d"
+      },
+      "sha256": "fc5bd557106cf418b7320b92fe3442011fc51f030cab0b04ea7d4e0bf6cc9314"
+    },
+    {
+      "name": "agent-opinions",
+      "title": "Compare independent agent opinions",
+      "features": [
+        "AR-01"
+      ],
+      "durationSeconds": 9,
+      "bytes": 127908,
+      "startSeconds": 46.36,
+      "capturedAt": "2026-11-05T07:58:52.327Z",
+      "recorderSourceHashes": {
+        "scripts/record-release-demos.cjs": "af2537ced333b5d72e3bc79285f4003a7a8f04eb5e9816970d174a768ebff455",
+        "scripts/release-demo-scenes.cjs": "8b0fd2d53ce7fb805892e00ff0e83b9580d8c94e883fbd458323d6c400b3443d"
+      },
+      "sha256": "7b5d7a5447f769965ce86aa36c5b93d7fe0036ffc38e70c5c2565fcf805cafca"
+    },
+    {
+      "name": "second-opinion",
+      "title": "Ask another agent for a second opinion",
+      "features": [
+        "PC-06"
+      ],
+      "durationSeconds": 6.24,
+      "bytes": 86848,
+      "startSeconds": 55.36,
+      "capturedAt": "2026-11-05T07:58:52.327Z",
+      "recorderSourceHashes": {
+        "scripts/record-release-demos.cjs": "af2537ced333b5d72e3bc79285f4003a7a8f04eb5e9816970d174a768ebff455",
+        "scripts/release-demo-scenes.cjs": "8b0fd2d53ce7fb805892e00ff0e83b9580d8c94e883fbd458323d6c400b3443d"
+      },
+      "sha256": "7d8e5a46e4293735a8f3e75b68a0e22ee96c018f5fc71c5a1a19091f0aad9edb"
+    },
+    {
+      "name": "brainstorm",
+      "title": "Bring two perspectives into one answer",
+      "features": [
+        "AR-05"
+      ],
+      "durationSeconds": 9.88,
+      "bytes": 190469,
+      "startSeconds": 61.6,
+      "capturedAt": "2026-11-05T07:58:52.327Z",
+      "recorderSourceHashes": {
+        "scripts/record-release-demos.cjs": "af2537ced333b5d72e3bc79285f4003a7a8f04eb5e9816970d174a768ebff455",
+        "scripts/release-demo-scenes.cjs": "8b0fd2d53ce7fb805892e00ff0e83b9580d8c94e883fbd458323d6c400b3443d"
+      },
+      "sha256": "fec987b2f6ed8f750b92c0544d0fc8d87692a9a7847a8c61e59c00f03cac94c1"
+    },
+    {
+      "name": "stop-and-recovery",
+      "title": "Stop a response and start the next turn",
+      "features": [
+        "PC-07"
+      ],
+      "scope": "UI cancellation request and sampled recovery; not native process-cleanup evidence.",
+      "durationSeconds": 8.08,
+      "bytes": 112190,
+      "startSeconds": 71.48,
+      "capturedAt": "2026-11-05T07:58:52.327Z",
+      "recorderSourceHashes": {
+        "scripts/record-release-demos.cjs": "af2537ced333b5d72e3bc79285f4003a7a8f04eb5e9816970d174a768ebff455",
+        "scripts/release-demo-scenes.cjs": "8b0fd2d53ce7fb805892e00ff0e83b9580d8c94e883fbd458323d6c400b3443d"
+      },
+      "sha256": "58266ea5e4e34ea35c26059eedead8ff63b2f58886fdbe0ea2f74d6b2e521de7"
+    },
+    {
+      "name": "history-and-rewind",
+      "title": "Revisit a conversation or branch an idea",
+      "features": [
+        "PC-08",
+        "PC-10",
+        "AR-26"
+      ],
+      "scope": "History, fork and rewind controls; host persistence and disk rewind are not executed.",
+      "durationSeconds": 11.64,
+      "bytes": 190285,
+      "startSeconds": 79.56,
+      "capturedAt": "2026-11-05T07:58:52.327Z",
+      "recorderSourceHashes": {
+        "scripts/record-release-demos.cjs": "af2537ced333b5d72e3bc79285f4003a7a8f04eb5e9816970d174a768ebff455",
+        "scripts/release-demo-scenes.cjs": "8b0fd2d53ce7fb805892e00ff0e83b9580d8c94e883fbd458323d6c400b3443d"
+      },
+      "sha256": "31b74ba3fd407fb01f80b5e434d5522833f1a7d06de015e2d00e5f16049fb43b"
+    },
+    {
+      "name": "settings-and-help",
+      "title": "Find settings, personas and built-in help",
+      "features": [
+        "EW-13",
+        "EW-22",
+        "EW-25"
+      ],
+      "durationSeconds": 13.52,
+      "bytes": 171711,
+      "startSeconds": 91.2,
+      "capturedAt": "2026-11-05T07:58:52.327Z",
+      "recorderSourceHashes": {
+        "scripts/record-release-demos.cjs": "af2537ced333b5d72e3bc79285f4003a7a8f04eb5e9816970d174a768ebff455",
+        "scripts/release-demo-scenes.cjs": "8b0fd2d53ce7fb805892e00ff0e83b9580d8c94e883fbd458323d6c400b3443d"
+      },
+      "sha256": "5c90b7708ef42b0157dd4361f286b16a257d60215abfbf0de193f2d4b43c491f"
+    },
+    {
+      "name": "canvas-design",
+      "title": "Explore a design across themes and devices",
+      "features": [
+        "CI-01",
+        "CI-04",
+        "CI-11",
+        "CI-13"
+      ],
+      "scope": "Real Canvas app and sandbox runtime; sampled artifact and host operations. Export request only.",
+      "durationSeconds": 13.04,
+      "bytes": 361297,
+      "startSeconds": 104.72,
+      "capturedAt": "2026-11-05T07:58:52.327Z",
+      "recorderSourceHashes": {
+        "scripts/record-release-demos.cjs": "af2537ced333b5d72e3bc79285f4003a7a8f04eb5e9816970d174a768ebff455",
+        "scripts/release-demo-scenes.cjs": "8b0fd2d53ce7fb805892e00ff0e83b9580d8c94e883fbd458323d6c400b3443d"
+      },
+      "sha256": "17d827626abc6d092ef8d753ccf3845f28b95408c5bdc8bad4759dde66b3748d"
+    },
+    {
+      "name": "visual-test",
+      "title": "Inspect a visual test report",
+      "features": [
+        "CI-18"
+      ],
+      "scope": "Real dashboard with a deterministic sample screenshot and sample findings; no live agent visual test.",
+      "durationSeconds": 8.56,
+      "bytes": 152938,
+      "startSeconds": 117.76,
+      "capturedAt": "2026-11-05T07:58:52.327Z",
+      "recorderSourceHashes": {
+        "scripts/record-release-demos.cjs": "af2537ced333b5d72e3bc79285f4003a7a8f04eb5e9816970d174a768ebff455",
+        "scripts/release-demo-scenes.cjs": "8b0fd2d53ce7fb805892e00ff0e83b9580d8c94e883fbd458323d6c400b3443d"
+      },
+      "sha256": "05d3b8d02771056d30a34cf718689b471bf0f0e9a88657ff3c2190c151ca1b59"
+    },
+    {
+      "name": "connected-tools",
+      "title": "Browse connected tools",
+      "features": [
+        "CI-22"
+      ],
+      "durationSeconds": 6.88,
+      "bytes": 246249,
+      "startSeconds": 126.32,
+      "capturedAt": "2026-11-05T07:58:52.327Z",
+      "recorderSourceHashes": {
+        "scripts/record-release-demos.cjs": "af2537ced333b5d72e3bc79285f4003a7a8f04eb5e9816970d174a768ebff455",
+        "scripts/release-demo-scenes.cjs": "8b0fd2d53ce7fb805892e00ff0e83b9580d8c94e883fbd458323d6c400b3443d"
+      },
+      "sha256": "ef32ab8aa6d623dab40694aa4b469ba36236c710c50771dfd6d0e3ddab586d2f"
+    },
+    {
+      "name": "proactive-inbox",
+      "title": "Review relevant evidence before starting",
+      "features": [
+        "CI-30",
+        "CI-31"
+      ],
+      "durationSeconds": 6.84,
+      "bytes": 323277,
+      "startSeconds": 133.2,
+      "capturedAt": "2026-11-05T07:58:52.327Z",
+      "recorderSourceHashes": {
+        "scripts/record-release-demos.cjs": "af2537ced333b5d72e3bc79285f4003a7a8f04eb5e9816970d174a768ebff455",
+        "scripts/release-demo-scenes.cjs": "8b0fd2d53ce7fb805892e00ff0e83b9580d8c94e883fbd458323d6c400b3443d"
+      },
+      "sha256": "7cc5cb1e99bd1f3acfcf507486e8c29cf4384719c59b2ff11b9b5404084b1953"
+    }
+  ],
+  "data": "Deterministic sample responses and evidence; no live agent or connected-account calls; HTTP(S) blocked",
+  "command": "npm run demo:record",
+  "viewport": {
+    "width": 1120,
+    "height": 840
+  }
+}

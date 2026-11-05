@@ -8,7 +8,7 @@ const receive = (type: string, payload?: unknown) => page.evaluate(message => wi
 const tool = { id: 'progress-read', name: 'Read', input: { file_path: 'owned.txt' }, status: 'running', kind: 'read' };
 const body = () => page.locator('.message.assistant .message-body');
 const contents = () => body().locator(':scope > .message-content').allTextContents();
-beforeAll(async () => { if (!CHROMIUM_UNAVAILABLE) browser = await chromium.launch(); });
+beforeAll(async () => { if (CHROMIUM_UNAVAILABLE) { return; } browser = await chromium.launch(); });
 beforeEach(async () => {
   if (CHROMIUM_UNAVAILABLE) return;
   page = await browser.newPage({ viewport: { width: 700, height: 1000 } }); errors = [];

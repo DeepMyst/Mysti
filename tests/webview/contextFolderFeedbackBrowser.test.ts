@@ -32,7 +32,7 @@ function createFiles(count: number, directory = folder) {
 }
 
 beforeAll(async () => {
-  if (CHROMIUM_UNAVAILABLE) throw new Error(CHROMIUM_UNAVAILABLE);
+  if (CHROMIUM_UNAVAILABLE) { return; }
   browser = await chromium.launch();
 });
 beforeEach(async () => {
@@ -92,7 +92,7 @@ function assertFiles(expected: string[]) {
 describe('EW01 folder feedback through actual host routes and browser warning rendering', () => {
   for (const route of routes) {
     for (const count of [19, 20, 21]) {
-      it(`${route}: ${count} files preserve the prefix cap and explain when it is reached`, async () => {
+      it.skipIf(CHROMIUM_UNAVAILABLE)(`${route}: ${count} files preserve the prefix cap and explain when it is reached`, async () => {
         const files = createFiles(count); await add(route); assertFiles(files.slice(0, 20));
         expect(reads).toEqual(files.slice(0, 20)); expect(walks).toEqual([folder]);
         const notices = await warnings();
@@ -104,7 +104,7 @@ describe('EW01 folder feedback through actual host routes and browser warning re
         }
       });
     }
-    it(`${route}: an unreadable subfolder does not hide readable sibling files`, async () => {
+    it.skipIf(CHROMIUM_UNAVAILABLE)(`${route}: an unreadable subfolder does not hide readable sibling files`, async () => {
       const denied = path.join(folder, 'a-denied-<img src=x onerror=alert(1)>'); fs.mkdirSync(denied); createFiles(1, denied);
       const later = path.join(folder, 'b-readable'); fs.mkdirSync(later); const files = createFiles(2, later);
       expect(fs.readdirSync(folder)).toEqual([path.basename(denied), path.basename(later)]);
@@ -113,20 +113,20 @@ describe('EW01 folder feedback through actual host routes and browser warning re
       expect(await page.locator('.mysti-toast img').count()).toBe(0);
       expect(walks).toEqual([folder, denied, later]);
     });
-    it(`${route}: a partial file read failure is visible while valid files stay available`, async () => {
+    it.skipIf(CHROMIUM_UNAVAILABLE)(`${route}: a partial file read failure is visible while valid files stay available`, async () => {
       const files = createFiles(3); deniedFiles.add(files[1]); await add(route); assertFiles([files[0], files[2]]);
       expect((await warnings()).join(' ')).toContain(path.basename(files[1]));
     });
   }
   for (const route of ['URI drop', 'Explorer action'] as const) {
-    it(`${route}: an empty folder explains why no context appeared`, async () => {
+    it.skipIf(CHROMIUM_UNAVAILABLE)(`${route}: an empty folder explains why no context appeared`, async () => {
       await add(route); assertFiles([]); expect((await warnings()).join(' ')).toMatch(/no .*files|empty/i);
     });
-    it(`${route}: root enumeration failure is visible and leaves existing context intact`, async () => {
+    it.skipIf(CHROMIUM_UNAVAILABLE)(`${route}: root enumeration failure is visible and leaves existing context intact`, async () => {
       const [existing] = createFiles(1, root); await context.addFileToContext(existing, 'owner'); deniedFolders.add(folder);
       await add(route); assertFiles([existing]); expect((await warnings()).join(' ')).toContain(path.basename(folder));
     });
-    it(`${route}: a delayed folder error after navigation cannot warn or update the replacement chat`, async () => {
+    it.skipIf(CHROMIUM_UNAVAILABLE)(`${route}: a delayed folder error after navigation cannot warn or update the replacement chat`, async () => {
       createFiles(1);
       let entered!: () => void, release!: () => void;
       const started = new Promise<void>(resolve => { entered = resolve; });
@@ -144,18 +144,18 @@ describe('EW01 folder feedback through actual host routes and browser warning re
       assertFiles([]); expect(messages).toEqual([]); expect(await warnings()).toEqual([]);
     });
   }
-  it('a repeated folder does not describe already-present files as unreadable', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a repeated folder does not describe already-present files as unreadable', async () => {
     const files = createFiles(2); await add('URI drop'); await add('URI drop'); assertFiles(files);
     expect(await warnings()).toEqual([]); expect(reads).toEqual(files);
   });
-  it('a failed candidate still counts toward the bounded prefix and is not reported as added', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a failed candidate still counts toward the bounded prefix and is not reported as added', async () => {
     const files = createFiles(21); deniedFiles.add(files[0]); await add('URI drop'); assertFiles(files.slice(1, 20));
     expect(reads).toEqual(files.slice(0, 20));
     const notices = (await warnings()).join(' ');
     expect(notices).toMatch(/limit.*20|20.*limit/i); expect(notices).toContain(path.basename(files[0]));
     expect(notices).not.toMatch(/added 20/i);
   });
-  it('all unreadable candidates identify the failed files', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('all unreadable candidates identify the failed files', async () => {
     const files = createFiles(2); files.forEach(file => deniedFiles.add(file)); await add('URI drop'); assertFiles([]);
     for (const file of files) expect((await warnings()).join(' ')).toContain(path.basename(file));
   });

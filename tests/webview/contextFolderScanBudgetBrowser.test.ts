@@ -37,7 +37,7 @@ function legacyPrefix(directory: string, result: string[] = []): string[] {
 }
 
 beforeAll(async () => {
-  if (CHROMIUM_UNAVAILABLE) throw new Error(CHROMIUM_UNAVAILABLE);
+  if (CHROMIUM_UNAVAILABLE) { return; }
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-folder-budget-')));
   wide = path.join(root, 'wide'); sparse = path.join(root, 'sparse'); deep = path.join(root, 'deep'); small = path.join(root, 'small');
   for (const folder of [wide, sparse, deep, small]) fs.mkdirSync(folder);
@@ -103,35 +103,35 @@ function assertExactBytes() {
 }
 
 describe('EW01 actual directory work and visible partial-scan limits', () => {
-  it('preserves the legacy depth-first UTF-8 prefix for listings within the scan budget', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('preserves the legacy depth-first UTF-8 prefix for listings within the scan budget', async () => {
     const expected = legacyPrefix(small); await add(small);
     expect(context.getContext('owner').map(item => item.path)).toEqual(expected); assertExactBytes();
     expect(await notices()).not.toMatch(/200|10,?000/);
   });
-  it('does not allocate an entire oversized directory and explains the entry budget', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('does not allocate an entire oversized directory and explains the entry budget', async () => {
     await add(wide); expect(context.getContext('owner')).toHaveLength(20); assertExactBytes();
     expect(bulk).toEqual([]); expect(handles).toHaveLength(1);
     expect(handles[0].entries).toBe(10000); expect(handles[0].bufferSize).toBeLessThanOrEqual(32);
     expect(await notices()).toMatch(/10,?000/); expect(await notices()).toMatch(/more|incomplete|partial/i);
   });
-  it('bounds sparse directory opens and does not falsely report an empty complete scan', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('bounds sparse directory opens and does not falsely report an empty complete scan', async () => {
     await add(sparse); expect(context.getContext('owner')).toEqual([]);
     expect(bulk.length + handles.length).toBeLessThanOrEqual(200);
     expect(await notices()).toMatch(/200/); expect(await notices()).toMatch(/more|incomplete|partial/i);
     expect(await notices()).not.toContain('No files to add');
   });
-  it('bounds deep traversal and closes each directory before opening its child', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('bounds deep traversal and closes each directory before opening its child', async () => {
     await add(deep); expect(context.getContext('owner')).toEqual([]);
     expect(bulk.length + handles.length).toBeLessThanOrEqual(200); expect(maxActiveHandles).toBeLessThanOrEqual(1);
     expect(await notices()).toMatch(/200/);
   });
-  it('a revoked operation performs no directory work', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a revoked operation performs no directory work', async () => {
     expect(await context.addFolderToContext(wide, 'owner', () => false)).toEqual([]);
     expect(bulk).toEqual([]); expect(handles).toEqual([]); expect(messages).toEqual([]);
   });
   for (const phase of ['open', 'read'] as const) {
     for (const action of ['Clear', 'navigation', 'close'] as const) {
-      it(`${action} during a pending directory ${phase} closes the late handle without adding or warning`, async () => {
+      it.skipIf(CHROMIUM_UNAVAILABLE)(`${action} during a pending directory ${phase} closes the late handle without adding or warning`, async () => {
         let entered!: () => void, release!: () => void;
         const started = new Promise<void>(resolve => { entered = resolve; });
         const held = new Promise<void>(resolve => { release = resolve; });
@@ -151,7 +151,7 @@ describe('EW01 actual directory work and visible partial-scan limits', () => {
       });
     }
   }
-  it('retains observed entries after an iteration error and closes the failed directory', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('retains observed entries after an iteration error and closes the failed directory', async () => {
     afterRead = async record => {
       if (record.path === small && record.entries === 2) throw Object.assign(new Error('controlled iteration failure'), { code: 'EIO' });
     };
@@ -161,14 +161,14 @@ describe('EW01 actual directory work and visible partial-scan limits', () => {
     expect(context.getContext('owner').map(item => item.path)).toEqual(expected); assertExactBytes();
     expect(await notices()).toContain('Could not read folder "small"');
   });
-  it('reports a close error without discarding already-read valid entries or retrying closure', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('reports a close error without discarding already-read valid entries or retrying closure', async () => {
     afterClose = async record => {
       if (record.path === small) throw Object.assign(new Error('controlled close result failure'), { code: 'EIO' });
     };
     await add(small); expect(context.getContext('owner').map(item => item.path)).toEqual(legacyPrefix(small));
     assertExactBytes(); expect(await notices()).toContain('Could not read folder "small"');
   });
-  it('finishing exactly 200 directories does not claim a further directory was skipped', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('finishing exactly 200 directories does not claim a further directory was skipped', async () => {
     const last = path.join(sparse, 'empty-199'); fs.rmdirSync(last);
     try {
       await add(sparse); expect(handles).toHaveLength(200); expect(await notices()).not.toMatch(/200|more files/i);

@@ -10,7 +10,7 @@ describe('context selection line labels in the shipped browser', () => {
   let browser: Browser, page: Page, errors: string[];
   const receive = (type: string, payload: unknown) => page.evaluate(message =>
     window.dispatchEvent(new MessageEvent('message', { data: message })), { type, payload });
-  beforeAll(async () => { if (!CHROMIUM_UNAVAILABLE) browser = await chromium.launch(); });
+  beforeAll(async () => { if (CHROMIUM_UNAVAILABLE) { return; } browser = await chromium.launch(); });
   beforeEach(async () => {
     if (CHROMIUM_UNAVAILABLE) return;
     errors = []; page = await browser.newPage();

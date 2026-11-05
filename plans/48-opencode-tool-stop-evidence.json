@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 1,
+  "feature": "PB-08",
+  "issue": "PB08-D08",
+  "recordedAt": "2026-11-05T07:25:12.952Z",
+  "platform": "macOS arm64",
+  "classification": "PASS_WITH_SCOPE_LIMITS",
+  "previousFailure": {
+    "recordedDate": "2026-11-03",
+    "classification": "FAIL",
+    "errors": [
+      "Error: Owned observation deadline: owned tool and sleep exit",
+      "Owned tool descendant survived primary cleanup: shell",
+      "Owned tool descendant survived primary cleanup: sleep"
+    ],
+    "source": "out-test/opencode-tool-stop-20261103/native-results.json"
+  },
+  "regression": {
+    "status": "PASS",
+    "passed": 366,
+    "failed": 0,
+    "skipped": 0,
+    "files": 36,
+    "command": "npx vitest run tests/providers/opencode tests/providers/base tests/utils/processKill.test.ts tests/utils/processStopObserver.test.ts tests/utils/processDetachedDescendants.test.ts tests/utils/processKillReal.test.ts",
+    "log": "out-test/opencode-tool-stop-20261105/focused-tests.log"
+  },
+  "native": {
+    "status": "PASS_WITH_SCOPE_LIMITS",
+    "acceptedCases": 3,
+    "nativeInvocations": 3,
+    "scriptedModelRequests": 5,
+    "externalProviderRequests": 0,
+    "verifiedSeparateToolGroup": true,
+    "toolProcessesGoneAfterStopMs": 48,
+    "postStopObservationMs": 12501,
+    "delayedWriteAbsent": true,
+    "emergencyDescendantCleanupCount": 0,
+    "allNativeClosed": true,
+    "allToolProcessesClosed": true,
+    "allOperationsSettled": true,
+    "allSocketsClosed": true,
+    "errorCount": 0,
+    "caseChunks": [
+      {
+        "label": "CONTROL",
+        "chunks": [
+          "tool_use",
+          "tool_result",
+          "text",
+          "done"
+        ]
+      },
+      {
+        "label": "TOOL_STOP",
+        "chunks": []
+      },
+      {
+        "label": "RECOVERY",
+        "chunks": [
+          "text",
+          "done"
+        ]
+      }
+    ],
+    "providerBundleSha256": "98358460128ca589599fd8f5ce4fee19680ef19ff60c6bbce5d8ae0a13e1abc6",
+    "rawResultSha256": "43f1561168341b5a6ee12db3620fe489d18cb4e95c3675426b23521009d0b79e"
+  },
+  "validation": {
+    "typecheck": "PASS",
+    "targetedEslint": {
+      "errors": 0,
+      "existingNamingWarnings": 3
+    }
+  },
+  "reproduce": {
+    "command": "node scripts/validation/opencode-tool-stop.cjs --cli /path/to/native/opencode",
+    "requirements": "npm ci, macOS, installed native Mach-O OpenCode binary, /usr/bin/sandbox-exec. The runner enforces isolated HOME/workspace and loopback-only network."
+  },
+  "limitations": [
+    "Scripted local model replies validate transport and cancellation mechanics; no paid or real model inference.",
+    "Native acceptance ran on macOS arm64; Linux, Windows, WSL and Docker remain unqualified.",
+    "No packaged VS Code UI acceptance or elapsed endurance claim.",
+    "POSIX process metadata inspection is bounded and best-effort. If unavailable, ordinary owned-group cleanup remains. Descendants that reparent before the ownership snapshot cannot safely be inferred.",
+    "PID birth-time/group matching narrows reuse risk; ps observation and kill are separate system calls, not an atomic process-handle operation."
+  ],
+  "reusableRunnerAcceptance": {
+    "schemaVersion": 1,
+    "classification": "PASS_WITH_SCOPE_LIMITS",
+    "recordedAt": "2026-11-05T07:33:32.467Z",
+    "platform": "darwin",
+    "architecture": "arm64",
+    "bundleSha256": "98358460128ca589599fd8f5ce4fee19680ef19ff60c6bbce5d8ae0a13e1abc6",
+    "command": "node scripts/validation/opencode-tool-stop.cjs --cli /path/to/native/opencode",
+    "cases": [
+      {
+        "label": "CONTROL",
+        "settled": true,
+        "chunkTypes": [
+          "tool_use",
+          "tool_result",
+          "text",
+          "done"
+        ]
+      },
+      {
+        "label": "TOOL_STOP",
+        "settled": true,
+        "chunkTypes": []
+      },
+      {
+        "label": "RECOVERY",
+        "settled": true,
+        "chunkTypes": [
+          "text",
+          "done"
+        ]
+      }
+    ],
+    "nativeInvocations": 3,
+    "scriptedModelRequests": 5,
+    "externalProviderRequests": 0,
+    "verifiedSeparateToolGroup": true,
+    "toolProcessesGoneAfterStopMs": 79,
+    "postStopObservationMs": 12501,
+    "delayedWriteAbsent": true,
+    "emergencyDescendantCleanupCount": 0,
+    "allNativeClosed": true,
+    "allToolProcessesClosed": true,
+    "allOperationsSettled": true,
+    "allSocketsClosed": true,
+    "errorCount": 0,
+    "scope": "Installed native CLI on macOS; production provider bundled from source, scripted loopback model and isolated disposable workspace. No paid inference, packaged VS Code UI, Windows/Linux qualification or elapsed endurance."
+  }
+}

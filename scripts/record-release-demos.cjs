@@ -11,7 +11,17 @@ const ts = require('typescript');
 const { chromium } = require('playwright');
 const root = path.resolve(__dirname, '..');
 process.chdir(root);
-const output = path.join(root, 'docs/releases/2.0-beta');
+const version = require('../package.json').version;
+const releaseLabel = process.env.MYSTI_DEMO_LABEL || version + ' · Beta 2';
+const output = path.resolve(root, process.env.MYSTI_DEMO_OUTPUT || 'docs/releases/2.0.1-beta.2/media');
+const only = new Set((process.env.MYSTI_DEMO_SCENES || '').split(',').filter(Boolean));
+const viewport = {width:1120,height:840};
+const metadata = require('./release-demo-scenes.cjs').metadata;
+const sourceFiles=['media/chat/chat.js','media/chat/chat.css','media/chat/index.html','media/chat/markdownRenderer.js','media/chat/subAgentCards.js','media/canvas/canvas.css','media/canvas/index.html','media/vt-dashboard/vt-dashboard.js','media/connections/connections.js','media/proactive/proactive.js','resources/dompurify.min.js','scripts/record-release-demos.cjs','scripts/release-demo-scenes.cjs'];
+const hash=file=>require('node:crypto').createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+const sourceAssetHashes=Object.fromEntries(sourceFiles.map(file=>[file,hash(path.join(root,file))]));
+const recorderSourceHashes=Object.fromEntries(Object.entries(sourceAssetHashes).filter(([file])=>file.startsWith('scripts/')));
+for (const name of only) if (!metadata[name]) throw new Error('Unknown scene: '+name);
 fs.mkdirSync(output, { recursive: true });
 const fixtureFile = path.join(root, 'tests/webview/chatPageHtml.ts');
 const fixture = new Module(fixtureFile, module);
@@ -20,10 +30,10 @@ fixture._compile(ts.transpileModule(fs.readFileSync(fixtureFile, 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText, fixtureFile);
 const { composeChatHtml, INITIAL_STATE } = fixture.exports;
-const colors = `:root{--vscode-editor-background:#141b22;--vscode-sideBar-background:#141b22;--vscode-foreground:#e4eae9;--vscode-descriptionForeground:#96aaa9;--vscode-panel-border:#33434d;--vscode-font-family:Arial,sans-serif;--vscode-font-size:14px;--vscode-focusBorder:#71dfbc;--vscode-textLink-foreground:#71dfbc;--vscode-button-background:#266c63;--vscode-button-foreground:#fff;--vscode-input-background:#24303a;--vscode-input-foreground:#e4eae9;--vscode-input-border:#3b505b;--vscode-errorForeground:#f6a892;--vscode-list-hoverBackground:#243b43;--vscode-list-activeSelectionBackground:#254b51}body{font-family:Arial,sans-serif;background:#141b22;color:#e4eae9}#release-caption{position:fixed;top:0;left:0;right:0;padding:12px 24px;background:#22343c;color:#a9e8d2;font:12px Arial,sans-serif;z-index:99999;letter-spacing:.05em;border-bottom:1px solid #43605c;box-sizing:border-box;width:100%;white-space:nowrap;overflow:hidden;text-align:left}body{padding-top:40px!important;box-sizing:border-box}#app{height:calc(100vh - 40px)}`;
+const colors = `:root{--vscode-editor-background:#141b22;--vscode-sideBar-background:#141b22;--vscode-foreground:#e4eae9;--vscode-descriptionForeground:#96aaa9;--vscode-panel-border:#33434d;--vscode-font-family:Arial,sans-serif;--vscode-font-size:14px;--vscode-focusBorder:#71dfbc;--vscode-textLink-foreground:#71dfbc;--vscode-button-background:#266c63;--vscode-button-foreground:#fff;--vscode-input-background:#24303a;--vscode-input-foreground:#e4eae9;--vscode-input-border:#3b505b;--vscode-errorForeground:#f6a892;--vscode-list-hoverBackground:#243b43;--vscode-list-activeSelectionBackground:#254b51}body{font-family:Arial,sans-serif;background:#141b22;color:#e4eae9}#release-caption{position:fixed;top:0;left:0;right:0;height:64px;padding:11px 24px;background:#152b30;color:#a9e8d2;font:12px Arial,sans-serif;z-index:2147483646;letter-spacing:.05em;border-bottom:1px solid #43605c;box-sizing:border-box;width:100%;white-space:nowrap;overflow:hidden;text-align:left}body{padding-top:64px!important;box-sizing:border-box}#setup-wizard{top:64px}#app{height:calc(100vh - 64px)}#release-caption strong{display:block;color:#eff9f4;font-size:16px;letter-spacing:0;font-weight:500;margin-bottom:5px}#release-caption small{font-size:10px;letter-spacing:.12em}#release-pointer{position:fixed;z-index:2147483647;width:16px;height:16px;border:2px solid #9de9c9;border-radius:50%;background:#163c4099;pointer-events:none;transform:translate(-50%,-50%);left:-30px;top:-30px;box-shadow:0 0 0 3px #14242b80}`;
 const opinionProviders = [
-  { id: 'claude-code', icon:'icons/Claude.png', displayName: 'Claude Code', shortId: 'claude', color: '#e6aa86', models: [{ id: 'opus', name: 'Opus', description: 'Complex coding and reasoning' }], capabilities: { supportsUltracode: true, effortLevels: ['low','medium','high','xhigh','max'], effortDefault: 'high' } },
-  { id: 'openai-codex', icon:'icons/openai_white.png', displayName: 'Codex', shortId: 'codex', color: '#7fe3c0', models: [{ id: 'codex', name: 'Codex', description: 'Coding and review' }], capabilities: { effortLevels: ['low','medium','high','xhigh'] } },
+  { id: 'claude-code', icon:'icons/Claude.png', displayName: 'Claude Code', shortId: 'claude', color: '#e6aa86', models: [{ id: 'opus', name: 'Opus', description: 'Complex coding and reasoning' }], capabilities: { modelSelection: 'full', supportsReadOnly: true, supportsAskPermission: true, supportsUltracode: true, effortLevels: ['low','medium','high','xhigh','max'], effortDefault: 'high' } },
+  { id: 'openai-codex', icon:'icons/openai_white.png', displayName: 'Codex', shortId: 'codex', color: '#7fe3c0', models: [{ id: 'codex', name: 'Codex', description: 'Coding and review' }], capabilities: { modelSelection: 'full', supportsReadOnly: true, supportsAskPermission: true, effortLevels: ['low','medium','high','xhigh'] } },
 ];
 // Match registered adapters, not every experimental provider source file.
 const extraProviders = [
@@ -32,7 +42,7 @@ const extraProviders = [
  ['opencode','OpenCode','opencode'], ['qwen-code','Qwen Code','qwen'], ['hermes','Hermes','hermes'],
  ['continue','Continue','continue'], ['kimi-code','Kimi Code','kimi'], ['ollama','Ollama','ollama'],
  ['localai','LocalAI','localai'], ['openrouter','OpenRouter','openrouter'], ['minimax','MiniMax','minimax'],
-].map(([id,displayName,shortId]) => ({id,displayName,shortId,models:[],capabilities:{}}));
+].map(([id,displayName,shortId]) => ({id,displayName,shortId,models:id==='ollama'?[{id:'local-model',name:'Local model'}]:[],capabilities:id==='ollama'?{supportsToolUse:true,toolCallsAreProposals:true,planMode:'detected',modelSelection:'custom-only'}:{}}));
 const providers = [...opinionProviders, ...extraProviders];
 const recordings = [];
 const state = { ...INITIAL_STATE, brainstormAgents: ['claude-code','openai-codex'], providerAvailability: Object.fromEntries(providers.map(p=>[p.id,{available:true}])), settings: { ...INITIAL_STATE.settings, model: 'opus' },
@@ -42,17 +52,30 @@ const state = { ...INITIAL_STATE, brainstormAgents: ['claude-code','openai-codex
 const fire = (page, type, payload) => page.evaluate(m => window.dispatchEvent(new MessageEvent('message', {data:m})), {type,payload});
 const pause = (page, ms = 700) => page.waitForTimeout(ms);
 async function caption(page, text) {
-  await page.evaluate(text => { let el=document.getElementById('release-caption'); if(!el){el=document.createElement('div');el.id='release-caption';document.body.appendChild(el);}el.textContent=text; }, 'MYSTI 2.0 BETA  /  ' + text + '  /  INTERFACE DEMO · SAMPLE DATA');
+  await page.evaluate(({text,releaseLabel}) => {
+    let el=document.getElementById('release-caption');
+    if(!el){el=document.createElement('div');el.id='release-caption';document.body.appendChild(el);}
+    el.replaceChildren();const title=document.createElement('strong');title.textContent=text;el.appendChild(title);
+    const detail=document.createElement('small');detail.textContent='MYSTI '+releaseLabel+'  /  INTERFACE DEMO · SAMPLE DATA';el.appendChild(detail);
+    if(!document.getElementById('release-pointer')){
+      const pointer=document.createElement('div');pointer.id='release-pointer';document.body.appendChild(pointer);
+      document.addEventListener('mousemove',e=>{pointer.style.left=e.clientX+'px';pointer.style.top=e.clientY+'px';});
+      document.addEventListener('mousedown',()=>{pointer.style.background='#9de9c9';});
+      document.addEventListener('mouseup',()=>{pointer.style.background='#163c4099';});
+    }
+  }, {text,releaseLabel});
+  if(page.__captureReady===undefined) page.__captureReady=Date.now();
 }
 const asset = (file, mime='image/png') => 'data:'+mime+';base64,'+fs.readFileSync(file).toString('base64');
-async function chat(page) {
-  const html=composeChatHtml().replace(/src="\/([^"]+)"/g, (match, relative) => {
+/** The shipped chat page with icons inlined and the current package version. */
+function composeDemoChatHtml() {
+  return composeChatHtml().replaceAll('0.0.0-test',version).replace(/src="\/([^"]+)"/g, (match, relative) => {
     const file=path.join('resources',relative);
     if (!/\.(png|svg|webp|jpg|gif)$/i.test(file) || !fs.existsSync(file)) return match;
     const ext=path.extname(file).slice(1);
     return 'src="'+asset(file,ext==='svg'?'image/svg+xml':'image/'+ext)+'"';
   }).replace(/window\.__MYSTI_BOOT__ = (.*?);/, (_match, json) => {
-    const boot=JSON.parse(json);boot.version='2.0.0';boot.logoUri=asset('resources/Mysti-Logo.png');
+    const boot=JSON.parse(json);boot.version=version;boot.logoUri=asset('resources/Mysti-Logo.png');
     for(const name of fs.readdirSync('resources/icons').filter(n=>n.endsWith('.png'))) {
       boot.iconUris[name.slice(0,-4)]=asset('resources/icons/'+name);
     }
@@ -65,28 +88,52 @@ async function chat(page) {
     boot.openaiLogoDarkUri=asset('resources/icons/openai_white.png');
     return 'window.__MYSTI_BOOT__ = '+JSON.stringify(boot)+';';
   });
-  await page.setContent(html); await page.addStyleTag({content:colors}); await fire(page,'initialState',state);
+}
+async function chat(page) {
+  await page.setContent(composeDemoChatHtml()); await page.addStyleTag({content:colors}); await fire(page,'initialState',state);
   const footer=await page.locator('#agent-select-btn').boundingBox();
-  if(!footer || footer.y+footer.height>760) throw new Error('Composer clipped by recording caption');
+  if(!footer || footer.y+footer.height>viewport.height) throw new Error('Composer clipped by recording caption');
 }
 async function record(browser, name, action) {
+  if(only.size && !only.has(name)) return;
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(),'mysti-demo-'));
-  const context = await browser.newContext({viewport:{width:1000,height:760},recordVideo:{dir:scratch,size:{width:1000,height:760}}});
-  const page = await context.newPage(); const errors=[];page.on('pageerror',e=>errors.push(e.message));
+  const context = await browser.newContext({viewport,recordVideo:{dir:scratch,size:viewport}});
+  // Samples stay offline: requests from an accidental external image/link fail.
+  await context.route(/^https?:/, route => route.abort());
+  const startedAt=Date.now();
+  const page = await context.newPage(); page.setDefaultTimeout(12000);
+  const errors=[];page.on('pageerror',e=>errors.push(e.message));
   const video = page.video();
-  try { await action(page); await pause(page,1500); const broken=await page.evaluate(()=>Array.from(document.images).filter(img=>img.getBoundingClientRect().width>0 && img.getBoundingClientRect().height>0 && !img.naturalWidth).map(img=>img.getAttribute('src'))); if(broken.length) throw new Error('Visible images failed to load: '+JSON.stringify(broken)); await page.screenshot({path:path.join(output,name+'.png')}); }
-  finally { await context.close(); }
-  if(errors.length) throw new Error(errors.join('\n'));
-  const source=await video.path();
-  execFileSync('ffmpeg',['-y','-loglevel','error','-i',source,'-vf','fps=10,scale=800:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse=dither=bayer','-loop','0',path.join(output,name+'.gif')]);
-  execFileSync('ffmpeg',['-y','-loglevel','error','-i',source,'-an','-c:v','libx264','-crf','24','-pix_fmt','yuv420p','-movflags','+faststart',path.join(output,name+'.mp4')]);
-  fs.rmSync(scratch,{recursive:true,force:true});
-  recordings.push(name);
-  console.log('Recorded '+name);
+  try {
+    await action(page);await page.evaluate(()=>document.getElementById('release-pointer')?.style.setProperty('opacity','0'));await pause(page,1800);
+    const broken=await page.evaluate(()=>Array.from(document.images).filter(img=>img.getBoundingClientRect().width>0 && img.getBoundingClientRect().height>0 && !img.naturalWidth).map(img=>img.getAttribute('src')));
+    if(broken.length) throw new Error('Visible images failed to load: '+JSON.stringify(broken));
+    if(!await page.evaluate(()=>!!document.elementFromPoint(30,20)?.closest('#release-caption'))) throw new Error('Sample-data caption is obscured');
+    if(!page.__posterSaved) await page.screenshot({path:path.join(output,name+'.png')});
+    if(errors.length) throw new Error(errors.join('\n'));
+    await context.close();
+    const source=await video.path();
+    const trim=Math.max(0,((page.__captureReady || startedAt)-startedAt)/1000).toFixed(3);
+    execFileSync('ffmpeg',['-y','-loglevel','error','-ss',trim,'-i',source,'-an','-c:v','libx264','-crf','23','-pix_fmt','yuv420p','-movflags','+faststart',path.join(output,name+'.mp4')]);
+    if(name==='agent-workflow') execFileSync('ffmpeg',['-y','-loglevel','error','-ss',trim,'-i',source,'-vf','fps=8,scale=840:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse=dither=bayer','-loop','0',path.join(output,name+'.gif')]);
+    const probe=JSON.parse(execFileSync('ffprobe',['-v','error','-show_entries','format=duration,size','-of','json',path.join(output,name+'.mp4')],{encoding:'utf8'}));
+    recordings.push({name,...metadata[name],capturedAt:new Date().toISOString(),recorderSourceHashes,durationSeconds:Number(probe.format.duration),bytes:Number(probe.format.size),sha256:hash(path.join(output,name+'.mp4'))});
+    console.log('Recorded '+name+' ('+probe.format.duration+'s)');
+  } catch(error) {
+    await page.screenshot({path:path.join(scratch,'failure.png')}).catch(()=>{});
+    console.error('Scene failed; diagnostic screenshot: '+path.join(scratch,'failure.png'));
+    throw error;
+  } finally {
+    await context.close();
+    if(recordings.some(recording=>recording.name===name)) fs.rmSync(scratch,{recursive:true,force:true});
+  }
 }
-(async()=>{
+module.exports = { composeDemoChatHtml, demoState: state, colors };
+if (require.main === module) (async()=>{
  const browser=await chromium.launch();
  try {
+  const helpers={record,chat,caption,fire,pause,state,colors,asset,output,composeDemoChatHtml};
+  await require('./release-demo-scenes.cjs').recordBefore(browser,helpers);
   await record(browser,'agent-opinions',async page=>{
    await chat(page); await caption(page,'Two agents. Two independent opinions.');
    await page.fill('#message-input','@claude @codex What are your opinions on adding a cache to this API?'); await pause(page,1200);
@@ -113,7 +160,7 @@ async function record(browser, name, action) {
    if(await page.locator('.second-opinion-item[data-agent="claude-code"]').count()) throw new Error('Second opinion offered the original agent');
    await page.click('.second-opinion-item[data-agent="openai-codex"]');
    const request=await page.evaluate(()=>window.__posted.find(m=>m.type==='sendMessage'));
-   if(request?.payload?.content!=='@codex '+question) throw new Error('Second opinion did not send the original question to Codex');
+   if(request?.payload?.content!==question || request.payload.secondOpinion?.provider!=='openai-codex' || request.payload.secondOpinion?.messageId!=='question') throw new Error('Second opinion did not preserve the original question and explicit respondent');
    await fire(page,'messageAdded',{id:'second-question',role:'user',content:request.payload.content,timestamp:Date.now()});
    await fire(page,'responseStarted',{provider:'openai-codex'});await pause(page,900);
    const second='Also test the ambiguous outcome: the payment succeeded, but the response timed out. Reconcile with the payment provider before retrying.';
@@ -154,7 +201,8 @@ async function record(browser, name, action) {
    await page.click('#agent-select-btn');await pause(page,1700);
    for (const id of ['openai-codex','ollama','claude-code']) {
     const row=page.locator('#agent-menu .agent-menu-item[data-agent="'+id+'"]');
-    await row.scrollIntoViewIfNeeded();await pause(page,1000);await row.click();await pause(page,1000);
+    await row.scrollIntoViewIfNeeded();await pause(page,1000);await row.click();
+    await fire(page,'settingsSync',{provider:id,model:id==='claude-code'?'opus':id==='openai-codex'?'codex':'local-model'});await pause(page,1000);
     const selected=await page.evaluate(id=>window.__posted.some(m=>m.type==='updateSettings'&&m.payload?.provider===id),id);
     if(!selected) throw new Error('Provider selection did not reach host: '+id);
     if(await page.inputValue('#message-input')!=='Explain the main entry point of this project.') throw new Error('Switch discarded draft');
@@ -221,16 +269,50 @@ async function record(browser, name, action) {
    await page.evaluate(d=>window.dispatchEvent(new MessageEvent('message',{data:d})),data);
    await page.locator('#task-briefing').scrollIntoViewIfNeeded();await pause(page,1000);
   });
+  await require('./release-demo-scenes.cjs').recordAfter(browser,helpers);
+  if(only.size) {
+    const previousPath=path.join(output,'capture.json');
+    if(!fs.existsSync(previousPath)){console.log('Selected scenes saved; run all scenes to create the tour.');return;}
+    const previous=JSON.parse(fs.readFileSync(previousPath,'utf8'));
+    const compatible=previous.version===version && sourceFiles.filter(file=>!file.startsWith('scripts/')).every(file=>previous.sourceAssetHashes?.[file]===sourceAssetHashes[file]);
+    if(!compatible){console.log('Selected scenes saved; source assets changed, so run all scenes to rebuild the tour.');return;}
+    for(const name of Object.keys(metadata)) {
+      if(recordings.some(recording=>recording.name===name))continue;
+      const old=previous.recordings.find(recording=>recording.name===name);
+      if(!old || !fs.existsSync(path.join(output,name+'.mp4')) || !fs.existsSync(path.join(output,name+'.png'))) throw new Error('Full capture required: missing '+name);
+      if(old.sha256 && old.sha256!==hash(path.join(output,name+'.mp4')))throw new Error('Full capture required: existing clip changed: '+name);
+      recordings.push({...old,capturedAt:old.capturedAt||previous.capturedAt,recorderSourceHashes:old.recorderSourceHashes||Object.fromEntries(Object.entries(previous.sourceAssetHashes).filter(([file])=>file.startsWith('scripts/'))),sha256:hash(path.join(output,name+'.mp4'))});
+    }
+  }
+  const tourOrder=['getting-started','provider-switching','context-and-trust','composer-controls','agent-workflow','agent-opinions','second-opinion','brainstorm','stop-and-recovery','history-and-rewind','settings-and-help','canvas-design','visual-test','connected-tools','proactive-inbox'];
+  recordings.sort((a,b)=>tourOrder.indexOf(a.name)-tourOrder.indexOf(b.name));
   const page=await browser.newPage({viewport:{width:1440,height:820},deviceScaleFactor:1});
   const logo='data:image/png;base64,'+fs.readFileSync('resources/Mysti-Logo.png').toString('base64');
   const screen='data:image/png;base64,'+fs.readFileSync(path.join(output,'agent-opinions.png')).toString('base64');
-  await page.setContent(`<html><style>*{box-sizing:border-box}body{margin:0;background:#101820;color:#f0f0e7;font-family:Arial,sans-serif;padding:64px}header{display:flex;align-items:center;gap:16px;letter-spacing:3px;font-size:18px}header img{width:52px}small{margin-left:auto;color:#a4d8c5;border:1px solid #4a665c;border-radius:30px;padding:12px 18px;font-size:13px;letter-spacing:2px}main{display:grid;grid-template-columns:1fr 1.1fr;gap:48px;align-items:center;height:560px}h1{font-size:76px;line-height:1.03;font-weight:500;letter-spacing:-4px;margin:0 0 28px}em{font-style:normal;color:#9bdfc2}p{font-size:23px;line-height:1.5;color:#b1c2c4;max-width:510px}main img{width:100%;border:1px solid #46545c;border-radius:18px;box-shadow:0 25px 100px #0008}footer{display:flex;gap:38px;border-top:1px solid #33434b;padding-top:25px;font-size:15px;letter-spacing:1px;color:#bbd0cc}</style><header><img src="${logo}">MYSTI<small>2.0 BETA</small></header><main><div><h1>Your agents.<br><em>Working together.</em></h1><p>Assign the right work. Hear independent opinions. Keep the context in one workspace.</p></div><img src="${screen}"></main><footer><span>CLAUDE CODE + CODEX + MORE</span><span>IN YOUR VS CODE WORKSPACE</span><span>OPEN SOURCE · APACHE 2.0</span></footer></html>`);
+  await page.setContent(`<html><style>*{box-sizing:border-box}body{margin:0;background:#101820;color:#f0f0e7;font-family:Arial,sans-serif;padding:64px}header{display:flex;align-items:center;gap:16px;letter-spacing:3px;font-size:18px}header img{width:52px}small{margin-left:auto;color:#a4d8c5;border:1px solid #4a665c;border-radius:30px;padding:12px 18px;font-size:13px;letter-spacing:2px}main{display:grid;grid-template-columns:1fr 1.1fr;gap:48px;align-items:center;height:560px}h1{font-size:76px;line-height:1.03;font-weight:500;letter-spacing:-4px;margin:0 0 28px}em{font-style:normal;color:#9bdfc2}p{font-size:23px;line-height:1.5;color:#b1c2c4;max-width:510px}main img{width:100%;border:1px solid #46545c;border-radius:18px;box-shadow:0 25px 100px #0008}footer{display:flex;gap:38px;border-top:1px solid #33434b;padding-top:25px;font-size:15px;letter-spacing:1px;color:#bbd0cc}</style><header><img src="${logo}">MYSTI<small>${releaseLabel}</small></header><main><div><h1>Your agents.<br><em>Working together.</em></h1><p>Assign the right work. Hear independent opinions. Keep the context in one workspace.</p></div><img src="${screen}"></main><footer><span>CLAUDE CODE + CODEX + MORE</span><span>IN YOUR VS CODE WORKSPACE</span><span>OPEN SOURCE · APACHE 2.0</span></footer></html>`);
   await page.screenshot({path:path.join(output,'hero.png')});
   await page.setViewportSize({width:1200,height:500});
   await page.setContent(`<html><style>body{margin:0;background:#101820;color:#edf4ee;font:18px Arial;padding:48px}h1{font-weight:400;font-size:32px}main{display:flex;align-items:center;gap:22px;margin-top:48px}.box{padding:28px;border:1px solid #47625b;border-radius:14px;background:#1c2c32;flex:1}.lanes{display:grid;gap:16px;flex:1.2}.lanes div{padding:18px;border-left:3px solid #89dbb8;background:#203139;border-radius:8px}small{display:block;margin-top:12px;color:#a9bfbd;line-height:1.5}.arrow{color:#9bdfc2;font-size:28px}footer{color:#a9bfbd;margin-top:34px;font-size:15px}</style><h1>Two opinions. Real assignments. Visible results.</h1><main><div class="box">Your request<small>@claude @codex<br>Review this design</small></div><span class="arrow">→</span><div class="lanes"><div>Claude Code<small>Independent, read-only opinion</small></div><div>Codex<small>Independent, read-only opinion</small></div></div><span class="arrow">→</span><div class="box">One conversation<small>Separate, attributable responses.<br>Failures stay visible.</small></div></main><footer>Explicit “then” creates a dependency. Work that may change files is serialized through permission gates.</footer></html>`);
-  await page.screenshot({path:path.join(output,'routing.png')});await page.close();
-  const concat=path.join(output,'.tour-inputs.txt');fs.writeFileSync(concat,recordings.map(n=>`file '${n}.mp4'`).join('\n'));
-  try{execFileSync('ffmpeg',['-y','-loglevel','error','-f','concat','-safe','0','-i',concat,'-c','copy','-movflags','+faststart',path.join(output,'mysti-2-beta-tour.mp4')]);}finally{fs.unlinkSync(concat);}
-  fs.writeFileSync(path.join(output,'capture.json'),JSON.stringify({version:'2.0.0',capturedAt:new Date().toISOString(),source:'Shipped chat, Connections and Proactive webviews',recordings,data:'Deterministic sample responses and evidence; no live agent or connected-account calls',command:'npm run demo:record',viewport:{width:1000,height:760}},null,2)+'\n');
+  await page.screenshot({path:path.join(output,'routing.png')});
+  await page.setViewportSize({width:1440,height:1940});
+  const cards=recordings.map((recording,index)=>'<article><img src="'+asset(path.join(output,recording.name+'.png'))+'"><p><span>'+String(index+1).padStart(2,'0')+'</span> '+recording.title+'</p></article>').join('');
+  await page.setContent('<html><style>*{box-sizing:border-box}body{margin:0;padding:40px;background:#101c20;color:#edf7f1;font:16px Arial}h1{font-size:34px;margin:0 0 10px;font-weight:500}header p{color:#a0bfb4;margin:0 0 26px}main{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}article{margin:0;border:1px solid #355046;border-radius:10px;overflow:hidden;background:#17292c}article img{width:100%;display:block}article p{margin:0;padding:14px 16px;font-size:15px;line-height:1.5}article span{color:#86d9b7;margin-right:5px}</style><header><h1>Mysti · a tour of the essentials</h1><p>'+releaseLabel+' / 15 interface walkthroughs / Clearly labelled sample data</p></header><main>'+cards+'</main></html>');
+  await page.screenshot({path:path.join(output,'contact-sheet.jpg'),quality:86,type:'jpeg',fullPage:true});await page.close();
+  const concat=path.join(output,'.tour-inputs.txt');fs.writeFileSync(concat,recordings.map(r=>`file '${r.name}.mp4'`).join('\n'));
+  const chapters=path.join(output,'.tour-chapters.txt');let elapsed=0;
+  let chapterText=';FFMETADATA1\ntitle=Mysti feature tour\n';let captions='WEBVTT\n\n';
+  const clock=ms=>new Date(ms).toISOString().slice(11,23);
+  const chapterRows=[];
+  for(const recording of recordings){
+    const start=Math.round(elapsed*1000);elapsed+=recording.durationSeconds;const end=Math.round(elapsed*1000);
+    chapterText+='[CHAPTER]\nTIMEBASE=1/1000\nSTART='+start+'\nEND='+end+'\ntitle='+recording.title+'\n';
+    captions+=clock(start)+' --> '+clock(end)+'\n'+recording.title+'\nInterface demo · sample data\n\n';
+    chapterRows.push('| '+clock(start).slice(3,8)+' | ['+recording.title+']('+recording.name+'.mp4) |');
+    recording.startSeconds=start/1000;
+  }
+  fs.writeFileSync(chapters,chapterText);fs.writeFileSync(path.join(output,'mysti-feature-tour.vtt'),captions.trimEnd()+'\n');
+  fs.writeFileSync(path.join(output,'CHAPTERS.md'),'# Mysti feature tour\n\nAll chapters use the shipped webviews with clearly labelled sample data.\n\n| Start | Scene |\n| --- | --- |\n'+chapterRows.join('\n')+'\n');
+  try{execFileSync('ffmpeg',['-y','-loglevel','error','-f','concat','-safe','0','-i',concat,'-i',chapters,'-map_metadata','1','-map_chapters','1','-c','copy','-movflags','+faststart',path.join(output,'mysti-feature-tour.mp4')]);}finally{fs.unlinkSync(concat);fs.unlinkSync(chapters);}
+  fs.writeFileSync(path.join(output,'capture.json'),JSON.stringify({version,releaseLabel,capturedAt:new Date().toISOString(),sourceAssetHashes,source:'Shipped chat, Canvas, Visual Test, Connections and Proactive webviews',recordings,data:'Deterministic sample responses and evidence; no live agent or connected-account calls; HTTP(S) blocked',command:'npm run demo:record',viewport},null,2)+'\n');
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

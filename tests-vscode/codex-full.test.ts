@@ -7,17 +7,18 @@ import { execFileSync } from 'child_process';
 import * as vscode from 'vscode';
 import { chromium, type Browser, type Page, type Frame } from 'playwright';
 import { installCodexFullObserver } from './codex-full-observer';
-const { exactCommand, patchScope, readonlyOutcome, assertToolOutputProjection } = require('../scripts/validation/codex-full-oracle.cjs') as {
-  readonlyOutcome: (value: any) => string;
-  assertToolOutputProjection: (value: any) => any;
-  exactCommand: (actual: unknown, expected: string) => boolean;
-  patchScope: (changes: unknown, workspace: string, purpose: 'fix' | 'deny' | 'revision' | 'tests') => boolean;
-};
 const hash = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
 type Scope = { commands?: string[]; patch?: 'fix' | 'deny' | 'revision' | 'tests'; readonly?: boolean; holdPatch?: boolean; attachments?: boolean };
 type Panel = { frame: Frame; tab: vscode.Tab; conversationId: string; panelId: string; effort: string };
 
 if (process.env.MYSTI_PB02_FULL === '1') {
+  // Native campaign imports may resolve pinned local evidence; require opt-in first.
+  const { exactCommand, patchScope, readonlyOutcome, assertToolOutputProjection } = require('../scripts/validation/codex-full-oracle.cjs') as {
+    readonlyOutcome: (value: any) => string;
+    assertToolOutputProjection: (value: any) => any;
+    exactCommand: (actual: unknown, expected: string) => boolean;
+    patchScope: (changes: unknown, workspace: string, purpose: 'fix' | 'deny' | 'revision' | 'tests') => boolean;
+  };
   describe('PB-02 real editor full25 Codex developer turns', function () {
     this.timeout(3_300_000);
     let manifest: any, owner: any, browser: Browser, workbench: Page, frame: Frame, sourceId: string, panelId: string, complete = false;

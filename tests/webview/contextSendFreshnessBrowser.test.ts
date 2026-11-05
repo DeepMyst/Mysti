@@ -32,7 +32,7 @@ let releases: Array<() => void>, reads: Array<{ path: string; bytes: number; clo
 const receive = (type: string, payload?: unknown) => page.evaluate(message =>
   window.dispatchEvent(new MessageEvent('message', { data: message })), { type, payload });
 
-beforeAll(async () => { if (CHROMIUM_UNAVAILABLE) throw new Error(CHROMIUM_UNAVAILABLE); browser = await chromium.launch(); });
+beforeAll(async () => { if (CHROMIUM_UNAVAILABLE) { return; } browser = await chromium.launch(); });
 beforeEach(async () => {
   clearMockConfig(); setMockConfig('autoContext', false); setMockConfig('chat.disableAIFeatures', true);
   setMockConfig('models.autoRefresh', false); setMockConfig('updates.checkCliUpdates', false);
@@ -116,7 +116,7 @@ async function reach(gate: ReturnType<typeof observeRead>, pending: Promise<void
 }
 
 describe('EW02 persistent context freshness through composer, host, and prompt builder', () => {
-  it('rereads each send and preserves earlier message snapshots', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('rereads each send and preserves earlier message snapshots', async () => {
     const item = await add(); await send();
     fs.writeFileSync(item.path, 'UPDATED_FILE_BYTES'); observeRead(item.path); await send();
     expect(captures).toHaveLength(2); expect(captures[1].context[0].content).toBe('UPDATED_FILE_BYTES');
@@ -125,12 +125,12 @@ describe('EW02 persistent context freshness through composer, host, and prompt b
       .toEqual(['ORIGINAL_FILE_BYTES', 'UPDATED_FILE_BYTES']);
     expect(h.contextManager.getContext('sidebar')[0].content).toBe('UPDATED_FILE_BYTES');
   });
-  it('keeps an edited empty file as valid context', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('keeps an edited empty file as valid context', async () => {
     const item = await add(); fs.writeFileSync(item.path, ''); await send();
     expect(captures[0].context).toHaveLength(1); expect(captures[0].context[0].content).toBe('');
   });
   for (const fault of ['removed', 'oversized', 'invalid UTF-8', 'NUL', 'directory'] as const) {
-    it(`drops ${fault} files, warns, and retains a valid sibling`, async () => {
+    it.skipIf(CHROMIUM_UNAVAILABLE)(`drops ${fault} files, warns, and retains a valid sibling`, async () => {
       const bad = await add('bad.ts'), good = await add('good.ts', 'GOOD_ORIGINAL');
       if (fault === 'removed' || fault === 'directory') fs.unlinkSync(bad.path);
       if (fault === 'directory') fs.mkdirSync(bad.path);
@@ -145,7 +145,7 @@ describe('EW02 persistent context freshness through composer, host, and prompt b
       expect(await page.locator('#context-items').textContent()).not.toContain('bad.ts');
     });
   }
-  it('does not reread disabled files and retains selected text snapshots', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('does not reread disabled files and retains selected text snapshots', async () => {
     const item = await add(); h.contextManager.setItemEnabled(item.id, false, 'sidebar');
     const selection = await h.contextManager.addSelectionToContext(item.path, 'SELECTION_SNAPSHOT', 2, 4, 'typescript', 'sidebar');
     fs.unlinkSync(item.path); observeRead(item.path);
@@ -154,7 +154,7 @@ describe('EW02 persistent context freshness through composer, host, and prompt b
     expect(captures[0].context.find(entry => entry.id === selection!.id)?.content).toBe('SELECTION_SNAPSHOT');
     expect(reads).toEqual([]); expect(h.sidebarMessages.filter(event => event.type === 'contextWarning')).toEqual([]);
   });
-  it('reuses the original question snapshot for a second opinion after the file is deleted', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('reuses the original question snapshot for a second opinion after the file is deleted', async () => {
     const item = await add(); await send(); fs.unlinkSync(item.path); observeRead(item.path);
     const question = manager.getCurrentConversation()!.messages.find(message => message.role === 'user')!;
     h.providerManager.getProvider = (id: string) => registry.get(id)?.config;
@@ -163,7 +163,7 @@ describe('EW02 persistent context freshness through composer, host, and prompt b
     expect(captures).toHaveLength(2); expect(captures[1].context[0].content).toBe('ORIGINAL_FILE_BYTES'); expect(reads).toEqual([]);
   });
   for (const action of ['clear', 'navigation', 'close', 'stop'] as const) {
-    it(`${action} while reading revokes the send without stale feedback`, async () => {
+    it.skipIf(CHROMIUM_UNAVAILABLE)(`${action} while reading revokes the send without stale feedback`, async () => {
       const item = await add(); fs.writeFileSync(item.path, 'UPDATED_FILE_BYTES'); const gate = observeRead(item.path, true);
       const pending = send(); await reach(gate, pending);
       if (action === 'clear') h.contextManager.clearContext('sidebar');
@@ -175,7 +175,7 @@ describe('EW02 persistent context freshness through composer, host, and prompt b
       expect(h.sidebarMessages.filter(event => event.type === 'contextWarning' || event.type === 'contextUpdated')).toEqual([]);
     });
   }
-  it('disabling a file during the actual read excludes its bytes from this turn', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('disabling a file during the actual read excludes its bytes from this turn', async () => {
     const item = await add(); fs.writeFileSync(item.path, 'UPDATED_FILE_BYTES'); const gate = observeRead(item.path, true);
     const pending = send(); await reach(gate, pending); h.contextManager.setItemEnabled(item.id, false, 'sidebar');
     gate.release(); await pending;
@@ -183,7 +183,7 @@ describe('EW02 persistent context freshness through composer, host, and prompt b
     expect(captures[0].prompt).not.toMatch(/ORIGINAL_FILE_BYTES|UPDATED_FILE_BYTES/);
     expect(h.contextManager.getContext('sidebar')[0].content).toBe('ORIGINAL_FILE_BYTES');
   });
-  it('cancelling a later read does not partially commit earlier refreshed files', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('cancelling a later read does not partially commit earlier refreshed files', async () => {
     const first = await add('first.ts', 'FIRST_ORIGINAL'), second = await add('second.ts', 'SECOND_ORIGINAL');
     fs.writeFileSync(first.path, 'FIRST_UPDATED'); fs.writeFileSync(second.path, 'SECOND_UPDATED');
     const gate = observeRead(second.path, true); const pending = send(); await reach(gate, pending);
@@ -191,14 +191,14 @@ describe('EW02 persistent context freshness through composer, host, and prompt b
     gate.release(); await pending; expect(captures).toEqual([]);
     expect(h.contextManager.getContext('sidebar').map(item => item.content)).toEqual(['FIRST_ORIGINAL', 'SECOND_ORIGINAL']);
   });
-  it('preserves a newly added file without injecting it into an already submitted turn', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('preserves a newly added file without injecting it into an already submitted turn', async () => {
     const first = await add(); fs.writeFileSync(first.path, 'FIRST_UPDATED'); const gate = observeRead(first.path, true);
     const pending = send(); await reach(gate, pending); const added = await add('later.ts', 'LATER_PRIVATE');
     gate.release(); await pending;
     expect(captures[0].context.map(item => item.content)).toEqual(['FIRST_UPDATED']);
     expect(h.contextManager.getContext('sidebar').map(item => item.id)).toEqual([first.id, added.id]);
   });
-  it('a superseding submission owns the refresh and the only dispatched request', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('a superseding submission owns the refresh and the only dispatched request', async () => {
     const item = await add(); const gate = observeRead(item.path, true);
     const request = { content: 'First request', context: clone(h.contextManager.getContext('sidebar')), settings };
     const first = send(request); await reach(gate, first); fs.writeFileSync(item.path, 'SUCCESSOR_FILE_BYTES');
@@ -207,7 +207,7 @@ describe('EW02 persistent context freshness through composer, host, and prompt b
     expect(captures).toHaveLength(1); expect(captures[0].context[0].content).toBe('SUCCESSOR_FILE_BYTES');
     expect(manager.getCurrentConversation()!.messages.filter(message => message.role === 'user').map(message => message.content)).toEqual(['Successor request']);
   });
-  it('captures the list before compaction but reads its files after the wait', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('captures the list before compaction but reads its files after the wait', async () => {
     const item = await add(); let release!: () => void;
     const paused = new Promise<void>(resolve => { release = resolve; }); releases.push(release);
     host._panelCompactions.set('sidebar', paused);
@@ -217,19 +217,19 @@ describe('EW02 persistent context freshness through composer, host, and prompt b
     fs.writeFileSync(item.path, 'AFTER_COMPACTION'); host._panelCompactions.delete('sidebar'); release(); await pending;
     expect(captures[0].context[0]).toMatchObject({ path: item.path, content: 'AFTER_COMPACTION' });
   });
-  it('does not acquire a different panel’s file context', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('does not acquire a different panel’s file context', async () => {
     const first = await add(); const otherPath = path.join(root, 'other.ts'); fs.writeFileSync(otherPath, 'OTHER_PANEL_PRIVATE');
     await h.contextManager.addFileToContext(otherPath, 'other-panel'); fs.writeFileSync(first.path, 'FIRST_UPDATED'); await send();
     expect(captures[0].context.map(item => item.content)).toEqual(['FIRST_UPDATED']);
     expect(h.contextManager.getContext('other-panel')[0].content).toBe('OTHER_PANEL_PRIVATE');
   });
-  it('keeps caller-supplied task snapshots that are not live panel attachments', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('keeps caller-supplied task snapshots that are not live panel attachments', async () => {
     const item = await add(); const snapshot = { ...item, id: 'task-snapshot', content: 'TASK_SNAPSHOT' }; fs.unlinkSync(item.path);
     observeRead(item.path); await host._handleSendMessage({ content: 'Internal task', context: [snapshot], settings }, 'sidebar');
     expect(captures[0].context).toEqual([snapshot]); expect(reads).toEqual([]);
   });
   for (const route of ['session', 'brainstorm', 'assignment', 'coordinator'] as const) {
-    it(`${route} receives refreshed file bytes through the real host route`, async () => {
+    it.skipIf(CHROMIUM_UNAVAILABLE)(`${route} receives refreshed file bytes through the real host route`, async () => {
       const item = await add(); fs.writeFileSync(item.path, 'ROUTE_UPDATED_BYTES');
       const input = { content: 'Inspect the context.', context: clone(h.contextManager.getContext('sidebar')), settings };
       Object.assign(h.providerManager, {

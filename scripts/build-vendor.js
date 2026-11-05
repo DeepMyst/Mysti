@@ -2,7 +2,7 @@
 /** Mysti - AI Coding Agent. SPDX-License-Identifier: Apache-2.0 */
 'use strict';
 
-// Rebuild Mermaid from the lockfile so its sanitizer follows our audited graph.
+// Rebuild Mermaid and copy the chat sanitizer from the audited lockfile graph.
 // Run `npm ci && npm run build:vendor` after updating Mermaid or its dependencies.
 // The upstream prebuilt 11.17.2 asset embeds an older DOMPurify release.
 const fs = require('node:fs');
@@ -67,7 +67,11 @@ compiler.run((error, stats) => {
   if (!packages['node_modules/mermaid'] || !packages['node_modules/dompurify']) {
     throw new Error('Mermaid and the audited DOMPurify must both be included in the vendor build');
   }
-  const assets = Object.fromEntries(Object.keys(stats.compilation.assets).sort().map(name => [name, hash(path.join(output, name))]));
+  // Chat loads a standalone copy; updating only Mermaid would leave it vulnerable.
+  fs.copyFileSync(path.join(path.dirname(require.resolve('dompurify')), 'purify.min.js'),
+    path.join(output, 'dompurify.min.js'));
+  const assets = Object.fromEntries([...Object.keys(stats.compilation.assets), 'dompurify.min.js']
+    .sort().map(name => [name, hash(path.join(output, name))]));
   const manifest = {
     source: `https://github.com/mermaid-js/mermaid/tree/mermaid%40${packages['node_modules/mermaid'].version}`,
     build: 'npm ci && npm run build:vendor',

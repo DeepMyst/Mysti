@@ -6,6 +6,10 @@ const mocks = vi.hoisted(() => ({ execFile: vi.fn() }));
 vi.mock('child_process', () => ({ execFile: mocks.execFile, spawn: vi.fn() }));
 import { killProcessTree, markOwnedProcessGroup } from '../../src/utils/processKill';
 
+// Installed-backend companion (opt-in macOS, scripted loopback model only):
+// node scripts/validation/opencode-tool-stop.cjs --cli /path/to/native/opencode
+// Accepted native receipts: plans/48-opencode-tool-stop-evidence.json.
+
 class Handle extends EventEmitter {
   pid = 420001;
   exitCode: number | null = null;
