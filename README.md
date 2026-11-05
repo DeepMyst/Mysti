@@ -18,12 +18,12 @@ Start with one agent. Add a reviewer when the work needs another perspective. Us
 
 **[Download the tested Beta 2 VSIX →](https://github.com/DeepMyst/Mysti/releases/download/v2.0.1-beta.2/mysti-2.0.1-beta.2.vsix)** · [Install from Marketplace](https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti) · [See what's new](CHANGELOG.md)
 
-[![CI](https://github.com/DeepMyst/Mysti/actions/workflows/ci.yml/badge.svg)](https://github.com/DeepMyst/Mysti/actions/workflows/ci.yml)
-[![Marketplace version](https://img.shields.io/visual-studio-marketplace/v/DeepMyst.mysti?label=Marketplace)](https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti)
+[![CI on main](https://github.com/DeepMyst/Mysti/actions/workflows/ci.yml/badge.svg?branch=main&event=push)](https://github.com/DeepMyst/Mysti/actions/workflows/ci.yml?query=branch%3Amain)
+[![VS Code Marketplace](https://img.shields.io/badge/Marketplace-Install-007ACC)](https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti)
 [![VS Code 1.86+](https://img.shields.io/badge/VS_Code-1.86%2B-007ACC)](docs/GETTING-STARTED.md)
 [![Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-9bdfc2)](LICENSE)
 
-> **Current GitHub release: 2.0.1 · Beta 2.** The Marketplace badge shows the version published there. Mysti remains beta; review the [verified status and remaining work](docs/PRODUCTION_READINESS.md) when choosing it for your project.
+> **Current GitHub release: 2.0.1 · Beta 2.** For the Marketplace version, [check the listing](https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti). Mysti remains beta; review the [verified status and remaining work](docs/PRODUCTION_READINESS.md) when choosing it for your project.
 
 [Why Mysti](#why-mysti) · [See it work](#see-it-work) · [Get started](#get-started) · [Workflows](#put-your-agents-to-work) · [Features](#more-than-a-chat-window) · [Providers](#bring-your-preferred-agents) · [FAQ](#frequently-asked-questions)
 
