@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Resolve Windows CLI locations from the trusted system lookup's first complete absolute match, then terminate only its owned helper. Preserve native search ordering and successful-exit checks for ordinary CLI probes, and retain Unicode paths split across output chunks.
 - Coalesce streamed-text scroll measurements into one animation frame while keeping Markdown updates immediate. Flush the final view after completion or cancellation, and discard queued scrolling when its conversation or turn is replaced.
 
 ### Documentation
@@ -17,6 +18,7 @@ These unreleased changes are not included in the already qualified 2.0.1 Beta 2 
 
 ### Maintenance
 
+- Avoid parsing and re-encoding each acknowledged history snapshot in the disk-recovery fixture. Preserve every physical write, byte-for-byte storage output, restart read, assertion and deadline.
 - Wait for foreground chat DOM readiness before the real-editor fixture tests background discovery and exact-tab reselection; keep its shared readiness deadline and subsequent user journey.
 - Supply VS Code's platform font defaults in the shared chat browser fixture instead of inheriting Chromium's Times fallback; retain original actions, assertions and deadlines.
 - Disable power-loss durability flushing only while constructing disposable SQLite test data; retain real files, SQL operations and production read-only credential checks.

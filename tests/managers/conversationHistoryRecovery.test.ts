@@ -22,19 +22,24 @@ function diskStore(initial?: unknown) {
   const file = path.join(directory, 'memento.json');
   const initialBytes = JSON.stringify(initial === undefined ? {} : { [KEY]: initial });
   fs.writeFileSync(file, initialBytes);
-  // This fixture owns the file. Compose updates from the last acknowledged
-  // detached map; reads and restarted managers still load the actual bytes.
-  let committed: Record<string, any> = JSON.parse(initialBytes);
+  // Retain acknowledged JSON values as bytes: parsing each snapshot only to
+  // stringify it again repeats the full-history traversal on every update.
+  // Reads and restarted managers still load and parse the actual file.
+  let committed: Record<string, string> = Object.fromEntries(
+    Object.entries(JSON.parse(initialBytes)).map(([key, value]) => [key, JSON.stringify(value)])
+  );
   let rejected = false;
   let writeTarget = file;
   const read = (): Record<string, any> => JSON.parse(fs.readFileSync(file, 'utf8'));
   const context = { globalState: {
     get: <T>(key: string, fallback?: T): T => read()[key] ?? fallback,
     update: vi.fn(async (key: string, value: unknown) => {
-      const detached = clone(value);
+      const detached = JSON.stringify(value);
+      if (detached === undefined) { throw new SyntaxError('History fixture requires a JSON value'); }
       if (rejected) { throw Object.assign(new Error('controlled storage full'), { code: 'ENOSPC' }); }
       const store = { ...committed, [key]: detached };
-      fs.writeFileSync(writeTarget, JSON.stringify(store));
+      const bytes = '{' + Object.entries(store).map(([name, json]) => `${JSON.stringify(name)}:${json}`).join(',') + '}';
+      fs.writeFileSync(writeTarget, bytes);
       committed = store;
     }),
   } } as any;

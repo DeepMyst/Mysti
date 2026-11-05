@@ -86,7 +86,17 @@ required check: that candidate is **not release-qualified**. Check the
 [documentation PR](https://github.com/DeepMyst/Mysti/pull/81) for subsequent
 commit-specific results; every proposed release still needs its own complete gates.
 
-That failure trace completed chunk dispatch in 145 ms, then remained pending
+The later `3310b03` candidate finished with 17 jobs passed, three failed and four
+dependent skips. Linux history recovery, Windows CLI lookup and Windows Unicode
+composer input exceeded their original deadlines; all four editor integrations
+passed. The next corrections remove redundant JSON traversal from the recovery
+fixture while retaining identical disk writes, and let trusted Windows CLI
+discovery return its first complete absolute match without waiting for remaining
+PATH enumeration. Generic CLI probes still require successful exit, and the
+lookup stops only its own helper. These changes require fresh hosted
+qualification; they do not establish or fix the Unicode input timeout's cause.
+
+The `9f899341` rendering-failure trace completed chunk dispatch in 145 ms, then remained pending
 during the completion-event evaluation; it does not establish whether the
 application handler had entered. The
 [full-context Windows diagnostic](https://github.com/DeepMyst/Mysti/actions/runs/42109781185)

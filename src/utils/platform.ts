@@ -18,6 +18,7 @@ import * as os from 'os';
 import { spawn } from 'child_process';
 import { promisify } from 'util';
 import { exec } from 'child_process';
+import { StringDecoder } from 'string_decoder';
 import { LOCAL_CLI_PREFIX } from '../constants';
 import { killProcessTree } from './processKill';
 import { resolveOpenClawGatewayToken } from './openClawGatewayToken';
@@ -369,9 +370,16 @@ export function resolveCommandOnPath(
   if (command.includes('/') || command.includes('\\')) {
     return Promise.resolve(null);
   }
-  const checkCmd = process.platform === 'win32' ? 'where' : 'which';
-
-  return probeCliOutput(checkCmd, [command], 5000, env)
+  // where enumerates every match, including later PATH directories we do not
+  // need. Only the OS helper may settle from its first complete result; a
+  // PATH-shadowed program and ordinary CLI probes still require successful exit.
+  const windowsRoot = process.platform === 'win32' ? process.env.SystemRoot : undefined;
+  const systemWhere = windowsRoot && path.win32.isAbsolute(windowsRoot)
+    ? path.win32.join(windowsRoot, 'System32', 'where.exe') : undefined;
+  const probe = systemWhere
+    ? runCliProbe(systemWhere, [command], 5000, env, true)
+    : probeCliOutput(process.platform === 'win32' ? 'where' : 'which', [command], 5000, env);
+  return probe
     .then(out => out?.split(/\r?\n/).map(line => line.trim()).find(Boolean) || null);
 }
 
@@ -396,7 +404,7 @@ export function getPriorityCliPaths(config: CliSearchConfig): string[] {
 /** Parent diagnostics stay outside the disposable probe group. Never log probe data. */
 let cliProbeSequence = 0;
 type CliProbeReason = 'close-zero' | 'close-nonzero' | 'close-signal' | 'spawn-error'
-  | 'spawn-throw' | 'invalid-windows-shim' | 'deadline' | 'output-limit';
+  | 'spawn-throw' | 'invalid-windows-shim' | 'deadline' | 'output-limit' | 'first-match';
 function cliProbeDiagnostics(kind: 'version' | 'other', timeoutMs: number) {
   const probeId = `${process.pid}:${++cliProbeSequence}`;
   const started = process.hrtime.bigint();
@@ -426,11 +434,25 @@ export function probeCliOutput(
   timeoutMs = 5000,
   env: NodeJS.ProcessEnv = getEnrichedEnv(),
 ): Promise<string | undefined> {
+  return runCliProbe(cliPath, args, timeoutMs, env);
+}
+
+/** firstPath is reserved for the trusted Windows where.exe resolver above. */
+function runCliProbe(
+  cliPath: string,
+  args: string[],
+  timeoutMs: number,
+  env: NodeJS.ProcessEnv,
+  firstPath = false,
+): Promise<string | undefined> {
   return new Promise(resolve => {
     const record = cliProbeDiagnostics(args.length === 1 && args[0] === '--version' ? 'version' : 'other', timeoutMs);
     let settled = false;
     let out = '';
+    const decoder = new StringDecoder('utf8');
+    let receivedOutput = false;
     let childPid: number | null = null;
+    let failedExit = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const done = (reason: CliProbeReason, output?: string) => {
       if (settled) { return; }
@@ -453,10 +475,20 @@ export function probeCliOutput(
           windowsHide: true,
         });
       childPid = proc.pid ?? null;
-      const stop = (reason: 'deadline' | 'output-limit') => {
+      const stop = (reason: 'deadline' | 'output-limit' | 'first-match', output?: string) => {
         if (settled) { return; }
-        done(reason);
+        done(reason, output);
         record('cleanup-requested', { childPid, initialSignal: 'SIGKILL', graceMs: 0, useProcessGroup: process.platform !== 'win32' });
+        if (reason === 'first-match') {
+          // The trusted OS enumerator is the owned process itself. End it via
+          // its handle rather than starting taskkill helpers on every success.
+          if (typeof proc.exitCode === 'number' || proc.signalCode) { return; }
+          try {
+            const sent = proc.kill('SIGKILL');
+            record('cleanup-handle-signal', { childPid, sent });
+            if (sent) { return; }
+          } catch { record('cleanup-handle-error', { childPid }); }
+        }
         const cleanup = killProcessTree(proc, 0, { label: 'CLI probe', useProcessGroup: process.platform !== 'win32', initialSignal: 'SIGKILL' });
         // Helper settlement is not proof of signal delivery or process death.
         void cleanup.then(
@@ -468,15 +500,32 @@ export function probeCliOutput(
       timer = setTimeout(() => stop('deadline'), timeoutMs);
       record('timer-armed', { childPid, timeoutMs, armedAt, deadlineDueAt: armedAt + timeoutMs });
       proc.once('spawn', () => record('spawn', { childPid, detached: process.platform !== 'win32' }));
-      proc.once('exit', (code, signal) => record('exit', { childPid, code, signal }));
+      proc.once('exit', (code, signal) => {
+        failedExit = code !== 0 || !!signal;
+        record('exit', { childPid, code, signal });
+      });
       proc.stdout?.on('data', chunk => {
         if (settled) { return; }
-        out += String(chunk);
-        if (out.length > 4096) { stop('output-limit'); }
+        out += typeof chunk === 'string' ? chunk : decoder.write(chunk);
+        if (!receivedOutput && chunk.length) {
+          receivedOutput = true;
+          record('first-output', { childPid, outputChars: out.length });
+        }
+        if (out.length > 4096) { stop('output-limit'); return; }
+        if (firstPath && !failedExit) {
+          // Exclude the unfinished final line: a chunk boundary is not a path
+          // boundary. Keep the helper's CWD/PATH/PATHEXT ordering intact.
+          const first = out.split(/\r?\n/).slice(0, -1).map(line => line.trim()).find(Boolean);
+          if (first && path.win32.isAbsolute(first)) { stop('first-match', first); }
+        }
       });
       proc.on('close', (code, signal) => {
         record('close', { childPid, code, signal: signal ?? null });
-        done(signal ? 'close-signal' : code === 0 ? 'close-zero' : 'close-nonzero', code === 0 ? out : undefined);
+        if (!settled) { out += decoder.end(); }
+        if (!settled && out.length > 4096) { done('output-limit'); return; }
+        const first = firstPath ? out.split(/\r?\n/).map(line => line.trim()).find(Boolean) : undefined;
+        const output = firstPath ? first && path.win32.isAbsolute(first) ? first : undefined : out;
+        done(signal ? 'close-signal' : code === 0 ? 'close-zero' : 'close-nonzero', code === 0 ? output : undefined);
       });
       proc.on('error', () => done('spawn-error'));
     } catch { done('spawn-throw'); }
