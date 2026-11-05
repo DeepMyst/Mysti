@@ -17,6 +17,7 @@ These unreleased changes are not included in the already qualified 2.0.1 Beta 2 
 
 ### Maintenance
 
+- Wait for foreground chat DOM readiness before the real-editor fixture tests background discovery and exact-tab reselection; keep its shared readiness deadline and subsequent user journey.
 - Supply VS Code's platform font defaults in the shared chat browser fixture instead of inheriting Chromium's Times fallback; retain original actions, assertions and deadlines.
 - Disable power-loss durability flushing only while constructing disposable SQLite test data; retain real files, SQL operations and production read-only credential checks.
 - Avoid rereading the growing JSON history on every recovery-fixture update; retain each physical write, detached snapshots, restart reads and storage-failure assertions.

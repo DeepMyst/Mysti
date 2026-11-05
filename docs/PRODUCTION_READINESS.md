@@ -110,8 +110,13 @@ One [macOS source-editor run](https://github.com/DeepMyst/Mysti/actions/runs/421
 also failed its chat-initialization assertion before the conversation journey;
 the other three editor variants passed. The captured editor had README active
 and the Mysti tab inactive, with no composer found in the webview frames.
-The cause remains unassigned. Retain this startup/focus observation and qualify
-the actual editor journey before treating it as consistently reliable.
+The fixture had treated a tab-open notification as an initialization
+acknowledgment. It now checks its existing composer/overlay readiness condition
+while that exact tab is visible, then retains its background-discovery and exact-tab reselection assertions
+within the same 30-second readiness budget. The native loading stall's cause
+remains unassigned; retain the original failure and qualify the actual editor
+journey before treating it as consistently reliable. The overlay has a fallback
+timeout, so that condition alone does not prove the host handshake completed.
 
 ### Provider acceptance still needed
 
