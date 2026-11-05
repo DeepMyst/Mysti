@@ -1,6 +1,6 @@
 # Mysti: production readiness and release checklist
 
-Updated **5 November 2026** (Asia/Amman). Release line: **2.0.1 Beta 2**.
+Updated **6 November 2026** (Asia/Amman). Release line: **2.0.1 Beta 2**.
 
 Mysti has substantial automated regression coverage and several verified native
 developer journeys. **It remains a beta.** The evidence does not yet establish
@@ -64,59 +64,53 @@ runners without it. Replace that dependency with a shareable representative
 fixture before treating this diagnostic as a portable release gate. Other
 portable browser checks require Chromium and fail when it is unavailable.
 
-The documentation-update candidate also exposed an intermittent Windows browser
-test timeout: the split-UTF-16 rendering case exceeded its five-second deadline
-in [PR CI](https://github.com/DeepMyst/Mysti/actions/runs/42075793517), but passed
-in the [independent push run](https://github.com/DeepMyst/Mysti/actions/runs/42075783921)
-at the same commit. The original failure did not identify the pending operation.
-Failure-only stage diagnostics now support the investigation; all assertions,
-chunk boundaries and deadlines remain unchanged. The release maintainer owns
-this unresolved timing investigation. A later green run does not establish its
-cause or close it, and every release still needs its own complete required gates.
+### Unreleased changes and unresolved reliability investigations
 
-The later [Windows PR run](https://github.com/DeepMyst/Mysti/actions/runs/42086893006)
-localized the stall to dispatching 174 code-unit chunks; the
-[independent run](https://github.com/DeepMyst/Mysti/actions/runs/42086881593) instead
-timed out on two composer-fill actions containing the Deseret letter U+10400.
-A single [instrumented Windows diagnostic](https://github.com/DeepMyst/Mysti/actions/runs/42091942355)
-passed all 59 original cases at their original deadlines. Its measured fills
-spent most time in native text layout before the application input handler;
-it did not reproduce the failures or establish their cause. The shared fixture
-now supplies the platform font defaults VS Code normally injects, correcting
-its unintended Times fallback. No font warmup, retry or deadline increase was
-introduced. The diagnostic is not release qualification evidence.
+The published **2.0.1 Beta 2 VSIX** remains the build documented in the
+[release validation report](releases/2.0.1-beta.2/VALIDATION.md). The documentation
+candidate contains an **unreleased** streaming-scroll correction: text and
+Markdown still render immediately, scroll measurements are combined within an
+animation frame, terminal events flush pending scrolling after final DOM updates,
+and replacement turns or conversations invalidate pending work. This correction
+is not in the published VSIX and does not establish the Windows timeout's cause.
 
-The corrected font fixture still encountered the same dispatch timeout in the
-[independent push for `5f0ee5f`](https://github.com/DeepMyst/Mysti/actions/runs/42095850055),
-while all 15 PR CI/editor jobs passed. A separate macOS build job could not
-acquire a hosted runner and ran no steps. Both outcomes remain recorded in
-[the documentation PR](https://github.com/DeepMyst/Mysti/pull/81).
+On **6 November 2026**, candidate `9f899341` finished with **22 jobs passed,
+one failed and two skipped**. [Required PR CI](https://github.com/DeepMyst/Mysti/actions/runs/42103394751)
+failed the Windows split-UTF-16 rendering case at its unchanged five-second
+deadline; its package jobs were consequently skipped. All
+[four source-editor jobs](https://github.com/DeepMyst/Mysti/actions/runs/42103394863)
+and all 11 jobs in the
+[independent push workflow](https://github.com/DeepMyst/Mysti/actions/runs/42103386679)
+passed, including packaged-editor tests. Those passes do not replace the failed
+required check: that candidate is **not release-qualified**. Check the
+[documentation PR](https://github.com/DeepMyst/Mysti/pull/81) for subsequent
+commit-specific results; every proposed release still needs its own complete gates.
 
-The streaming path now combines scroll measurements within an animation frame,
-removing the repeated synchronous layouts observed in a single chunk burst.
-Text and Markdown still update immediately; terminal events flush after the
-final DOM changes, and replaced turns/conversations invalidate pending work.
-This is a bounded performance correction with ownership regressions, not proof
-of the earlier Windows timeout's exact cause. It is unreleased and is not in
-the existing Beta 2 VSIX; any new build still needs its own complete gates.
+That failure trace completed chunk dispatch in 145 ms, then remained pending
+during the completion-event evaluation; it does not establish whether the
+application handler had entered. The
+[full-context Windows diagnostic](https://github.com/DeepMyst/Mysti/actions/runs/42109781185)
+passed its browser phase (961 cases, one platform skip) and captured a complete
+native trace without reproducing the rendering timeout. Its unit phase failed a
+separate five-second CLI path-resolution test, so the diagnostic correctly
+finished as a failure. It is investigation evidence, not release qualification;
+the rendering timeout's cause remains unassigned. Earlier failures and
+same-commit passes remain linked in the documentation PR. The earlier
+[Unicode diagnostic](https://github.com/DeepMyst/Mysti/actions/runs/42091942355)
+informed a correction to the fixture's missing VS Code font defaults but did not
+reproduce or explain the timeout. Assertions, chunk boundaries and deadlines
+remain unchanged; no font warmup or qualification rerun was introduced.
 
-A later [macOS Canvas gate](https://github.com/DeepMyst/Mysti/actions/runs/42082967578)
-also reported a zoomed-out pan p95 of 44.2 ms against a 36.2 ms limit; the
-independent run at the same source passed. The threshold remains in force.
-Investigate the frame-level cause before treating pan performance as uniformly
-qualified across hosts; a passing later run does not explain that observation.
-
-One [macOS source-editor run](https://github.com/DeepMyst/Mysti/actions/runs/42100707759)
-also failed its chat-initialization assertion before the conversation journey;
-the other three editor variants passed. The captured editor had README active
-and the Mysti tab inactive, with no composer found in the webview frames.
-The fixture had treated a tab-open notification as an initialization
-acknowledgment. It now checks its existing composer/overlay readiness condition
-while that exact tab is visible, then retains its background-discovery and exact-tab reselection assertions
-within the same 30-second readiness budget. The native loading stall's cause
-remains unassigned; retain the original failure and qualify the actual editor
-journey before treating it as consistently reliable. The overlay has a fallback
-timeout, so that condition alone does not prove the host handshake completed.
+Two other observations remain open: a
+[macOS Canvas run](https://github.com/DeepMyst/Mysti/actions/runs/42082967578)
+exceeded its pan-performance limit, and a
+[macOS editor run](https://github.com/DeepMyst/Mysti/actions/runs/42100707759)
+failed chat initialization. The editor fixture now checks readiness with the
+intended tab visible within its original 30-second budget; all four editor
+variants at `9f899341` passed. The earlier failures' causes remain unassigned,
+and overlay disappearance alone does not prove the host handshake completed.
+The release maintainer owns these investigations; retain their evidence and
+require complete checks for each proposed release artifact.
 
 ### Provider acceptance still needed
 
