@@ -30,6 +30,8 @@ function sqliteStore(dir: string, data: unknown = profiles(), rowKey = 'primary'
   fs.mkdirSync(dir, { recursive: true }); const file = path.join(dir, 'openclaw-agent.sqlite');
   const db = new DatabaseSync(file);
   try {
+    // Reproducible fixture setup tests reads, not power-loss durability.
+    db.exec('PRAGMA synchronous=OFF');
     db.exec('CREATE TABLE IF NOT EXISTS auth_profile_store (store_key TEXT PRIMARY KEY, store_json TEXT, updated_at INTEGER)');
     db.prepare('INSERT OR REPLACE INTO auth_profile_store VALUES (?, ?, 1)').run(rowKey, JSON.stringify(data));
   } finally { db.close(); }
@@ -128,6 +130,8 @@ describe('OpenClaw SQLite auth stores', () => {
         const db = new DatabaseSync(file);
         try {
           if (kind !== 'missing table') {
+            // Reproducible malformed-row setup does not test power-loss durability.
+            db.exec('PRAGMA synchronous=OFF');
             db.exec('CREATE TABLE auth_profile_store (store_key TEXT PRIMARY KEY, store_json TEXT)');
             db.prepare('INSERT INTO auth_profile_store VALUES (?, ?)').run(kind === 'wrong row' ? 'other' : 'primary', kind === 'malformed JSON' ? '{ invalid' : JSON.stringify(profiles()));
           }

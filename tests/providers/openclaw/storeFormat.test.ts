@@ -50,8 +50,12 @@ function jsonStore(agent = 'main', file = 'auth-profiles.json') {
 }
 function sqliteStore(profiles: object = { chosen: credential }, agent = 'main') {
   fs.mkdirSync(dir(agent), { recursive: true }); const db = new DatabaseSync(path.join(dir(agent), 'openclaw-agent.sqlite'));
-  try { db.exec('CREATE TABLE IF NOT EXISTS auth_profile_store (store_key TEXT PRIMARY KEY, store_json TEXT)'); db.prepare('INSERT OR REPLACE INTO auth_profile_store VALUES (?, ?)').run('primary', JSON.stringify({ profiles })); }
-  finally { db.close(); }
+  try {
+    // Reproducible fixture setup tests formats, not power-loss durability.
+    db.exec('PRAGMA synchronous=OFF');
+    db.exec('CREATE TABLE IF NOT EXISTS auth_profile_store (store_key TEXT PRIMARY KEY, store_json TEXT)');
+    db.prepare('INSERT OR REPLACE INTO auth_profile_store VALUES (?, ?)').run('primary', JSON.stringify({ profiles }));
+  } finally { db.close(); }
 }
 function selected(version: string | null, cliPath = path.join(root, 'standalone-openclaw')) {
   const p = provider(); (p as any)._cachedCliVersion = version; (p as any)._cachedCliPath = cliPath; return p;

@@ -179,6 +179,8 @@ it('reads a configured agent SQLite store in the production bundle and handles u
   const value = JSON.stringify({ profiles: { owned: { type: 'api_key', provider: 'anthropic', key: 'synthetic-sqlite-key' } } });
   fs.writeFileSync(path.join(selected, 'auth-profiles.json'), value);
   const database = new DatabaseSync(path.join(selected, 'openclaw-agent.sqlite'));
+  // Reproducible fixture setup tests bundled reads, not power-loss durability.
+  database.exec('PRAGMA synchronous=OFF');
   database.exec('CREATE TABLE auth_profile_store (store_key TEXT PRIMARY KEY, store_json TEXT)');
   const update = database.prepare('INSERT OR REPLACE INTO auth_profile_store VALUES (?, ?)');
   update.run('primary', value);
@@ -316,7 +318,12 @@ function writePrivacyProfile(dir: string, source: string, key: string): void {
   const store = { profiles: { 'owned:default': { type: 'api_key', provider: 'owned', key } } };
   if (source === 'sqlite-profile') {
     const db = new DatabaseSync(path.join(dir, 'openclaw-agent.sqlite'));
-    try { db.exec('CREATE TABLE IF NOT EXISTS auth_profile_store (store_key TEXT PRIMARY KEY, store_json TEXT NOT NULL)'); db.prepare('INSERT OR REPLACE INTO auth_profile_store VALUES (?, ?)').run('primary', JSON.stringify(store)); } finally { db.close(); }
+    try {
+      // Reproducible fixture setup tests redaction, not power-loss durability.
+      db.exec('PRAGMA synchronous=OFF');
+      db.exec('CREATE TABLE IF NOT EXISTS auth_profile_store (store_key TEXT PRIMARY KEY, store_json TEXT NOT NULL)');
+      db.prepare('INSERT OR REPLACE INTO auth_profile_store VALUES (?, ?)').run('primary', JSON.stringify(store));
+    } finally { db.close(); }
   } else fs.writeFileSync(path.join(dir, 'auth-profiles.json'), JSON.stringify(store));
 }
 
@@ -1056,6 +1063,8 @@ it('enforces selected stored profiles and runtime order in the production bundle
   const databasePath = path.join(agentDir, 'openclaw-agent.sqlite');
   expect(fs.existsSync(databasePath)).toBe(false);
   const db = new DatabaseSync(databasePath);
+  // Reproducible fixture setup tests selection, not power-loss durability.
+  db.exec('PRAGMA synchronous=OFF');
   db.exec('CREATE TABLE auth_profile_store (store_key TEXT PRIMARY KEY, store_json TEXT); CREATE TABLE auth_profile_state (state_key TEXT PRIMARY KEY, state_json TEXT)');
   const profiles = { chosen: { type: 'token', provider: 'owned', token: 'owned-expired', expires: 1 },
     alternative: { type: 'api_key', provider: 'owned', key: 'owned-static-key' } };
@@ -1070,6 +1079,8 @@ it('enforces selected stored profiles and runtime order in the production bundle
     select('owned/fixture@missing'); expect((await provider.checkAuthentication()).authenticated).toBe(false);
     select('other/fixture'); expect((await provider.checkAuthentication()).authenticated).toBe(false);
     const update = new DatabaseSync(databasePath);
+    // This disposable fixture update also does not test power-loss durability.
+    update.exec('PRAGMA synchronous=OFF');
     update.prepare('UPDATE auth_profile_state SET state_json = ?').run(JSON.stringify({ order: { owned: ['alternative'] } })); update.close();
     select('owned/fixture'); expect((await provider.checkAuthentication()).authenticated).toBe(true);
   } finally {
@@ -1096,6 +1107,8 @@ it('follows a selected CLI upgrade from JSON to SQLite in the production bundle'
     expect(fs.existsSync(databasePath)).toBe(false);
     const db = new DatabaseSync(databasePath);
     try {
+      // Reproducible fixture setup tests upgrades, not power-loss durability.
+      db.exec('PRAGMA synchronous=OFF');
       db.exec('CREATE TABLE auth_profile_store (store_key TEXT PRIMARY KEY, store_json TEXT)');
       db.prepare('INSERT INTO auth_profile_store VALUES (?, ?)').run('primary', JSON.stringify({ profiles }));
       expect((await provider.checkAuthentication()).authenticated).toBe(true);

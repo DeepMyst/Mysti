@@ -88,6 +88,13 @@ the original log did not identify the stalled operation. Preserve both results
 and inspect these diagnostics before changing the fixture or application.
 The additional logging does not resolve or waive the intermittent timing issue.
 
+Disposable OpenClaw test-data writers use `PRAGMA synchronous=OFF` for
+[reproducible database construction](https://www.sqlite.org/pragma.html#pragma_synchronous).
+They still create real SQLite files with the existing SQL operations and
+connection lifetimes. These fixtures exercise credential selection, redaction
+and read-only behavior; they do not simulate power loss. Production database
+connections and test assertions retain their existing behavior.
+
 ### Live developer conversations
 
 Run `npm run test:live:conversations` explicitly with authenticated Claude Code

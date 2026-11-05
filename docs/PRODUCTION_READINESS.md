@@ -74,6 +74,12 @@ chunk boundaries and deadlines remain unchanged. The release maintainer owns
 this unresolved timing investigation. A later green run does not establish its
 cause or close it, and every release still needs its own complete required gates.
 
+A later [macOS Canvas gate](https://github.com/DeepMyst/Mysti/actions/runs/42082967578)
+also reported a zoomed-out pan p95 of 44.2 ms against a 36.2 ms limit; the
+independent run at the same source passed. The threshold remains in force.
+Investigate the frame-level cause before treating pan performance as uniformly
+qualified across hosts; a passing later run does not explain that observation.
+
 ### Provider acceptance still needed
 
 | Provider | Current evidence or constraint | Required next evidence |

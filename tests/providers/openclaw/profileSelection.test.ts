@@ -139,6 +139,8 @@ it('uses SQLite runtime order ahead of embedded store order without changing eit
   const file = path.join(dir, 'openclaw-agent.sqlite');
   const db = new DatabaseSync(file);
   try {
+    // Reproducible fixture setup tests selection, not power-loss durability.
+    db.exec('PRAGMA synchronous=OFF');
     db.exec('CREATE TABLE auth_profile_store (store_key TEXT PRIMARY KEY, store_json TEXT); CREATE TABLE auth_profile_state (state_key TEXT PRIMARY KEY, state_json TEXT)');
     db.prepare('INSERT INTO auth_profile_store VALUES (?, ?)').run('primary', JSON.stringify({ profiles: { chosen: expired, alternative: key() }, order: { owned: ['alternative'] } }));
     db.prepare('INSERT INTO auth_profile_state VALUES (?, ?)').run('primary', JSON.stringify({ order: { owned: ['chosen'] } }));
@@ -147,7 +149,10 @@ it('uses SQLite runtime order ahead of embedded store order without changing eit
   expect((await p.getAuthConfig()).isAuthenticated).toBe(false);
   expect(fs.readFileSync(file)).toEqual(bytes);
   const update = new DatabaseSync(file);
-  try { update.prepare('UPDATE auth_profile_state SET state_json = ?').run(JSON.stringify({ order: { owned: ['alternative'] } })); }
-  finally { update.close(); }
+  try {
+    // This disposable fixture update also does not test power-loss durability.
+    update.exec('PRAGMA synchronous=OFF');
+    update.prepare('UPDATE auth_profile_state SET state_json = ?').run(JSON.stringify({ order: { owned: ['alternative'] } }));
+  } finally { update.close(); }
   expect((await p.getAuthConfig()).isAuthenticated).toBe(true);
 });
