@@ -39,6 +39,7 @@ vi.mock('../../src/managers/PlanOptionManager', () => ({
     async classifyResponse() {
       return { hasPlanOptions: false, options: [], clarifyingQuestions: [] };
     }
+    dispose() {}
   },
 }));
 
@@ -66,7 +67,7 @@ interface Harness {
   panelState: any;
   /** Effective model each provider instance reports for given settings. */
   effectiveModels: Record<string, (s: Settings) => string | undefined>;
-  dispose(): void;
+  dispose(): Promise<void>;
 }
 
 function createHarness(): Harness {
@@ -105,6 +106,7 @@ function createHarness(): Harness {
     getModelContextWindow: vi.fn(() => 200000),
     disposePersistentProcess: vi.fn(),
     clearSessionForProvider: vi.fn(),
+    dispose: vi.fn(),
   };
 
   const noop = {} as any;
@@ -181,9 +183,16 @@ function createHarness(): Harness {
     messages,
     panelState,
     effectiveModels,
-    dispose() {
-      (provider as any)._channelBridge?.dispose?.();
-      permissionManager.dispose();
+    async dispose() {
+      // Join construction's asynchronous agent loading before Vitest closes
+      // its console/RPC channel, then release all resources this fixture owns.
+      try {
+        await (provider as any)._agentInitPromise;
+      } finally {
+        provider.dispose();
+        for (const subscription of extensionContext.subscriptions) { subscription.dispose(); }
+        permissionManager.dispose();
+      }
     },
   };
 }
@@ -200,10 +209,13 @@ describe('the model a panel reports is the model it runs', () => {
     clearMockConfig();
     h = createHarness();
   });
-  afterEach(() => {
-    h.dispose();
-    clearMockConfig();
-    vi.restoreAllMocks();
+  afterEach(async () => {
+    try {
+      await h.dispose();
+    } finally {
+      clearMockConfig();
+      vi.restoreAllMocks();
+    }
   });
 
   describe('the context window is looked up for the model that actually runs', () => {
@@ -284,7 +296,7 @@ describe('the model a panel reports is the model it runs', () => {
       const host = h.provider as any;
       const hubMessages: any[] = [];
       const hubWebview = { postMessage: async (message: unknown) => { hubMessages.push(message); return true; } };
-      host._hub = { originPanelId: 'sidebar', panel: { webview: hubWebview },
+      host._hub = { originPanelId: 'sidebar', panel: { webview: hubWebview, dispose: vi.fn() },
         loadedFor: { panelId: 'sidebar', conversationId: h.panelState.currentConversationId ?? null } };
       const state = host._extensionContext.globalState;
       const original = state.update.bind(state);

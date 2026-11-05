@@ -9,6 +9,10 @@
 
 These documentation updates do not change the already qualified 2.0.1 Beta 2 VSIX.
 
+### Maintenance
+
+- Await agent initialization and dispose owned resources in the model-attribution test fixture so background work cannot outlive test teardown.
+
 All notable changes to the Mysti extension are documented here.
 
 ## [2.0.1] — 2026-11-05 · Beta 2 (pre-release)
