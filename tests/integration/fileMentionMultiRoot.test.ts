@@ -109,7 +109,7 @@ beforeEach(() => {
     });
   }));
   editors = installEditorWindowFixture();
-  owned = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'mysti-ew04-multiroot-')));
+  owned = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), 'mysti-ew04-multiroot-')));
   rootA = path.join(owned, 'root-a'); rootB = path.join(owned, 'root-b');
   a = path.join(rootA, 'src/util.ts'); b = path.join(rootB, 'src/util.ts'); unique = path.join(rootB, 'src/only.ts');
   mkdirSync(path.dirname(a), { recursive: true }); mkdirSync(path.dirname(b), { recursive: true });
@@ -198,7 +198,7 @@ beforeEach(() => {
   }) as any);
 });
 
-afterEach(() => {
+afterEach(async () => {
   releaseQuery?.();
   const evidence = process.env.MYSTI_FILE_MENTION_MULTIROOT_RECEIPTS;
   if (evidence) appendFileSync(evidence, JSON.stringify({
@@ -210,7 +210,7 @@ afterEach(() => {
   }) + '\n');
   try {
     try { expect(workspaceListeners.size, 'workspace query listeners are released after every turn').toBe(0); }
-    finally { host?._brainstormManager.clearSession('sidebar'); h?.dispose(); }
+    finally { host?._brainstormManager.clearSession('sidebar'); await host?._agentInitPromise; h?.dispose(); }
   } finally {
     if (workspaceDescriptor) Object.defineProperty(vscode.workspace, 'workspaceFolders', workspaceDescriptor);
     if (findFilesDescriptor) Object.defineProperty(vscode.workspace, 'findFiles', findFilesDescriptor);
@@ -402,7 +402,7 @@ describe('EW04 multi-root file identity at the bound host dispatch', () => {
       if (receipts) {
         const row = readFileSync(receipts, 'utf8').trim().split('\n').map(line => JSON.parse(line)).find(item => item.caseId === caseId);
         expect(row?.payload).toBeDefined(); request = structuredClone(row.payload);
-        setRoots(row.declaredWorkspaceRoots); readRoots.push(...roots.map(root => realpathSync(root)));
+        setRoots(row.declaredWorkspaceRoots); readRoots.push(...roots.map(root => realpathSync.native(root)));
         const files = row.files.filter((file: { path: string }) => roots.some(root => file.path.startsWith(root + path.sep)));
         for (const file of files) expect(readFileSync(file.path, 'utf8')).toBe(file.content);
         catalogue = files.map((file: { path: string }) => file.path);
@@ -416,7 +416,7 @@ describe('EW04 multi-root file identity at the bound host dispatch', () => {
       }
       const before = structuredClone(request); await submit(request); expect(request).toEqual(before);
       expect(inputs[0]).toEqual(before); expect(captures).toHaveLength(1);
-      expect(reads).toEqual(stale ? [] : [{ path: realpathSync(expectedFile), content: expectedBytes }]);
+      expect(reads).toEqual(stale ? [] : [{ path: realpathSync.native(expectedFile), content: expectedBytes }]);
       expect(captures[0].context.map(item => [item.path, item.content])).toEqual(stale ? [] : [[expectedFile, expectedBytes]]);
       expect(h.sidebarMessages.filter(message => message.type === 'mentionWarning')).toHaveLength(stale ? 1 : 0);
       expect(h.persistedCalls.filter(call => call[1] === 'user').map(call => call[3])).toEqual([[]]);

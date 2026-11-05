@@ -92,7 +92,7 @@ beforeEach(() => {
   setMockConfig('brainstorm.agents', ['claude-code', 'openai-codex']); setMockConfig('brainstorm.strategy', 'quick');
   setMockConfig('brainstorm.synthesisAgent', 'claude-code');
   editors = installEditorWindowFixture();
-  root = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'mysti-ew04-binding-')));
+  root = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), 'mysti-ew04-binding-')));
   a = path.join(root, 'src/requested.ts'); b = path.join(root, 'src/unrelated.ts');
   mkdirSync(path.dirname(a), { recursive: true }); writeFileSync(a, A_BYTES); writeFileSync(b, B_BYTES);
   manual = { id: 'manual', type: 'file', path: path.join(root, 'manual.ts'), content: 'BINDING_MANUAL_KEEP', enabled: true };
@@ -152,7 +152,7 @@ beforeEach(() => {
     return read();
   });
 });
-afterEach(() => {
+afterEach(async () => {
   releaseWait?.();
   if (process.env.MYSTI_FILE_MENTION_BINDING_RECEIPTS) appendFileSync(process.env.MYSTI_FILE_MENTION_BINDING_RECEIPTS, JSON.stringify({
     test: expect.getState().currentTestName, sent, files: [{ path: a, content: A_BYTES }, { path: b, content: B_BYTES }],
@@ -161,7 +161,7 @@ afterEach(() => {
     cancellationCalls: h.providerManager.cancelRequest.mock.calls,
     idleCalls: host._lifecycleManager.markIdle.mock.calls,
   }) + '\n');
-  try { host?._brainstormManager.clearSession('sidebar'); h?.dispose(); } finally {
+  try { host?._brainstormManager.clearSession('sidebar'); await host?._agentInitPromise; h?.dispose(); } finally {
     if (workspaceDescriptor) Object.defineProperty(vscode.workspace, 'workspaceFolders', workspaceDescriptor);
     if (findFilesDescriptor) Object.defineProperty(vscode.workspace, 'findFiles', findFilesDescriptor);
     else Reflect.deleteProperty(vscode.workspace, 'findFiles');
@@ -213,9 +213,11 @@ describe('EW04 visible file token binding at the host boundary', () => {
     for (const route of ['ordinary', 'brainstorm'] as const) {
       it(`${route}: valid ${spelling} reference keeps the intended exact bytes`, async () => {
         if (spelling === 'quoted-special') {
-          a = path.join(root, 'src/雪 ref @claude and @codex "quoted".ts'); writeFileSync(a, A_BYTES);
+          // Windows forbids literal double quotes in names; an apostrophe keeps literal quote coverage.
+          const quotedName = process.platform === 'win32' ? "src/雪 ref @claude and @codex 'quoted'.ts" : 'src/雪 ref @claude and @codex "quoted".ts';
+          a = path.join(root, quotedName); writeFileSync(a, A_BYTES);
         }
-        const relative = path.relative(root, a);
+        const relative = path.relative(root, a).split(path.sep).join('/');
         const token = spelling === 'basename' ? '@' + path.basename(a)
           : spelling === 'relative-path' || spelling === 'relative-value' ? '@' + relative
             : '@' + JSON.stringify(spelling === 'quoted-relative' ? relative : a);

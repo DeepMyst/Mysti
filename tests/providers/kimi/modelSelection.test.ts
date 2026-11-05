@@ -18,9 +18,9 @@ const settings = (model = ''): Settings => ({ provider: 'kimi-code', model,
   mode: 'edit-automatically', accessLevel: 'full-access', thinkingLevel: 'none', contextMode: 'manual' });
 type Scenario = 'default' | 'ordered' | 'error' | 'malformed' | 'mismatch' | 'transitions' | 'stop';
 type Terminal = { code: number | null; signal: string | null };
-type Owned = { child: ChildProcess; exit?: Terminal; close?: Terminal; closed: Promise<void> };
+type Owned = { child: ChildProcess; index: number; exit?: Terminal; close?: Terminal; closed: Promise<void> };
 type Turn = { chunks: StreamChunk[]; done: Promise<void>; settled: boolean; error?: unknown };
-type Event = { event: string; pid: number; at: number; [key: string]: any };
+type Event = { event: string; pid: number; index: number; at: number; [key: string]: any };
 
 // configOptions, set_config_option and pre-reply config notifications follow the
 // pinned 2.1.1 source. owned/selection_barrier is an explicitly synthetic server
@@ -30,7 +30,7 @@ const childSource = String.raw`
 const fs=require('node:fs'), readline=require('node:readline');
 const [receipt,scenario,indexText,...args]=process.argv.slice(2), index=Number(indexText);
 const sid='owned-kimi-model-'+index, barrier='owned-selection-barrier';
-const record=e=>fs.appendFileSync(receipt,JSON.stringify({at:Date.now(),pid:process.pid,...e})+'\n');
+const record=e=>fs.appendFileSync(receipt,JSON.stringify({at:Date.now(),pid:process.pid,index,...e})+'\n');
 const emit=packet=>{record({event:'output',packet});process.stdout.write(JSON.stringify(packet)+'\n');};
 const reply=(id,result)=>emit({jsonrpc:'2.0',id,result});
 const config=model=>[{id:'model',name:'Model',category:'model',type:'select',currentValue:model,
@@ -133,7 +133,9 @@ async function fixture(scenario: Scenario, run: (f: {
   });
   const tracker={registerProcess(_panel:string,child:ChildProcess){
     if(children.some(row=>row.child===child))return;
-    const row:Owned={child,closed:Promise.resolve()};
+    // Windows tracks the cmd.exe launcher, whose PID differs from the Node
+    // fixture. Correlate protocol receipts by the exact launch index in argv.
+    const row:Owned={child,index:starts,closed:Promise.resolve()};
     row.closed=new Promise(resolve=>child.once('close',(code,signal)=>{row.close={code,signal};resolve();}));
     child.once('exit',(code,signal)=>{row.exit={code,signal};});children.push(row);
   },clearProcess(){}};
@@ -155,6 +157,7 @@ async function fixture(scenario: Scenario, run: (f: {
     await run({send,finish,events,children,provider,reap,notes});
     expect(fallback).not.toHaveBeenCalled();expect(getMockConfigUpdates()).toEqual({});
     expect(events().filter(e=>e.event==='invocation').map(e=>e.args)).toEqual(children.map(()=>['acp']));
+    expect(events().filter(e=>e.event==='invocation').map(e=>e.index)).toEqual(children.map(row=>row.index));
     expect(events().filter(e=>e.event==='invocation').map(e=>e.anthropicModel)).toEqual(children.map(()=>null));
     expect(events().some(e=>e.event==='fixture-deadline'||e.event==='invalid-set-request')).toBe(false);
   }catch(error){bodyError=error;throw error;}finally{
@@ -181,7 +184,7 @@ async function fixture(scenario: Scenario, run: (f: {
         notes,drained,closed,cleanupSignals,fallbackCalls:fallback.mock.calls.length,
         configUpdates:{...getMockConfigUpdates()},events:events(),
         turns:turns.map(t=>({settled:t.settled,error:t.error instanceof Error?t.error.message:t.error,chunks:t.chunks})),
-        children:children.map(row=>({pid:row.child.pid,exit:row.exit,close:row.close})),
+        children:children.map(row=>({pid:row.child.pid,index:row.index,exit:row.exit,close:row.close})),
         completeReceipt:!fs.existsSync(receipt)||fs.readFileSync(receipt,'utf8').endsWith('\n')};
       const sink=process.env.PB11_KIMI_MODEL_RECEIPT;if(sink)fs.appendFileSync(sink,JSON.stringify(evidence)+'\n');
       vi.restoreAllMocks();clearMockConfig();
@@ -196,7 +199,7 @@ async function fixture(scenario: Scenario, run: (f: {
   }
 }
 
-function requests(events:Event[],pid?:number){return events.filter(e=>e.event==='input'&&typeof e.packet?.method==='string'&&(pid===undefined||e.pid===pid)).map(e=>e.packet);}
+function requests(events:Event[],index?:number){return events.filter(e=>e.event==='input'&&typeof e.packet?.method==='string'&&(index===undefined||e.index===index)).map(e=>e.packet);}
 function reports(chunks:StreamChunk[]){return chunks.flatMap(c=>c.reportedModel?[c.reportedModel]:[]);}
 function expectAnswer(turn:Turn,prompt:string,model:string){
   expect(turn.chunks.filter(c=>c.type==='text').map(c=>c.content)).toEqual(['Answer '+prompt+'.']);
@@ -246,7 +249,7 @@ describe('Kimi confirmed native session model',()=>{
       if(!closedBeforeCleanup)await f.reap(old);await f.finish(a);
       const b=f.send('recovered','selected-a');await f.finish(b);expectAnswer(b,'recovered','selected-a');
       expect(f.children).toHaveLength(2);expect(f.children[1].child.pid).not.toBe(old.child.pid);
-      expect(requests(f.events(),old.child.pid).map(p=>p.method)).toEqual(['initialize','session/new','session/set_config_option']);
+      expect(requests(f.events(),old.index).map(p=>p.method)).toEqual(['initialize','session/new','session/set_config_option']);
       expect(f.events().filter(e=>e.event==='prompt-received').map(e=>e.prompt)).toEqual(['recovered']);
       expect(before.outcome).toBe('settled');expect(before.closedBeforeCleanup).toBe(true);expect(before.refCleared).toBe(true);
       expect(before.exit).toBeDefined();expect(before.close).toEqual(before.exit);
@@ -263,14 +266,16 @@ describe('Kimi confirmed native session model',()=>{
       const b=f.send('B','selected-b');await f.finish(b);const c=f.send('default');await f.finish(c);
       expectAnswer(a,'A','selected-a');expectAnswer(resumed,'A-resumed','selected-a');
       expectAnswer(b,'B','selected-b');expectAnswer(c,'default','native-default');expect(f.children).toHaveLength(3);
-      const perChild=f.children.map(row=>requests(f.events(),row.child.pid));
+      const perChild=f.children.map(row=>requests(f.events(),row.index));
       expect(perChild.map(p=>p.filter(m=>m.method==='session/set_config_option').map(m=>m.params.value))).toEqual([['selected-a'],['selected-b'],[]]);
       expect(perChild.map(p=>p.filter(m=>m.method==='session/prompt').length)).toEqual([2,1,1]);
       expect(await within(Promise.all(f.children.slice(0,2).map(row=>row.closed)),2500)).not.toHaveProperty('deadline');
     });
   },20000);
 
-  it('does not let a stopped child release a late model ACK into its replacement',async()=>{
+  it(process.platform === 'win32'
+    ? 'reaps a stopped child before its held model ACK can reach the replacement'
+    : 'does not let a stopped child release a late model ACK into its replacement',async()=>{
     await fixture('stop',async f=>{
       const a=f.send('cancelled-A','selected-a');
       await vi.waitFor(()=>expect(f.events().some(e=>e.event==='selection-held')||a.settled).toBe(true),{timeout:2500});
@@ -282,8 +287,16 @@ describe('Kimi confirmed native session model',()=>{
       const c=f.send('replacement-resumed','selected-b');await f.finish(c);
       expectAnswer(b,'replacement-B','selected-b');expectAnswer(c,'replacement-resumed','selected-b');
       const events=f.events();expect(held).toBe(true);
-      expect(events.some(e=>e.event==='product-sigterm-observed')).toBe(true);
-      expect(events.some(e=>e.event==='late-old-ack')).toBe(true);
+      if(process.platform==='win32'){
+        // taskkill /T /F does not deliver catchable POSIX signals. Prove forced
+        // retirement while the ACK is held, with no late packet emitted.
+        expect(f.children[0].close).toEqual({code:1,signal:null});
+        expect(events.filter(e=>e.event==='product-sigterm-observed'||e.event==='late-old-ack')).toEqual([]);
+      }else{
+        expect(events.filter(e=>e.event==='product-sigterm-observed')).toHaveLength(1);
+        expect(events.filter(e=>e.event==='late-old-ack')).toHaveLength(1);
+      }
+      expect(requests(events,f.children[0].index).map(p=>p.method)).toEqual(['initialize','session/new','session/set_config_option']);
       expect(events.filter(e=>e.event==='prompt-received').map(e=>e.prompt)).toEqual(['replacement-B','replacement-resumed']);
       expect(reports(b.chunks).concat(reports(c.chunks))).not.toContain('late-old-model');
       expect(a.chunks.some(chunk=>chunk.type==='text'||chunk.type==='thinking')).toBe(false);

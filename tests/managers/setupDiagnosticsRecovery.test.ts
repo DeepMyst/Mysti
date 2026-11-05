@@ -4,6 +4,8 @@ import * as path from 'path';
 import { SetupManager } from '../../src/managers/SetupManager';
 import * as platform from '../../src/utils/platform';
 
+const hostPlatform = process.platform;
+
 vi.mock('fs', async () => {
   const actual = await vi.importActual<typeof import('fs')>('fs');
   return { ...actual, accessSync: vi.fn(actual.accessSync), existsSync: vi.fn(actual.existsSync) };
@@ -43,7 +45,10 @@ function harness() {
   return { manager, providers };
 }
 
-afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); vi.unstubAllEnvs(); });
+afterEach(() => {
+  Object.defineProperty(process, 'platform', { value: hostPlatform });
+  vi.restoreAllMocks(); vi.useRealTimers(); vi.unstubAllEnvs();
+});
 
 describe('PC-02 diagnostics recovery', () => {
   it('reports the selected npm version, executable and prefix rather than another PATH installation', async () => {
@@ -60,16 +65,21 @@ describe('PC-02 diagnostics recovery', () => {
     expect(env[pathKey]?.split(path.delimiter)[0]).toBe('/fixture/Selected Node/bin');
   });
 
-  it('checks write permissions on the selected prefix without borrowing another npm permissions result', async () => {
+  it.each(['darwin', 'win32'])('checks %s write permissions on the selected prefix without borrowing another npm permissions result', async os => {
+    Object.defineProperty(process, 'platform', { value: os });
     const { manager } = harness();
     const access = vi.spyOn(fs, 'accessSync').mockImplementation(() => { throw new Error('EACCES'); });
     vi.spyOn(fs, 'existsSync').mockReturnValue(true);
     const report = await manager.runDiagnostics();
     expect(report.npmStatus.canWriteGlobalDir).toBe(false);
-    expect(access).toHaveBeenCalledWith('/fixture/Selected Node/lib/node_modules', fs.constants.W_OK);
+    const globalDir = os === 'win32' ? path.join('/fixture/Selected Node', 'node_modules')
+      : path.join('/fixture/Selected Node', 'lib', 'node_modules');
+    expect(access).toHaveBeenCalledWith(globalDir, fs.constants.W_OK);
   });
 
   it('reports the login-shell npm identity and configuration through that same shell', async () => {
+    // All subprocesses are mocked; explicitly exercise the POSIX login-shell branch.
+    Object.defineProperty(process, 'platform', { value: 'darwin' });
     const { manager } = harness();
     (manager as any)._npmPath = 'npm'; (manager as any)._npmUsesLoginShell = true;
     vi.stubEnv('SHELL', '/fixture/Login Shell/bin/bash');

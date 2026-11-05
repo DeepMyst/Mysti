@@ -43,7 +43,7 @@ dependencies and regenerated browser assets must be covered by the final build,
 sanitization tests, minimum-runtime check and packaged-editor tests. Development
 exceptions remain documented in [maintenance](../../MAINTENANCE.md).
 
-## Release qualification
+## Local release qualification
 
 The final local source/browser qualification uses the same explicit phases as CI:
 
@@ -71,20 +71,67 @@ The two transient-permission tests separate page boot from their unchanged
 five-second behavior budget and control the browser clock during observation.
 Release CI now runs unit/integration, browser and performance phases separately,
 with bounded worker counts and no blanket retries or relaxed behavior deadlines.
-All final phases passed. The first packaged-editor collection also exposed eager
+All final local phases passed. The first packaged-editor collection also exposed eager
 imports in opt-in campaign tests: 95 campaign/oracle imports now sit inside their
 existing environment guards across 34 files. A 102-case collection probe confirms
 disabled campaigns perform no private evidence reads or native execution; enabled
 campaigns retain their imports and checks. The corrected packaged editor run
 passed all 11 tests. Earlier failed runs remain retained in the local logs.
 
+## First hosted qualification — failed
+
+The first hosted workflows ran commit
+[`40431cb9855f1dda46b752cf72bb544b2770cb8f`](https://github.com/DeepMyst/Mysti/commit/40431cb9855f1dda46b752cf72bb544b2770cb8f).
+Both failed; the local passes above do not replace these required checks.
+
+| Workflow | Observed result |
+| --- | --- |
+| [CI 41993627813](https://github.com/DeepMyst/Mysti/actions/runs/41993627813) | Ubuntu unit, browser and Canvas performance phases passed. Minimum Node 18.17.1 runtime, lint and all three OS gate jobs passed. macOS and Windows test jobs failed, so package-shape and packaged-editor jobs were not reached. |
+| [Editor integration 41993627999](https://github.com/DeepMyst/Mysti/actions/runs/41993627999) | All four editor jobs failed: current stable on Linux/macOS/Windows and VS Code 1.86 on Linux. |
+
+The failures identified specific corrections:
+
+- **Clean editor fixtures:** the conversation test assumed Brainstorm was
+  selectable without two available providers. It now switches between selectable
+  built-in adapters while checking the same draft and Help behavior. It submits
+  no account-backed inference. The minimum-editor test now uses the existing
+  legacy CDP adapter already used by the Canvas journey.
+- **Windows fixture portability:** test data included filesystem-illegal double
+  quotes, POSIX shell assumptions and process-exit assumptions. File observers
+  also compared Windows short temporary paths with expanded native canonical
+  paths, missing real reads and cancellation barriers. Corrections use native
+  canonicalization, legal quoted filenames, the UI's relative-path spelling and
+  platform-appropriate process/launcher fixtures. The file-mention corrections
+  passed **305 tests in 10 suites locally**, without skipped or weakened checks;
+  native Windows execution remains a separate required gate.
+- **macOS fixture teardown:** all **16,836 tests in 625 files passed**, but Vitest
+  reported an unhandled teardown error while a console-log RPC remained pending.
+  The log shows agent-initialization output after the containment suite finished.
+  File-mention fixtures now await their tracked initialization before disposing
+  their host and restoring mocks; logging and unhandled-error checks remain active.
+- **Windows npm update probing:** investigation also found a production issue:
+  a selected `npm.cmd` launcher cannot be passed directly to `execFile`. A scoped
+  correction now probes through that installation's verified adjacent npm script
+  and sibling Node executable, or the standard shim's declared PATH fallback.
+  It retains argv boundaries and selected-installation ownership; unrecognized
+  layouts fail closed. The service, setup, installer and file-action checks passed
+  **204 tests in 11 files locally**; native Windows execution is a required hosted
+  gate. Provider fixture corrections separately passed **100 tests locally**.
+
+**Corrections require requalification.** The corrected source must pass both
+required hosted workflows, including the previously unreached package and
+packaged-editor jobs. These failures are not waived. The release record below
+identifies the final source, qualifying workflow runs and artifact checksum;
+the failed attempts above remain part of the validation history.
+
 ### Artifact identity and hosted checks
 
-The [published GitHub release](https://github.com/DeepMyst/Mysti/releases/tag/v2.0.1-beta.2)
-is the canonical record of the exact source commit, successful hosted CI and
-editor runs, VSIX SHA-256 and registry publication status. Its `SHA256SUMS.txt`
-applies to the attached artifact. Publication uses the downloaded CI artifact
-that passed the packaged-editor jobs; it is not rebuilt after qualification.
+Once qualified and published, the
+[GitHub release](https://github.com/DeepMyst/Mysti/releases/tag/v2.0.1-beta.2)
+will record the exact source commit, successful hosted CI and editor runs, VSIX
+SHA-256 and registry publication status. Its `SHA256SUMS.txt` must identify the
+attached artifact. Publication must use the downloaded CI artifact that passed
+the packaged-editor jobs, without rebuilding it after qualification.
 
 Required hosted checks include Linux, macOS and Windows source/test gates,
 minimum-runtime validation, lint, package shape, editor integration and the

@@ -10,6 +10,7 @@ This release collects the reliability work since Beta 1. It remains a beta;
 ### Fixed
 
 - Bound setup, discovery, authentication, and update checks; cancelled or superseded setup flows no longer apply late results to another panel.
+- Check npm-backed CLI updates on Windows through the selected npm installation, preserving argument boundaries without executing its `.cmd` launcher through a shell.
 - Preserve model and credential ownership across provider switches, settings changes, queued work, process reuse, and authentication recovery.
 - Preserve drafts, interrupted answers, original second-opinion questions and attachments; prevent stale events from updating a replacement conversation.
 - Harden conversation history, forks, transfers, checkpoints, and edit reversion around ownership, persistence failures, and unrelated workspace changes.

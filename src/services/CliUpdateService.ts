@@ -294,6 +294,49 @@ function updateShellWord(value: string): string {
   return /^[A-Za-z0-9_@./:+-]+$/.test(value) ? value : quoteSetupExecutable(value);
 }
 
+/** A Windows npm shim cannot be passed to execFile. Keep registry probes
+ * shell-free by using only the npm script belonging to that selected shim. */
+function npmProbeInvocation(npmPath: string, args: string[]): { executable: string; args: string[] } {
+  if (process.platform !== 'win32') { return { executable: npmPath, args }; }
+  const isFile = (file: string) => {
+    try { return fs.statSync(file).isFile(); } catch { return false; }
+  };
+  let selected = npmPath;
+  if (!/[\\/]/.test(selected)) {
+    const pathValue = Object.entries(process.env).find(([key]) => key.toLowerCase() === 'path')?.[1] || '';
+    const extensions = path.extname(selected) ? [''] : (process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';');
+    const candidates = pathValue.split(path.delimiter).filter(Boolean).flatMap(directory =>
+      extensions.map(extension => path.join(directory.replace(/^"|"$/g, ''), selected + extension)));
+    selected = candidates.find(isFile) || '';
+    if (!selected) { throw new Error('The selected npm installation could not be resolved; check npm manually.'); }
+  }
+  if (!/\.(?:cmd|bat)$/i.test(selected)) { return { executable: selected, args }; }
+
+  const directory = path.dirname(selected);
+  const packageRoot = path.join(directory, 'node_modules', 'npm');
+  const script = path.join(packageRoot, 'bin', 'npm-cli.js');
+  const manual = () => new Error('The selected npm launcher is not a recognized npm installation; check npm manually.');
+  let source: string;
+  let manifest: { name?: unknown; bin?: { npm?: unknown } };
+  try {
+    if (fs.statSync(selected).size > 64 * 1024 || fs.statSync(path.join(packageRoot, 'package.json')).size > 1024 * 1024) { throw manual(); }
+    source = fs.readFileSync(selected, 'utf8');
+    manifest = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
+  } catch { throw manual(); }
+  if (manifest.name !== 'npm' || manifest.bin?.npm !== 'bin/npm-cli.js' || !isFile(script)
+      || !/(?:%~dp0|%dp0%)[\\/]node_modules[\\/]npm[\\/]bin[\\/]npm-cli\.js/i.test(source)) { throw manual(); }
+
+  const siblingNode = path.join(directory, 'node.exe');
+  if (isFile(siblingNode)) {
+    if (!/(?:%~dp0|%dp0%)[\\/]node\.exe/i.test(source)) { throw manual(); }
+    return { executable: siblingNode, args: [script, ...args] };
+  }
+  // The standard npm shim falls back to PATH node when no sibling exists.
+  // A custom launcher does not authorize choosing a different runtime.
+  if (!/SET\s+"?(?:NODE_EXE|_prog)=node(?:\.exe)?"?(?:\s|$)/im.test(source)) { throw manual(); }
+  return { executable: 'node.exe', args: [script, ...args] };
+}
+
 /**
  * CliUpdateService — answers "is this backend's CLI behind npm?" and nothing
  * else. It NEVER installs: the update command is built by the caller from the
@@ -615,9 +658,10 @@ export class CliUpdateService implements vscode.Disposable {
     // passed the strict semver check; the package name is an in-repo literal.
     const spec = range ? `${packageName}@${range}` : packageName;
     return new Promise((resolve, reject) => {
+      const invocation = npmProbeInvocation(npmPath, ['view', spec, ...fields, '--json']);
       const child = execFile(
-        npmPath,
-        ['view', spec, ...fields, '--json'],
+        invocation.executable,
+        invocation.args,
         { timeout: CLI_UPDATE_PROBE_TIMEOUT_MS, windowsHide: true, maxBuffer: 1024 * 512 },
         (error, out) => {
           if (error) {

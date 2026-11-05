@@ -155,7 +155,7 @@ beforeEach(() => {
     ] }) : 'Deterministic reference-boundary orchestration synthesis.';
     return Response.json({ choices: [{ message: { content } }] });
   }));
-  editors = installEditorWindowFixture(); root = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'mysti-reference-boundary-')));
+  editors = installEditorWindowFixture(); root = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), 'mysti-reference-boundary-')));
   selected = path.join(root, 'reference.md'); body = ''; captures = []; opens = []; observations = []; wires = []; payload = undefined;
   manual = { id: 'manual', type: 'file', path: path.join(root, 'manual.ts'), content: 'BOUNDARY_MANUAL_KEEP', enabled: true };
   suppliedContext = [manual];
@@ -207,13 +207,13 @@ beforeEach(() => {
   }) as any);
 });
 
-afterEach(() => {
+afterEach(async () => {
   const sink = process.env.MYSTI_FILE_MENTION_PROMPT_RECEIPTS;
   if (sink) appendFileSync(sink, JSON.stringify({ test: expect.getState().currentTestName,
     payloadOrigin: 'controlled-public-host-submit', selected, body, bodyBytes: Buffer.byteLength(body), bodySha256: hash(body), manual,
     payload, suppliedContext, captures, wires, opens, observations, messages: h.sidebarMessages, persisted: h.persistedCalls,
   }) + '\n');
-  try { host?._brainstormManager.clearSession('sidebar'); h?.dispose(); } finally {
+  try { host?._brainstormManager.clearSession('sidebar'); await host?._agentInitPromise; h?.dispose(); } finally {
     if (workspaceDescriptor) Object.defineProperty(vscode.workspace, 'workspaceFolders', workspaceDescriptor);
     editors.restore(); vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks();
     clearMockConfig(); clearConfigurationListeners(); rmSync(root, { recursive: true, force: true });

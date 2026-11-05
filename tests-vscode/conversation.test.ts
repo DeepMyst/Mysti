@@ -4,11 +4,16 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { chromium, type Browser, type Frame } from 'playwright';
+import { legacyCdp } from './legacyCdp';
 
 describe('Mysti conversation editor bridge', function () {
   this.timeout(60_000);
   let browser: Browser;
-  after(async () => { await browser?.close(); });
+  let legacy: Awaited<ReturnType<typeof legacyCdp>> | undefined;
+  after(async () => {
+    try { await browser?.close(); }
+    finally { await legacy?.close(); }
+  });
 
   it('reselects its chat tab, preserves a draft across agent switches, executes Help, and starts fresh', async () => {
     await vscode.extensions.getExtension('DeepMyst.mysti')!.activate();
@@ -16,7 +21,11 @@ describe('Mysti conversation editor bridge', function () {
       await vscode.window.tabGroups.close(tab);
     }
     const endpoint = fs.readFileSync(path.join(process.env.MYSTI_TEST_USER_DATA_DIR!, 'DevToolsActivePort'), 'utf8').trim().split(/\r?\n/);
-    browser = await chromium.connectOverCDP(`ws://127.0.0.1:${endpoint[0]}${endpoint[1]}`);
+    const inspection = `ws://127.0.0.1:${endpoint[0]}${endpoint[1]}`;
+    // The oldest supported editor needs the same download-free CDP adapter as
+    // the Canvas journey; all actual target/frame commands still reach VS Code.
+    if (vscode.version.startsWith('1.86.')) { legacy = await legacyCdp(inspection); }
+    browser = await chromium.connectOverCDP(legacy?.endpoint || inspection);
     const previousFrames = new Set(browser.contexts().flatMap(context => context.pages().flatMap(page => page.frames())));
     let tabListener: vscode.Disposable | undefined;
     let tabTimeout: ReturnType<typeof setTimeout> | undefined;
@@ -93,13 +102,17 @@ describe('Mysti conversation editor bridge', function () {
     if (await skip.isVisible()) { await skip.click(); }
     await frame.locator('#message-input').waitFor({ state: 'visible', timeout: 15_000 });
     await frame.locator('#message-input').fill('Keep my unfinished review request');
-    // Built-in agents make this host test independent of CLI installation and
-    // asynchronous discovery. Account-backed provider switching is exercised
-    // separately by the opt-in live suite.
-    for (const [agent, label] of [['brainstorm', 'Brainstorm'], ['mysti', 'Mysti']]) {
+    // Mysti and the built-in MiniMax API adapter are selectable without a CLI
+    // installation. Brainstorm requires two available providers, which a clean
+    // hosted runner does not have. Selecting an adapter performs no inference;
+    // the only submitted message below is the local /help command.
+    for (const [agent, label] of [['mysti', 'Mysti'], ['minimax', 'MiniMax'], ['mysti', 'Mysti']]) {
       await frame.locator('#agent-select-btn').click();
-      await frame.locator(`#agent-menu .agent-menu-item[data-agent="${agent}"]`).click();
-      assert.ok((await frame.locator('#agent-name').innerText()).includes(label));
+      const item = frame.locator(`#agent-menu .agent-menu-item[data-agent="${agent}"]`);
+      assert.ok(!(await item.getAttribute('class'))?.split(/\s+/).includes('disabled'), `${label} must be selectable without an installed CLI`);
+      await item.click();
+      const selectedLabel = await frame.locator('#agent-name').innerText();
+      assert.ok(selectedLabel.includes(label), `Expected selected agent ${label}, received ${selectedLabel}`);
       assert.strictEqual(await frame.locator('#message-input').inputValue(), 'Keep my unfinished review request');
     }
 

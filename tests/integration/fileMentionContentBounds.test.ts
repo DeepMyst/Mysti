@@ -94,7 +94,7 @@ beforeEach(() => {
     });
   }));
   editors = installEditorWindowFixture();
-  owned = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'mysti-ew04-content-')));
+  owned = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), 'mysti-ew04-content-')));
   valid = path.join(owned, 'unicode.ts'); binary = path.join(owned, 'binary.bin'); oversized = path.join(owned, 'oversized.txt');
   writeFileSync(valid, TEXT); writeFileSync(binary, BINARY);
   manual = { id: 'manual', type: 'file', path: path.join(owned, 'manual.ts'), content: 'CONTENT_MANUAL_KEEP', enabled: true };
@@ -165,13 +165,13 @@ beforeEach(() => {
   }) as any);
 });
 
-afterEach(() => {
+afterEach(async () => {
   const sink = process.env.MYSTI_FILE_MENTION_CONTENT_RECEIPTS;
   if (sink) appendFileSync(sink, JSON.stringify({ test: expect.getState().currentTestName,
     payloadOrigin: 'controlled-host-fixture', owned, valid, binary, oversized, textFixture: compact(TEXT), binaryFixture: compact(BINARY),
     manual, inputs, checkpoints, ...evidenceSnapshot(), collaboratorDispatches: host._collaborationManager.run.mock.calls.length,
   }) + '\n');
-  try { host?._brainstormManager.clearSession('sidebar'); h?.dispose(); } finally {
+  try { host?._brainstormManager.clearSession('sidebar'); await host?._agentInitPromise; h?.dispose(); } finally {
     if (workspaceDescriptor) Object.defineProperty(vscode.workspace, 'workspaceFolders', workspaceDescriptor);
     editors.restore(); vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks();
     clearMockConfig(); clearConfigurationListeners(); rmSync(owned, { recursive: true, force: true });

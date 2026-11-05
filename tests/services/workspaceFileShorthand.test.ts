@@ -38,7 +38,7 @@ async function expected(filePath: string) {
 }
 
 beforeEach(() => {
-  base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-shorthand-')));
+  base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-shorthand-')));
   rootA = path.join(base, 'root-A'); rootB = path.join(base, 'root-B');
   a = file(rootA, 'src/util.ts'); b = file(rootB, 'src/util.ts');
   find.mockReset(); queryTokens = []; reply([a]);

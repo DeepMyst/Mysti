@@ -285,7 +285,9 @@ describe('CliUpdateService', () => {
       // Claude Code is detected via npm but must be updated with its OWN
       // installer: `npm i -g` writes /usr/local/bin while the native installer
       // writes ~/.local/bin, which is what PATH (and therefore Mysti) resolves.
-      expect(svc.getUpdateCommand('claude-code')).toBe(`${versions.peekStatus('claude-code')!.path} install latest`);
+      const selectedCli = versions.peekStatus('claude-code')!.path!;
+      const quotedCli = process.platform === 'win32' ? `"${selectedCli}"` : selectedCli;
+      expect(svc.getUpdateCommand('claude-code')).toBe(`${quotedCli} install latest`);
     });
 
     it('returns undefined for a non-npm or unknown provider, so no card can offer a command', () => {
@@ -325,6 +327,100 @@ describe('CliUpdateService', () => {
       // the running Node in the SAME call — see the engine-gating tests below.
       expect(args).toEqual(['view', '@openai/codex', 'version', 'engines.node', '--json']);
       expect((opts as { shell?: boolean }).shell).toBeUndefined();
+    });
+  });
+
+  describe('Windows npm registry probes', () => {
+    const hostPlatform = process.platform;
+    beforeEach(() => { Object.defineProperty(process, 'platform', { value: 'win32' }); });
+    afterEach(() => {
+      Object.defineProperty(process, 'platform', { value: hostPlatform });
+      vi.unstubAllEnvs();
+    });
+
+    function windowsNpm(directoryVariable = '%~dp0') {
+      const prefix = fs.mkdtempSync(path.join(os.tmpdir(), "mysti npm's fixture-"));
+      fixturePrefixes.push(prefix);
+      const packageRoot = path.join(prefix, 'node_modules', 'npm');
+      fs.mkdirSync(path.join(packageRoot, 'bin'), { recursive: true });
+      const script = path.join(packageRoot, 'bin', 'npm-cli.js');
+      const manifest = path.join(packageRoot, 'package.json');
+      fs.writeFileSync(script, '');
+      fs.writeFileSync(manifest, JSON.stringify({ name: 'npm', bin: { npm: 'bin/npm-cli.js' } }));
+      const shim = path.join(prefix, 'npm.cmd');
+      fs.writeFileSync(shim, `@ECHO OFF\r\nSET "NODE_EXE=${directoryVariable}\\node.exe"\r\nIF NOT EXIST "%NODE_EXE%" (\r\n SET "NODE_EXE=node"\r\n)\r\n"%NODE_EXE%" "${directoryVariable}\\node_modules\\npm\\bin\\npm-cli.js" %*\r\n`);
+      const node = path.join(prefix, 'node.exe');
+      fs.writeFileSync(node, '');
+      return { prefix, script, manifest, shim, node };
+    }
+
+    function successfulProbe() {
+      execFileMock.mockImplementation((_cmd, _args, _opts, cb) => {
+        cb(null, '{"version":"0.153.1","engines.node":">=18"}');
+        return { on: () => undefined };
+      });
+      return new CliUpdateService(ctx.context, makeVersions([{ providerId: 'openai-codex', found: true, version: '0.140.0' }]), npm);
+    }
+
+    it.each(['%~dp0', '%dp0%'])('uses the selected %s shim package and sibling Node with argv and no shell', async variable => {
+      const fixture = windowsNpm(variable);
+      const svc = successfulProbe();
+      try {
+        await (svc as any)._execNpmView(fixture.shim, '@openai/codex', ['version', 'engines.node'], '<0.160.0');
+        expect(execFileMock).toHaveBeenCalledWith(fixture.node,
+          [fixture.script, 'view', '@openai/codex@<0.160.0', 'version', 'engines.node', '--json'],
+          expect.objectContaining({ windowsHide: true, timeout: expect.any(Number) }), expect.any(Function));
+        expect(execFileMock.mock.calls[0][2].shell).toBeUndefined();
+      } finally { svc.dispose(); }
+    });
+
+    it.each(['%~dp0', '%dp0%'])('uses PATH Node only when the selected %s shim declares that fallback', async variable => {
+      const fixture = windowsNpm(variable); fs.rmSync(fixture.node);
+      const svc = successfulProbe();
+      try {
+        await (svc as any)._execNpmView(fixture.shim, '@openai/codex');
+        expect(execFileMock.mock.calls[0].slice(0, 2)).toEqual(['node.exe', [fixture.script, 'view', '@openai/codex', 'version', '--json']]);
+      } finally { svc.dispose(); }
+    });
+
+    it('resolves bare npm in PATH order without borrowing another npm package', async () => {
+      const selected = windowsNpm(), other = windowsNpm();
+      vi.stubEnv('PATHEXT', '.cmd;.exe');
+      const pathKey = Object.keys(process.env).find(key => key.toLowerCase() === 'path') || 'PATH';
+      vi.stubEnv(pathKey, [selected.prefix, other.prefix].join(path.delimiter));
+      const svc = successfulProbe();
+      try {
+        await (svc as any)._execNpmView('npm', '@openai/codex');
+        expect(execFileMock.mock.calls[0].slice(0, 2)).toEqual([selected.node, [selected.script, 'view', '@openai/codex', 'version', '--json']]);
+      } finally { svc.dispose(); }
+    });
+
+    it.each(['missing script', 'missing manifest', 'different package', 'custom shim', 'custom runtime', 'undeclared runtime fallback'])('rejects %s before starting a probe', async kind => {
+      const fixture = windowsNpm();
+      if (kind === 'missing script') { fs.rmSync(fixture.script); }
+      if (kind === 'missing manifest') { fs.rmSync(fixture.manifest); }
+      if (kind === 'different package') { fs.writeFileSync(fixture.manifest, JSON.stringify({ name: 'other', bin: { npm: 'bin/npm-cli.js' } })); }
+      if (kind === 'custom shim') { fs.writeFileSync(fixture.shim, '@ECHO OFF\r\nC:\\unrelated\\npm.exe %*\r\n'); }
+      if (kind === 'custom runtime' || kind === 'undeclared runtime fallback') {
+        if (kind === 'undeclared runtime fallback') { fs.rmSync(fixture.node); }
+        fs.writeFileSync(fixture.shim, '"C:\\custom\\node.exe" "%~dp0\\node_modules\\npm\\bin\\npm-cli.js" %*\r\n');
+      }
+      const svc = successfulProbe();
+      try {
+        await expect((svc as any)._execNpmView(fixture.shim, '@openai/codex')).rejects.toThrow('manually');
+        expect(execFileMock).not.toHaveBeenCalled();
+      } finally { svc.dispose(); }
+    });
+
+    it('preserves a directly executable npm binary and its argv', async () => {
+      const fixture = windowsNpm();
+      const binary = path.join(fixture.prefix, 'custom npm.exe'); fs.writeFileSync(binary, '');
+      const svc = successfulProbe();
+      try {
+        await (svc as any)._execNpmView(binary, '@openai/codex');
+        expect(execFileMock.mock.calls[0].slice(0, 2)).toEqual([binary, ['view', '@openai/codex', 'version', '--json']]);
+        expect(execFileMock.mock.calls[0][2].shell).toBeUndefined();
+      } finally { svc.dispose(); }
     });
   });
 

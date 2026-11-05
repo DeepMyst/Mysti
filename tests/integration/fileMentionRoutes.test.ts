@@ -97,7 +97,7 @@ beforeEach(() => {
   setMockConfig('mysti.memory', false); setMockConfig('brainstorm.agents', ['claude-code', 'openai-codex']);
   setMockConfig('brainstorm.strategy', 'quick'); setMockConfig('brainstorm.synthesisAgent', 'claude-code');
   editors = installEditorWindowFixture();
-  root = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'mysti-ew04-routes-')));
+  root = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), 'mysti-ew04-routes-')));
   selected = path.join(root, 'sources/ref @claude and @codex note.ts');
   unselected = path.join(root, 'sources/unselected.ts');
   mkdirSync(path.dirname(selected), { recursive: true }); writeFileSync(selected, FILE_BYTES); writeFileSync(unselected, OTHER_BYTES);
@@ -174,14 +174,14 @@ beforeEach(() => {
     return read();
   });
 });
-afterEach(() => {
+afterEach(async () => {
   releaseRead?.();
   if (process.env.MYSTI_FILE_MENTION_ROUTE_RECEIPTS) appendFileSync(process.env.MYSTI_FILE_MENTION_ROUTE_RECEIPTS, JSON.stringify({
     test: expect.getState().currentTestName, payload: currentPayload, selected, fileBytes: FILE_BYTES, manual,
     wires, children, readPaths, messages: h.sidebarMessages, persisted: h.persistedCalls,
     collaboratorDispatches: host._collaborationManager.run.mock.calls.length,
   }) + '\n');
-  try { host?._brainstormManager.clearSession('sidebar'); h?.dispose(); } finally {
+  try { host?._brainstormManager.clearSession('sidebar'); await host?._agentInitPromise; h?.dispose(); } finally {
     if (workspaceDescriptor) Object.defineProperty(vscode.workspace, 'workspaceFolders', workspaceDescriptor);
     editors.restore(); vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks();
     clearMockConfig(); clearConfigurationListeners(); rmSync(root, { recursive: true, force: true });

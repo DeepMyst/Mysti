@@ -80,8 +80,10 @@ if(scenario.remaining)process.stdin.once('data',()=>{emit(scenario.remaining);pr
       }
       await close;
       if (retired) {
-        expect(child?.exitCode).toBeNull();
-        expect(child?.signalCode).toBe('SIGTERM');
+        // Windows taskkill /T /F terminates the owned tree with exit code 1;
+        // only POSIX reports the terminating SIGTERM as a signal.
+        expect({ code: child?.exitCode, signal: child?.signalCode }).toEqual(
+          process.platform === 'win32' ? { code: 1, signal: null } : { code: null, signal: 'SIGTERM' });
       } else {
         expect(child?.exitCode).toBe(0);
         expect(child?.signalCode).toBeNull();

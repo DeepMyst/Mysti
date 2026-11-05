@@ -14,6 +14,8 @@ vi.mock('../../src/utils/processKill', () => ({ killProcessTree: mocks.kill }));
 vi.mock('fs', async () => ({ ...await vi.importActual<any>('fs'), accessSync: vi.fn(), existsSync: vi.fn(), readdirSync: vi.fn() }));
 import { SetupManager } from '../../src/managers/SetupManager';
 
+const hostPlatform = process.platform;
+
 let manager: any;
 let proc: any;
 beforeEach(() => {
@@ -29,7 +31,10 @@ beforeEach(() => {
   manager = new SetupManager({ globalState: { get: () => undefined } } as any, {} as any) as any;
   manager._npmPath = '/fixture/Selected Node/bin/npm';
 });
-afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllEnvs(); });
+afterEach(() => {
+  Object.defineProperty(process, 'platform', { value: hostPlatform });
+  vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllEnvs();
+});
 
 function complete(stdout: string) { proc.stdout.write(stdout); proc.emit('close', 0); }
 async function flush() { for (let i = 0; i < 20; i++) { await Promise.resolve(); } }
@@ -86,6 +91,7 @@ describe('PC-02 setup prerequisite probes', () => {
   });
 
   it('uses argv for a login shell path containing spaces', async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin' });
     vi.stubEnv('SHELL', '/fixture/Shell App/bin/bash');
     const pending = manager._checkNpmViaLoginShell();
     expect(mocks.spawn.mock.calls[0]?.slice(0, 2)).toEqual(['/fixture/Shell App/bin/bash', ['-l', '-c', 'npm --version']]);
@@ -93,6 +99,7 @@ describe('PC-02 setup prerequisite probes', () => {
   });
 
   it('checks Node and the registry through the same login shell that found npm', async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin' });
     vi.stubEnv('SHELL', '/fixture/Shell App/bin/bash');
     manager._npmPath = 'npm';
     const detect = manager._checkNpmViaLoginShell(); complete('10.9.2'); await detect;
@@ -109,11 +116,18 @@ describe('PC-02 setup prerequisite probes', () => {
     vi.mocked(fs.existsSync).mockReturnValue(true);
     vi.mocked(fs.readdirSync).mockReturnValue(['v9.0.0', 'v22.23.3'] as any);
     vi.mocked(fs.accessSync).mockImplementation(file => {
-      if (!String(file).includes('/versions/node/')) { throw new Error('not found'); }
+      if (!String(file).includes(path.join('versions', 'node') + path.sep)) { throw new Error('not found'); }
     });
     const pending = manager._checkNpmInNvmPaths();
-    const selected = '/fixture/NVM with spaces/versions/node/v22.23.3/bin/npm';
-    expect(mocks.spawn.mock.calls[0]?.[0]).toBe(selected);
+    const selected = path.join('/fixture/NVM with spaces', 'versions', 'node', 'v22.23.3', 'bin', process.platform === 'win32' ? 'npm.cmd' : 'npm');
+    expect(mocks.spawn.mock.calls[0]?.[0]).toBe(process.platform === 'win32' ? `"${selected}"` : selected);
     complete('10.9.2'); expect(await pending).toBe(selected);
+  });
+
+  it('does not invoke a POSIX login shell on Windows', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    vi.stubEnv('SHELL', '/fixture/Shell App/bin/bash');
+    expect(await manager._checkNpmViaLoginShell()).toBe(false);
+    expect(mocks.spawn).not.toHaveBeenCalled();
   });
 });

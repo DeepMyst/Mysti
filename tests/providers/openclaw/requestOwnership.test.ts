@@ -229,7 +229,11 @@ describe('OpenClaw request ownership through ProviderManager', () => {
     expect(result.filter(chunk => chunk.type === 'text').map(chunk => chunk.content)).toEqual(['B ready', 'B completed']);
     expect(result.filter(chunk => chunk.type === 'done')).toHaveLength(1);
     expect(result.some(chunk => chunk.type === 'error')).toBe(false); expect(replacement.close).toEqual({ code: 0, signal: null });
-    expect(f.events(old).filter(event => event.event === 'SIGTERM')).toHaveLength(1);
+    // Windows forcibly terminates the tree; it cannot run a Node SIGTERM
+    // handler. Both paths must close the old child before fixture cleanup.
+    expect(old.close).toEqual({ code: process.platform === 'win32' ? 1 : 0, signal: null });
+    expect(f.events(old).map(event => event.event)).toEqual(
+      process.platform === 'win32' ? ['ready'] : ['ready', 'SIGTERM']);
     expect(f.events(replacement).map(event => event.event)).toEqual(['ready', 'complete']);
   }), 15000);
 

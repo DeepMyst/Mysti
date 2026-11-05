@@ -57,7 +57,10 @@ beforeEach(async () => {
   vi.spyOn(provider, 'getCliPath').mockReturnValue('/owned/openclaw');
   scenario = {};
   const actual = await vi.importActual<typeof import('child_process')>('child_process');
-  mocks.spawn.mockReset().mockImplementation((_command: string, args: string[], options: SpawnOptions) => {
+  mocks.spawn.mockReset().mockImplementation((command: string, args: string[], options: SpawnOptions) => {
+    // Substitute only OpenClaw. Windows process cleanup must launch the real
+    // taskkill helper, not a second enhancement fixture that cannot kill it.
+    if (command !== '/owned/openclaw') return actual.spawn(command, args, options);
     const file = path.join(directory, `child-${children.length}.json`);
     fs.writeFileSync(file, JSON.stringify({ ...scenario, cwd: directory }));
     const proc = actual.spawn(process.execPath, ['-e', childSource, '--', file, ...args], { ...options, env: { PATH: process.env.PATH } });
@@ -145,15 +148,28 @@ describe('OpenClaw text-only enhancement', () => {
     else expire!(); // Expire only after the owned child installed its signal handler.
     expect(await bounded(pending, 2000)).toBe(original);
     await bounded(children[0].closed, 1000);
-    expect(JSON.parse(fs.readFileSync(path.join(directory, 'child-0.json.receipt'), 'utf8')).terminated).toBe(true);
+    const receipt = JSON.parse(fs.readFileSync(path.join(directory, 'child-0.json.receipt'), 'utf8'));
+    if (process.platform === 'win32') {
+      expect(children[0].close).toEqual({ code: 1, signal: null });
+      expect(receipt.terminated).toBeUndefined();
+      expect(mocks.spawn).toHaveBeenCalledWith('taskkill', ['/PID', String(children[0].proc.pid), '/T', '/F'], expect.any(Object));
+    } else {
+      expect(receipt.terminated).toBe(true);
+      expect(children[0].close).toEqual({ code: 0, signal: null });
+    }
   });
-  it('escalates when an enhancement child ignores termination', async () => {
+  it(process.platform === 'win32'
+    ? 'forcibly reaps an enhancement child even when it installs a termination handler'
+    : 'escalates when an enhancement child ignores termination', async () => {
     scenario.hang = true; scenario.stubborn = true;
     const pending = run();
     while (!fs.existsSync(path.join(directory, 'child-0.json.receipt'))) await new Promise(resolve => setTimeout(resolve, 5));
     provider.dispose(); expect(await bounded(pending, 7500)).toBe(original);
     await bounded(children[0].closed, 1000);
-    expect(children[0].close).toEqual({ code: null, signal: 'SIGKILL' });
+    expect(children[0].close).toEqual(process.platform === 'win32'
+      ? { code: 1, signal: null } : { code: null, signal: 'SIGKILL' });
+    const receipt = JSON.parse(fs.readFileSync(path.join(directory, 'child-0.json.receipt'), 'utf8'));
+    expect(receipt.terminated).toBe(process.platform === 'win32' ? undefined : true);
   }, 12000);
   it('keeps concurrent local enhancements independent', async () => {
     scenario.split = true;

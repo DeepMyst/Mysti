@@ -7,6 +7,7 @@ import { ChatViewProvider } from '../../src/providers/ChatViewProvider';
 
 vi.mock('vscode', async () => {
   const base = await vi.importActual<any>('../helpers/mockVscode');
+  const nativePath = await import('path');
   class Position { constructor(public line: number, public character: number) {} }
   class Range { constructor(public start: Position, public end: Position) {} }
   class WorkspaceEdit {
@@ -14,6 +15,8 @@ vi.mock('vscode', async () => {
     replace(uri: any, range: any, text: string) { this.edits.push({ uri, range, text }); }
   }
   return { ...base, Position, Range, Selection: Range, WorkspaceEdit,
+    // VS Code file URIs expose native separators through fsPath.
+    Uri: { ...base.Uri, joinPath: (uri: any, ...segments: string[]) => base.Uri.file(nativePath.join(uri.fsPath, ...segments)) },
     workspace: { ...base.workspace, openTextDocument: vi.fn(), applyEdit: vi.fn() },
     window: { ...base.window, showTextDocument: vi.fn(), showErrorMessage: vi.fn(), showInformationMessage: vi.fn() },
     commands: { ...base.commands, executeCommand: vi.fn(async () => undefined) },
@@ -117,11 +120,12 @@ describe('PC-05 chat file actions against disposable files', () => {
   });
 
   it('returns the actual replacement line separately for two edits in the same quoted path', async () => {
-    write('src/quoted "café".ts', '// heading\r\nconst first = "new one";\r\n// unchanged\r\nconst second = "new two";\r\n');
+    const filePath = "src/quoted 'café'.ts";
+    write(filePath, '// heading\r\nconst first = "new one";\r\n// unchanged\r\nconst second = "new two";\r\n');
     for (const [toolCallId, searchText, lineNumber] of [['edit-first', 'const first = "new one";', 2], ['edit-second', 'const second = "new two";', 4]] as const) {
       // Mirrors the live producer's legacy top-level message fields.
-      await host._handleMessage({ type: 'getFileLineNumber', panelId: 'a', filePath: 'src/quoted "café".ts', searchText, toolCallId });
-      expect(posted.at(-1)).toEqual({ panelId: 'a', type: 'fileLineNumber', payload: { filePath: 'src/quoted "café".ts', toolCallId, lineNumber } });
+      await host._handleMessage({ type: 'getFileLineNumber', panelId: 'a', filePath, searchText, toolCallId });
+      expect(posted.at(-1)).toEqual({ panelId: 'a', type: 'fileLineNumber', payload: { filePath, toolCallId, lineNumber } });
     }
   });
 

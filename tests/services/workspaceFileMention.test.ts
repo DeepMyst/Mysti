@@ -28,7 +28,7 @@ function retarget(name: string, target: string) { fs.unlinkSync(name); fs.symlin
 function reads() { return handles.reduce((total, item) => total + item.reads, 0); }
 
 beforeEach(() => {
-  base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-mention-containment-')));
+  base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-mention-containment-')));
   firstRoot = path.join(base, 'first'); secondRoot = path.join(base, 'second'); outside = path.join(base, 'outside');
   for (const root of [firstRoot, secondRoot, outside]) { fs.mkdirSync(root); }
   first = path.join(firstRoot, 'file.ts'); second = path.join(secondRoot, 'file.ts'); secret = path.join(outside, 'file.ts');
@@ -140,7 +140,7 @@ describe('workspace file mention handle and path revalidation', () => {
       fs.symlinkSync(secret, first);
     };
     const result = await readWorkspaceFileMention(first, [firstRoot]);
-    expect(fs.realpathSync(first)).toBe(secret);
+    expect(fs.realpathSync.native(first)).toBe(secret);
     expect(result).toEqual({ path: first, content: INSIDE });
     expect(result?.content).not.toContain(OUTSIDE);
     expect(handles).toHaveLength(1);

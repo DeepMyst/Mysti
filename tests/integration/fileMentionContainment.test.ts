@@ -105,7 +105,8 @@ beforeEach(() => {
   setMockConfig('mysti.memory', false); setMockConfig('brainstorm.agents', ['claude-code', 'openai-codex']);
   setMockConfig('brainstorm.strategy', 'quick'); setMockConfig('brainstorm.synthesisAgent', 'claude-code');
   editors = installEditorWindowFixture();
-  owned = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'mysti-ew04-containment-')));
+  // Match fs.promises.realpath, including expanded Windows short directory names.
+  owned = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), 'mysti-ew04-containment-')));
   workspace = path.join(owned, 'workspace'); outside = path.join(owned, 'outside');
   secondRoot = path.join(owned, 'second-root');
   mkdirSync(workspace); mkdirSync(outside); mkdirSync(secondRoot); mkdirSync(workspace + '-sibling');
@@ -197,7 +198,7 @@ beforeEach(() => {
     return handle;
   }) as any);
 });
-afterEach(() => {
+afterEach(async () => {
   releaseWait?.();
   if (process.env.MYSTI_FILE_MENTION_CONTAINMENT_RECEIPTS) appendFileSync(process.env.MYSTI_FILE_MENTION_CONTAINMENT_RECEIPTS, JSON.stringify({
     test: expect.getState().currentTestName, inputPayload: currentPayload, workspace, outside, insideFile, outsideFile, escapedLink,
@@ -205,7 +206,8 @@ afterEach(() => {
     messages: h.sidebarMessages, persisted: h.persistedCalls, collaboratorDispatches: host._collaborationManager.run.mock.calls.length,
     idleCalls: host._lifecycleManager.markIdle.mock.calls,
   }) + '\n');
-  try { host?._brainstormManager.clearSession('sidebar'); h?.dispose(); } finally {
+  // Constructor metadata work belongs to this fixture and must settle before worker teardown.
+  try { host?._brainstormManager.clearSession('sidebar'); await host?._agentInitPromise; h?.dispose(); } finally {
     if (workspaceDescriptor) Object.defineProperty(vscode.workspace, 'workspaceFolders', workspaceDescriptor);
     editors.restore(); vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks();
     clearMockConfig(); clearConfigurationListeners(); rmSync(owned, { recursive: true, force: true });

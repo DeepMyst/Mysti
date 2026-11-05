@@ -14,18 +14,46 @@ beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-pc02-upda
 afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
 function executable(file: string, source: string): string {
   fs.mkdirSync(path.dirname(file), { recursive: true });
+  if (process.platform === 'win32' && !file.endsWith('.js')) {
+    fs.writeFileSync(`${file}.cjs`, source);
+    fs.writeFileSync(`${file}.cmd`, `@ECHO OFF\r\n"${process.execPath}" "${file}.cjs" %*\r\n`);
+    return `${file}.cmd`;
+  }
   fs.writeFileSync(file, `#!${process.execPath}\n${source}\n`, { mode: 0o755 });
   return file;
 }
+function npmExecutable(source: string): string {
+  if (process.platform !== 'win32') { return executable(path.join(root, 'npm fixture'), source); }
+  const prefix = path.join(root, 'npm fixture');
+  const packageRoot = path.join(prefix, 'node_modules', 'npm');
+  executable(path.join(packageRoot, 'bin', 'npm-cli.js'), source);
+  fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({ name: 'npm', bin: { npm: 'bin/npm-cli.js' } }));
+  const shim = path.join(prefix, 'npm.cmd');
+  fs.writeFileSync(shim, '@ECHO OFF\r\nSET "NODE_EXE=node"\r\n"%NODE_EXE%" "%~dp0\\node_modules\\npm\\bin\\npm-cli.js" %*\r\n');
+  return shim;
+}
+function shellCommand(command: string, env = process.env) {
+  return process.platform === 'win32'
+    ? exec(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `"${command}"`], { env, windowsVerbatimArguments: true })
+    : exec('/bin/bash', ['-c', command], { env });
+}
+function shellWord(value: string): string {
+  return process.platform === 'win32' ? `"${value}"` : `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+function runLauncher(file: string, args: string[]) {
+  return process.platform === 'win32' ? shellCommand([file, ...args].map(shellWord).join(' ')) : exec(file, args);
+}
 function npmInstall(name: string, version: string) {
   const prefix = path.join(root, name);
-  const packageRoot = path.join(prefix, 'lib', 'node_modules', '@openai', 'codex');
+  const packageRoot = path.join(prefix, ...(process.platform === 'win32' ? [] : ['lib']), 'node_modules', '@openai', 'codex');
   const versionFile = path.join(prefix, 'version.txt');
   fs.mkdirSync(path.join(prefix, 'bin'), { recursive: true });
   const target = executable(path.join(packageRoot, 'bin', 'codex.js'), `process.stdout.write(require('fs').readFileSync(${JSON.stringify(versionFile)}, 'utf8'))`);
   fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({ name: '@openai/codex', version, bin: { codex: 'bin/codex.js' } }));
-  const cli = path.join(prefix, 'bin', 'codex');
-  fs.symlinkSync(target, cli);
+  const cli = process.platform === 'win32' ? path.join(prefix, 'codex.cmd') : path.join(prefix, 'bin', 'codex');
+  if (process.platform === 'win32') {
+    fs.writeFileSync(cli, `@ECHO OFF\r\n"${process.execPath}" "%~dp0\\node_modules\\@openai\\codex\\bin\\codex.js" %*\r\n`);
+  } else { fs.symlinkSync(target, cli); }
   fs.writeFileSync(versionFile, version);
   return { prefix, cli, versionFile, packageRoot };
 }
@@ -42,7 +70,7 @@ describe('PC-02 updates preserve the selected CLI installation', () => {
     fs.writeFileSync(registry, '0.159.3');
     // Read-only discovery and installation both use the disposable executable.
     // Its moving latest tag reproduces a registry publish after the card appears.
-    const npm = executable(path.join(root, 'npm fixture'), `
+    const npm = npmExecutable(`
       const fs = require('fs'), path = require('path');
       const args = process.argv.slice(2);
       const latest = fs.readFileSync(${JSON.stringify(registry)}, 'utf8');
@@ -59,8 +87,8 @@ describe('PC-02 updates preserve the selected CLI installation', () => {
       const [offer] = await svc.checkAll();
       expect(offer.installable).toBe('0.159.3');
       fs.writeFileSync(registry, '0.162.0');
-      await exec('/bin/bash', ['-c', svc.getUpdateCommand('openai-codex')!]);
-      expect((await exec(selected.cli, ['--version'])).stdout).toBe(offer.installable);
+      await shellCommand(svc.getUpdateCommand('openai-codex')!);
+      expect((await runLauncher(selected.cli, ['--version'])).stdout).toBe(offer.installable);
     } finally { svc.dispose(); }
   });
 
@@ -79,7 +107,7 @@ describe('PC-02 updates preserve the selected CLI installation', () => {
     // requested prefix. Omitting --prefix reproduces the wrong-global-install
     // bug without touching any real package or running a package manager.
     const argvFile = path.join(root, 'npm-argv.json');
-    const npm = executable(path.join(root, 'npm fixture'), `
+    const npm = npmExecutable(`
       const fs = require('fs'), path = require('path');
       const args = process.argv.slice(2);
       fs.writeFileSync(${JSON.stringify(argvFile)}, JSON.stringify(args));
@@ -90,14 +118,16 @@ describe('PC-02 updates preserve the selected CLI installation', () => {
     const svc = service('openai-codex', selected.cli, npm);
     try {
       const plan = svc.getModelUpgradePlan('openai-codex', '0.153.1', selected.cli);
-      await exec(plan.executable, plan.args, { env: { ...process.env, PATH: `${path.dirname(older.cli)}${path.delimiter}${process.env.PATH}` } });
-      expect((await exec(selected.cli, ['--version'])).stdout).toBe('0.153.1');
-      expect((await exec(older.cli, ['--version'])).stdout).toBe('0.100.0');
+      // Model upgrades use vscode.ShellExecution(executable, args), including
+      // .cmd launchers on Windows; exercise the same native shell contract.
+      await shellCommand([plan.executable, ...plan.args].map(shellWord).join(' '), { ...process.env, PATH: `${path.dirname(older.cli)}${path.delimiter}${process.env.PATH}` });
+      expect((await runLauncher(selected.cli, ['--version'])).stdout).toBe('0.153.1');
+      expect((await runLauncher(older.cli, ['--version'])).stdout).toBe('0.100.0');
       expect(JSON.parse(fs.readFileSync(argvFile, 'utf8'))).toEqual(['install', '-g', '--prefix', fs.realpathSync(selected.prefix), '@openai/codex@0.153.1']);
       // The ordinary update action uses the same installation, with shell
       // quoting tested by the apostrophe and spaces in this selected prefix.
       fs.writeFileSync(selected.versionFile, '0.140.0');
-      await exec('/bin/bash', ['-c', svc.getUpdateCommand('openai-codex')!]);
+      await shellCommand(svc.getUpdateCommand('openai-codex')!);
       expect(fs.readFileSync(selected.versionFile, 'utf8')).toBe('0.153.1');
       expect(fs.readFileSync(older.versionFile, 'utf8')).toBe('0.100.0');
     } finally { svc.dispose(); }
@@ -119,7 +149,7 @@ describe('PC-02 updates preserve the selected CLI installation', () => {
     try {
       const command = svc.getUpdateCommand('claude-code');
       expect(command).toBeDefined();
-      await exec('/bin/bash', ['-c', command!], { env: { ...process.env, PATH: `${path.dirname(older)}${path.delimiter}${process.env.PATH}` } });
+      await shellCommand(command!, { ...process.env, PATH: `${path.dirname(older)}${path.delimiter}${process.env.PATH}` });
       expect(fs.readFileSync(selectedVersion, 'utf8')).toBe('2.1.286');
       expect(fs.readFileSync(olderVersion, 'utf8')).toBe('2.1.278');
     } finally { svc.dispose(); }

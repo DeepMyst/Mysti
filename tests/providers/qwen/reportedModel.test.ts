@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ChildProcess } from 'node:child_process';
 import { PassThrough } from 'node:stream';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { TestableQwenProvider } from '../../helpers/providerFactory';
 import { createQwenSession } from '../../helpers/sessionFactory';
 import { clearMockConfig } from '../../helpers/mockVscode';
@@ -99,9 +102,13 @@ describe('Qwen reported model', () => {
     const source = `const timer=setTimeout(()=>process.exit(92),5000);process.stdin.resume();process.stdin.on('end',()=>{
       process.stderr.write('Warning: unsupported requested model; PRIVATE_STDERR_MUST_NOT_RENDER\\n');
       for(const e of ${JSON.stringify(events)})process.stdout.write(JSON.stringify(e)+'\\n');clearTimeout(timer);});`;
+    // The real Windows launcher screens shell arguments. A script file keeps
+    // fixture JavaScript out of argv while retaining the actual launch path.
+    const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-qwen-model-')));
+    const script = path.join(directory, 'reply.cjs'); fs.writeFileSync(script, source);
     vi.spyOn(p, 'getCliPath').mockReturnValue(process.execPath);
     vi.spyOn(p as any, '_getWorkingDirectory').mockReturnValue(process.cwd());
-    vi.spyOn(p, 'buildCliArgs').mockReturnValue(['-e', source]);
+    vi.spyOn(p, 'buildCliArgs').mockReturnValue([script]);
     vi.spyOn(p as any, 'buildPromptAsync').mockResolvedValue('Owned fixture only.');
     let child: ChildProcess | undefined, closed: Promise<void> | undefined;
     let exit: unknown, close: unknown;
@@ -124,6 +131,7 @@ describe('Qwen reported model', () => {
     } finally {
       if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
       await closed;
+      fs.rmSync(directory, { recursive: true, force: true });
     }
   });
 });

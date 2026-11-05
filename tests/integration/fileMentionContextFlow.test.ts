@@ -50,10 +50,12 @@ function standaloneReceipts(): Receipt[] {
   // Ordinary test runs exercise host compatibility without needing out-test
   // artifacts. Qualified picker-to-wire runs REQUIRE actual browser receipts
   // through the environment above; these controls do not claim UI coverage.
-  ownedTemporaryRoot = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'mysti-ew04-host-')));
+  ownedTemporaryRoot = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), 'mysti-ew04-host-')));
   fixtureRoot = ownedTemporaryRoot;
+  // Windows cannot create double-quoted filenames; retain a literal quote in its legal spelling.
+  const quotedName = process.platform === 'win32' ? "quotes/say 'hello'.ts" : 'quotes/say "hello".ts';
   const names = ['packages/a/utils.ts', 'packages/b/utils.ts', 'unique.ts', 'space dir/with spaces.ts',
-    'unicode/مرحبا-雪.ts', 'quotes/say "hello".ts', 'odd/ref @claude and @codex note.ts'];
+    'unicode/مرحبا-雪.ts', quotedName, 'odd/ref @claude and @codex note.ts'];
   const files = names.map((name, index) => ({ path: path.join(fixtureRoot, name), content: `export const fixture_${index} = "HOST_FILE_${index}_EXACT_🧪";\n` }));
   for (const file of files) { mkdirSync(path.dirname(file.path), { recursive: true }); writeFileSync(file.path, file.content); }
   return CASES.map(caseId => {
@@ -135,7 +137,7 @@ beforeEach(() => {
   vi.spyOn(host._collaborationManager, 'run');
   captures = []; currentReceipt = undefined; beforeDelivery = async () => {}; releaseWait = undefined;
 });
-afterEach(() => {
+afterEach(async () => {
   releaseWait?.();
   if (process.env.MYSTI_FILE_MENTION_HOST_RECEIPTS && currentReceipt) {
     appendFileSync(process.env.MYSTI_FILE_MENTION_HOST_RECEIPTS, JSON.stringify({
@@ -146,7 +148,7 @@ afterEach(() => {
       collaboratorDispatches: host._collaborationManager.run.mock.calls.length,
     }) + '\n');
   }
-  try { h?.dispose(); } finally {
+  try { await host?._agentInitPromise; h?.dispose(); } finally {
     if (workspaceDescriptor) Object.defineProperty(vscode.workspace, 'workspaceFolders', workspaceDescriptor);
     if (findFilesDescriptor) Object.defineProperty(vscode.workspace, 'findFiles', findFilesDescriptor);
     else Reflect.deleteProperty(vscode.workspace, 'findFiles');

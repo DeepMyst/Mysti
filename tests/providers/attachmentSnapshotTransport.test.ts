@@ -68,7 +68,10 @@ describe('empty attachment snapshots at registered CLI transport boundaries', ()
         vi.spyOn(provider as any, 'buildAgentInstructionsAsync').mockResolvedValue('');
         const prompt = await (provider as any).buildPromptAsync('Inspect this empty file', [], null, { mode: 'default' }, undefined, undefined, [attachment]);
         receipts.push({ preparedPath: attachment.filePath, bytes: bytes.length, sha256: digest(bytes), prompt });
-        expect(prompt.split(attachment.filePath!)).toHaveLength(2);
+        // Claude emits a native Read path; the shared renderer JSON-quotes its
+        // references, including the backslashes in Windows paths.
+        const reference = provider.id === 'claude-code' ? attachment.filePath! : JSON.stringify(attachment.filePath);
+        expect(prompt.split(reference)).toHaveLength(2);
         await cleanup!();
         expect(fs.existsSync(attachment.filePath!)).toBe(false);
         if (change === 'modified') expect(fs.readFileSync(source, 'utf8')).toBe('Changed after attachment selection');

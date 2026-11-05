@@ -22,7 +22,7 @@ const firstText = 'export const first = "FILE_CONTEXT_α";\n';
 const secondText = 'export const second = "FILE_CONTEXT_β";\n';
 
 beforeEach(() => {
-  directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-file-resolution-')));
+  directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-file-resolution-')));
   workspaceDescriptor = Object.getOwnPropertyDescriptor(vscode.workspace, 'workspaceFolders');
   Object.defineProperty(vscode.workspace, 'workspaceFolders', { configurable: true, value: [
     { uri: vscode.Uri.file(directory), name: 'owned', index: 0 },
