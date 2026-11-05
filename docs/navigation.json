@@ -1,0 +1,608 @@
+{
+  "schemaVersion": 1,
+  "product": "Mysti",
+  "productVersion": "2.0.1",
+  "channel": "beta",
+  "entryPoint": "docs/README.md",
+  "sourceOfTruth": {
+    "settingsAndCommands": "package.json",
+    "englishLabels": "package.nls.json",
+    "providerRegistry": "src/providers/ProviderRegistry.ts",
+    "readiness": "docs/PRODUCTION_READINESS.md"
+  },
+  "documents": [
+    {
+      "id": "start",
+      "path": "docs/GETTING-STARTED.md",
+      "title": "Getting started",
+      "summary": "Install, connect one provider and complete a first task.",
+      "audiences": [
+        "user"
+      ],
+      "topics": [
+        "installation",
+        "setup",
+        "first task"
+      ],
+      "kind": "guide",
+      "status": "current"
+    },
+    {
+      "id": "providers",
+      "path": "docs/PROVIDERS.md",
+      "title": "Provider setup and compatibility",
+      "summary": "Choose and configure adapters; account, model and permission limits.",
+      "audiences": [
+        "user",
+        "developer"
+      ],
+      "topics": [
+        "providers",
+        "authentication",
+        "models",
+        "permissions"
+      ],
+      "kind": "reference",
+      "status": "current"
+    },
+    {
+      "id": "walkthroughs",
+      "path": "docs/walkthroughs/README.md",
+      "title": "Visual walkthroughs",
+      "summary": "Choose a practical task with illustrated steps.",
+      "audiences": [
+        "user"
+      ],
+      "topics": [
+        "tutorials",
+        "visual",
+        "examples"
+      ],
+      "kind": "guide",
+      "status": "current"
+    },
+    {
+      "id": "multi-agent",
+      "path": "docs/walkthroughs/multi-agent-workflows.md",
+      "title": "Multi-agent workflows",
+      "summary": "Compare independent answers or hand completed work to another agent.",
+      "audiences": [
+        "user"
+      ],
+      "topics": [
+        "collaboration",
+        "review",
+        "handoff",
+        "brainstorm"
+      ],
+      "kind": "walkthrough",
+      "status": "current"
+    },
+    {
+      "id": "canvas",
+      "path": "docs/walkthroughs/canvas.md",
+      "title": "Canvas walkthrough",
+      "summary": "Create a visual design, inspect it and understand persistence and export.",
+      "audiences": [
+        "user"
+      ],
+      "topics": [
+        "canvas",
+        "design",
+        "artboards",
+        "export"
+      ],
+      "kind": "walkthrough",
+      "status": "current"
+    },
+    {
+      "id": "visual-test",
+      "path": "docs/walkthroughs/visual-test.md",
+      "title": "Visual Test walkthrough",
+      "summary": "Observe a local application, read its report and request a separate fix.",
+      "audiences": [
+        "user"
+      ],
+      "topics": [
+        "visual test",
+        "browser",
+        "screenshots",
+        "report"
+      ],
+      "kind": "walkthrough",
+      "status": "current"
+    },
+    {
+      "id": "history",
+      "path": "docs/walkthroughs/history-and-checkpoints.md",
+      "title": "History and checkpoints",
+      "summary": "Reopen, fork, export and understand code rewind boundaries.",
+      "audiences": [
+        "user"
+      ],
+      "topics": [
+        "history",
+        "fork",
+        "checkpoint",
+        "rewind",
+        "export"
+      ],
+      "kind": "walkthrough",
+      "status": "current"
+    },
+    {
+      "id": "troubleshooting",
+      "path": "docs/TROUBLESHOOTING.md",
+      "title": "Troubleshooting",
+      "summary": "Diagnose setup, authentication, transport, browser and recovery failures.",
+      "audiences": [
+        "user",
+        "support"
+      ],
+      "topics": [
+        "errors",
+        "logs",
+        "PATH",
+        "network",
+        "support"
+      ],
+      "kind": "guide",
+      "status": "current"
+    },
+    {
+      "id": "recovery",
+      "path": "docs/BACKUP-AND-RECOVERY.md",
+      "title": "Backup and recovery",
+      "summary": "Protect data, export conversations and rehearse upgrade or recovery.",
+      "audiences": [
+        "user",
+        "support"
+      ],
+      "topics": [
+        "backup",
+        "restore",
+        "upgrade",
+        "downgrade",
+        "storage"
+      ],
+      "kind": "guide",
+      "status": "current"
+    },
+    {
+      "id": "privacy",
+      "path": "docs/PRIVACY.md",
+      "title": "Privacy and data controls",
+      "summary": "Understand data flows, credentials, telemetry and deletion boundaries.",
+      "audiences": [
+        "user",
+        "support"
+      ],
+      "topics": [
+        "privacy",
+        "telemetry",
+        "secrets",
+        "retention",
+        "data"
+      ],
+      "kind": "guide",
+      "status": "current"
+    },
+    {
+      "id": "features",
+      "path": "docs/FEATURES.md",
+      "title": "Feature guide",
+      "summary": "Chat, context, controls and feature-level guidance.",
+      "audiences": [
+        "user"
+      ],
+      "topics": [
+        "features",
+        "context",
+        "attachments",
+        "controls"
+      ],
+      "kind": "reference",
+      "status": "current"
+    },
+    {
+      "id": "mentions",
+      "path": "docs/MENTIONS.md",
+      "title": "Agent assignments and context mentions",
+      "summary": "Tags, roles, dependency ordering and context syntax.",
+      "audiences": [
+        "user",
+        "developer"
+      ],
+      "topics": [
+        "mentions",
+        "roles",
+        "agents",
+        "context"
+      ],
+      "kind": "reference",
+      "status": "current"
+    },
+    {
+      "id": "brainstorm",
+      "path": "docs/BRAINSTORM.md",
+      "title": "Brainstorm",
+      "summary": "Discussion strategies, team selection and synthesis.",
+      "audiences": [
+        "user"
+      ],
+      "topics": [
+        "brainstorm",
+        "strategies",
+        "synthesis"
+      ],
+      "kind": "guide",
+      "status": "current"
+    },
+    {
+      "id": "personas",
+      "path": "docs/PERSONAS-AND-SKILLS.md",
+      "title": "Personas and skills",
+      "summary": "Select or author reusable personas and skills.",
+      "audiences": [
+        "user",
+        "developer"
+      ],
+      "topics": [
+        "personas",
+        "skills",
+        "agents",
+        "customization"
+      ],
+      "kind": "guide",
+      "status": "current"
+    },
+    {
+      "id": "compaction",
+      "path": "docs/COMPACTION.md",
+      "title": "Context compaction",
+      "summary": "Context limits, compaction strategies and tracking.",
+      "audiences": [
+        "user",
+        "developer"
+      ],
+      "topics": [
+        "context",
+        "compaction",
+        "tokens"
+      ],
+      "kind": "guide",
+      "status": "current"
+    },
+    {
+      "id": "autonomous",
+      "path": "docs/AUTONOMOUS-MODE.md",
+      "title": "Autonomous mode",
+      "summary": "Autonomy controls, safety classification and limits.",
+      "audiences": [
+        "user"
+      ],
+      "topics": [
+        "autonomous",
+        "safety",
+        "continuation"
+      ],
+      "kind": "guide",
+      "status": "current"
+    },
+    {
+      "id": "proactive",
+      "path": "docs/PROACTIVE.md",
+      "title": "Proactive inbox",
+      "summary": "Local and connected watches, prerequisites and coverage.",
+      "audiences": [
+        "user",
+        "operator"
+      ],
+      "topics": [
+        "proactive",
+        "inbox",
+        "watches",
+        "connections"
+      ],
+      "kind": "guide",
+      "status": "current"
+    },
+    {
+      "id": "settings",
+      "path": "docs/SETTINGS.md",
+      "title": "Settings reference",
+      "summary": "Generated contributed keys, declared defaults, scopes and values.",
+      "audiences": [
+        "user",
+        "developer"
+      ],
+      "topics": [
+        "settings",
+        "configuration",
+        "defaults"
+      ],
+      "kind": "generated-reference",
+      "status": "current"
+    },
+    {
+      "id": "commands",
+      "path": "docs/COMMANDS.md",
+      "title": "Command reference",
+      "summary": "Generated command IDs, visible titles, keybindings and conditions.",
+      "audiences": [
+        "user",
+        "developer"
+      ],
+      "topics": [
+        "commands",
+        "shortcuts",
+        "palette"
+      ],
+      "kind": "generated-reference",
+      "status": "current"
+    },
+    {
+      "id": "approvals",
+      "path": "docs/NATIVE_APPROVAL.md",
+      "title": "Native approval contracts",
+      "summary": "Current transport-specific authority and approval boundaries.",
+      "audiences": [
+        "developer",
+        "support"
+      ],
+      "topics": [
+        "approval",
+        "permissions",
+        "trust",
+        "transports"
+      ],
+      "kind": "reference",
+      "status": "current"
+    },
+    {
+      "id": "architecture",
+      "path": "docs/ARCHITECTURE.md",
+      "title": "Architecture",
+      "summary": "Host and webview boundaries, routing, persistence and module map.",
+      "audiences": [
+        "developer"
+      ],
+      "topics": [
+        "architecture",
+        "source",
+        "modules"
+      ],
+      "kind": "reference",
+      "status": "current"
+    },
+    {
+      "id": "developer-notes",
+      "path": "docs/DEVELOPER-NOTES.md",
+      "title": "Developer notes",
+      "summary": "CLI resolution, native commands, usage accounting and persistence invariants.",
+      "audiences": [
+        "developer"
+      ],
+      "topics": [
+        "CLI",
+        "tokens",
+        "cache",
+        "persistence"
+      ],
+      "kind": "reference",
+      "status": "current"
+    },
+    {
+      "id": "contributing",
+      "path": "CONTRIBUTING.md",
+      "title": "Contributing",
+      "summary": "Development setup, focused validation and contribution workflow.",
+      "audiences": [
+        "developer"
+      ],
+      "topics": [
+        "development",
+        "build",
+        "contributing"
+      ],
+      "kind": "guide",
+      "status": "current"
+    },
+    {
+      "id": "maintenance",
+      "path": "docs/MAINTENANCE.md",
+      "title": "Maintenance and releases",
+      "summary": "Required checks, dependencies, runtime constraints and publishing.",
+      "audiences": [
+        "maintainer"
+      ],
+      "topics": [
+        "release",
+        "CI",
+        "packaging",
+        "dependencies"
+      ],
+      "kind": "guide",
+      "status": "current"
+    },
+    {
+      "id": "readiness",
+      "path": "docs/PRODUCTION_READINESS.md",
+      "title": "Production readiness and release checklist",
+      "summary": "Established evidence, remaining acceptance work and reusable release record.",
+      "audiences": [
+        "user",
+        "maintainer"
+      ],
+      "topics": [
+        "status",
+        "beta",
+        "production",
+        "release checklist"
+      ],
+      "kind": "status",
+      "status": "current"
+    },
+    {
+      "id": "media",
+      "path": "docs/DEMO_GALLERY.md",
+      "title": "Feature demos",
+      "summary": "Native GitHub players with labelled sample-data demonstrations.",
+      "audiences": [
+        "user"
+      ],
+      "topics": [
+        "videos",
+        "demos",
+        "screenshots"
+      ],
+      "kind": "media",
+      "status": "current"
+    },
+    {
+      "id": "docs-maintenance",
+      "path": "docs/DOCS-MAINTENANCE.md",
+      "title": "Documentation maintenance",
+      "summary": "Update source-backed guides, generated references and discovery metadata.",
+      "audiences": [
+        "maintainer",
+        "developer"
+      ],
+      "topics": [
+        "documentation",
+        "LLM",
+        "agents",
+        "checks"
+      ],
+      "kind": "guide",
+      "status": "current"
+    },
+    {
+      "id": "media-publishing",
+      "path": "docs/media/README.md",
+      "title": "Publishing GitHub demos",
+      "summary": "Upload canonical native videos and verify real playback.",
+      "audiences": [
+        "maintainer"
+      ],
+      "topics": [
+        "video publishing",
+        "GitHub",
+        "recordings"
+      ],
+      "kind": "guide",
+      "status": "current"
+    },
+    {
+      "id": "security",
+      "path": ".github/SECURITY.md",
+      "title": "Security reporting",
+      "summary": "Report a vulnerability privately and understand support scope.",
+      "audiences": [
+        "user",
+        "developer"
+      ],
+      "topics": [
+        "security",
+        "vulnerability",
+        "disclosure"
+      ],
+      "kind": "policy",
+      "status": "current"
+    },
+    {
+      "id": "beta2-notes",
+      "path": "docs/releases/2.0.1-beta.2/RELEASE-NOTES.md",
+      "title": "Beta 2 release notes",
+      "summary": "Changes and distribution notes for the published Beta 2 artifact.",
+      "audiences": [
+        "user",
+        "maintainer"
+      ],
+      "topics": [
+        "release notes",
+        "beta2"
+      ],
+      "kind": "release",
+      "status": "release-specific"
+    },
+    {
+      "id": "beta2-validation",
+      "path": "docs/releases/2.0.1-beta.2/VALIDATION.md",
+      "title": "Beta 2 validation",
+      "summary": "Exact source, artifact identity and scoped qualification evidence.",
+      "audiences": [
+        "maintainer"
+      ],
+      "topics": [
+        "validation",
+        "checksum",
+        "evidence"
+      ],
+      "kind": "release",
+      "status": "release-specific"
+    },
+    {
+      "id": "changelog",
+      "path": "CHANGELOG.md",
+      "title": "Changelog",
+      "summary": "Versioned changes and unreleased work.",
+      "audiences": [
+        "user",
+        "maintainer"
+      ],
+      "topics": [
+        "changes",
+        "versions"
+      ],
+      "kind": "reference",
+      "status": "current"
+    },
+    {
+      "id": "historical-review",
+      "path": "docs/REVIEW.md",
+      "title": "Historical implementation review",
+      "summary": "Historical review context; consult current source and production readiness before acting.",
+      "audiences": [
+        "maintainer"
+      ],
+      "topics": [
+        "historical",
+        "review"
+      ],
+      "kind": "historical",
+      "status": "historical"
+    },
+    {
+      "id": "historical-issues",
+      "path": "docs/ISSUE-REVIEW-2026-10-03.md",
+      "title": "October 3 issue review",
+      "summary": "Historical review context; consult current source and production readiness before acting.",
+      "audiences": [
+        "maintainer"
+      ],
+      "topics": [
+        "historical",
+        "review"
+      ],
+      "kind": "historical",
+      "status": "historical"
+    },
+    {
+      "id": "walkthrough-capture",
+      "path": "docs/media/walkthroughs/README.md",
+      "title": "Walkthrough screenshot provenance",
+      "summary": "Reproduce the current Visual Test form screenshot and inspect its source hashes.",
+      "audiences": [
+        "maintainer"
+      ],
+      "topics": [
+        "screenshots",
+        "provenance",
+        "visual test"
+      ],
+      "kind": "media",
+      "status": "current"
+    }
+  ]
+}

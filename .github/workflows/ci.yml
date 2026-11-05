@@ -84,6 +84,8 @@ jobs:
         run: npm ci
       - name: Lint
         run: npm run lint
+      - name: Documentation references and links
+        run: npm run check:docs
 
   minimum-runtime:
     name: bundled runtime (Node 18.17.1)

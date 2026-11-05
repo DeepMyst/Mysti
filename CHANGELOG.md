@@ -4,6 +4,8 @@
 
 ### Documentation
 
+- Add visual task walkthroughs, troubleshooting, privacy and backup/recovery guides, with source-checked provider and approval references.
+- Add a documentation hub, agent entry points and a machine-readable discovery map; generate settings and command references from the manifest and check documentation freshness and local navigation in CI.
 - Rework the GitHub README with clearer installation choices, practical multi-agent workflows, broader feature coverage and provider/account FAQs.
 - Replace repository-file video links with native GitHub players across the README and feature gallery, with a lightweight inline workflow preview and a reproducible media-publishing guide.
 

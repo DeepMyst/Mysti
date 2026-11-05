@@ -1,101 +1,71 @@
-# Context Compaction
+# Context compaction
 
-Context compaction prevents your conversation from exceeding the AI's context window by intelligently summarizing older messages while preserving recent context.
+Compaction helps manage a long conversation's context by summarizing older material or requesting the provider's native compaction. It can omit details and does not guarantee that every request fits a model's context window.
 
-## Why Compaction Matters
+[Documentation index](README.md) · [Provider capabilities](PROVIDERS.md#provider-capabilities) · [Privacy](PRIVACY.md) · [Backup and recovery](BACKUP-AND-RECOVERY.md)
 
-Every AI model has a limited context window — the maximum amount of text it can process at once. Long conversations can exceed this limit, causing errors or degraded responses. Compaction automatically manages this by:
+## What is measured
 
-- Tracking cumulative token usage per chat panel
-- Triggering compaction when usage approaches the threshold
-- Summarizing older messages while keeping recent ones intact
+Mysti distinguishes **current context fill** from **cumulative usage**. The current fill uses the latest normalized input, cache-read and cache-creation token buckets. Lifetime input/output totals describe work and cost; adding them across a conversation does not measure the current context window.
 
-## How It Works
+A provider that supplies no usable context measurement is **unknown**, not 0% full. Standard automatic threshold checks do not run from an unknown measurement. Provider token conventions and model-window declarations also affect the displayed estimate.
 
-```
-[Message 1] [Message 2] ... [Message N-4] [Message N-3] [Message N-2] [Message N-1] [Message N]
-     |           |              |              |              |             |             |
-     +--- Older messages -------+              +--- Preserved (last 4) ----+-------------+
-     |                                         |
-     v                                         v
-  Summarized into a compact                 Kept as-is for
-  context summary                           full detail
-```
+## When automatic compaction can run
 
-### Token Tracking
+The standard path requires all of the following:
 
-Mysti tracks cumulative token usage for each panel:
-- **Input tokens**: Tokens sent to the model
-- **Output tokens**: Tokens received from the model
-- **Cache read tokens**: Tokens served from cache
-- **Cache creation tokens**: Tokens stored in cache
+1. Compaction is enabled and the provider's history ownership permits it.
+2. A usable current-context measurement reaches the configured threshold, normally **75%**.
+3. At least four messages are present and the **30-second cooldown** has elapsed.
+4. The chosen strategy has enough material to compact. Client summarization needs older messages beyond the four it preserves.
 
-### Threshold Triggering
+These controls do not force a native-session provider to surrender its own history. The manager only permits automatic compaction for a provider with native compact support, or one to which Mysti sends the full history.
 
-When the fill level exceeds the configured threshold (default 75%), compaction is triggered automatically. A cooldown period (30 seconds) prevents rapid repeated compactions.
+## Strategies and provider support
 
-## Compaction Strategies
+| Provider / transport | History owner | Standard automatic path |
+| --- | --- | --- |
+| Claude Code | Native CLI session | Native `/compact` through the existing session |
+| Codex, Gemini, OpenClaw, OpenCode local CLI, Qwen Code, Hermes, Kimi Code | Native session | Native session owns its context; Mysti does not replace it with a client summary or restart it to compact |
+| Cline, Copilot, Continue, OpenCode remote HTTP/SSE | Mysti sends recent conversation history | Not the full-history automatic client-compaction path |
+| Ollama, LocalAI, OpenRouter, MiniMax | Mysti sends full conversation history | Client summarization when measurement and threshold conditions allow it |
+| Cursor | This adapter sends no prior conversation history | Nothing is automatically compacted for the provider |
 
-### Native CLI (`native-cli`)
+Transport capability declarations determine these categories. Native model/context management and account restrictions remain provider-specific; see [provider setup](PROVIDERS.md).
 
-For providers that support built-in compaction (currently Claude Code):
+### Native compaction
 
-- Sends the `/compact` command to the CLI
-- The provider handles summarization natively
-- Generally produces the best results since the provider understands its own context format
+Claude Code declares native compact support. Mysti sends `/compact` through the provider rather than reconstructing the CLI's tool and file-read history from chat text. The native response and errors still belong to the active request.
 
-### Client-Side Summarization (`client-summarize`)
+### Client summarization
 
-For other providers:
+For the client path, Mysti sends older messages to the configured provider for summarization, then replaces those messages in the active conversation with a summary while keeping the **last four messages** intact. An empty summary or request failure is reported instead of being treated as a useful summary. This summarization request can consume provider quota and sends that older content to the configured backend.
 
-- Mysti identifies older messages (beyond the preserved count)
-- Summarizes them into a condensed context block
-- Replaces the original messages with the summary
-- Preserves the last N messages (default 4) in full
+If you need the original text, [export or back up the conversation](BACKUP-AND-RECOVERY.md) before relying on a summary. A compacted summary is not a verbatim archive or a rollback mechanism.
 
-## Brainstorm Agent Tracking
+### Optional smart compaction
 
-In Brainstorm Mode, each agent's token usage is tracked independently using composite keys:
-- Main panel: `panelId`
-- Brainstorm agents: `panelId-brainstorm-agentId`
+Smart compaction additionally requires its opt-in setting, DeepMyst sign-in and the required entitlement. Its evaluation considers cache/economic information as well as context. When active, summarization can use the configured gateway model; unavailable smart summarization falls back to the ordinary client path. Read [Privacy](PRIVACY.md) before enabling a feature that sends conversation content to another service.
 
-This ensures accurate tracking even when multiple agents are active simultaneously.
+The smart toggle alone does not establish that the feature is active. See [all settings](SETTINGS.md) for its current configuration and defaults.
 
-## Compaction Status
+## Status and recovery
 
-The system reports its status through these states:
+| Status | Meaning |
+| --- | --- |
+| `idle` | No compaction is running |
+| `evaluating` | Checking whether a compaction can run |
+| `compacting` | The selected compaction request is active |
+| `complete` | That compaction finished successfully |
+| `error` | The request failed; inspect the reported provider/setup error |
 
-| Status | Description |
-|--------|-------------|
-| `idle` | No compaction needed |
-| `evaluating` | Checking if compaction is needed |
-| `compacting` | Compaction in progress |
-| `complete` | Compaction finished successfully |
-| `error` | Compaction failed |
+If a long chat fails, inspect provider errors and context availability before increasing limits. Save the important decisions, export what you need, and start a new focused conversation when appropriate. Do not assume a threshold change can enable compaction on an ineligible transport.
 
 ## Configuration
 
 | Setting | Default | Description |
-|---------|---------|-------------|
-| `mysti.compaction.enabled` | `true` | Enable automatic context compaction |
-| `mysti.compaction.threshold` | `75` | Trigger compaction at this % of context window |
+| --- | --- | --- |
+| `mysti.compaction.enabled` | `true` | Enable eligible automatic context compaction |
+| `mysti.compaction.threshold` | `75` | Standard current-context threshold percentage |
 
-## Provider Support
-
-| Provider | Strategy | Notes |
-|----------|----------|-------|
-| Claude Code | `native-cli` | Uses built-in `/compact` command |
-| Codex | `client-summarize` | Client-side summarization |
-| Gemini | `client-summarize` | Client-side summarization |
-| Cline | `client-summarize` | Client-side summarization |
-| Copilot | `client-summarize` | Client-side summarization |
-| Cursor | `client-summarize` | Client-side summarization |
-| OpenClaw | `client-summarize` | Client-side summarization |
-
-## Tips
-
-1. **Leave compaction enabled** — it prevents errors from context overflow
-2. **Lower the threshold** (e.g., 60%) for providers with smaller context windows
-3. **Raise the threshold** (e.g., 90%) if you want to maximize context before compacting
-4. **Watch for compaction events** in the chat — they indicate long conversations
-5. **Start a new conversation** if you notice quality degrading after multiple compactions
+The full [settings reference](SETTINGS.md) describes smart-compaction controls. [CompactionManager](../src/managers/CompactionManager.ts), [token accounting](../src/services/TokenAccounting.ts), provider capability declarations and [constants](../src/constants.ts) define the behavior above.

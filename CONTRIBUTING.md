@@ -12,6 +12,11 @@ Thank you for your interest in contributing to Mysti! We welcome contributions f
 
 ## Getting Started
 
+For documentation changes, use the [documentation maintenance guide](docs/DOCS-MAINTENANCE.md)
+and run `npm run check:docs`. After settings, commands or discovery metadata change,
+run `npm run docs:generate` and review the generated reference diff. Coding agents
+can start with [AGENTS.md](AGENTS.md).
+
 ### Prerequisites
 
 - Node.js from `.nvmrc` (`nvm install && nvm use` if using nvm). The supported

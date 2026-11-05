@@ -1,0 +1,52 @@
+# Mysti
+
+> A beta VS Code extension for working with coding agents, shared context, visual artifacts and explicit multi-agent workflows.
+
+This index describes the 2.0.1 source line. Fetch the smallest relevant guide; settings and command references are generated from the manifest. Account access, native approvals and production acceptance vary by provider. Recordings use labelled sample data. Current source and the production-readiness report take precedence over historical plans. In a checkout, use these repository-relative paths for your revision; the URLs track published main.
+
+## Start here
+
+- [Documentation home](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/README.md): Routes by task and audience.
+- [Repository agent guidance](https://raw.githubusercontent.com/DeepMyst/Mysti/main/AGENTS.md): Working conventions and validation commands.
+- [Structured navigation](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/navigation.json): Topics, audiences and document status.
+
+## Guides and references
+
+- [Getting started](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/GETTING-STARTED.md): Install, connect one provider and complete a first task.
+- [Provider setup and compatibility](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/PROVIDERS.md): Choose and configure adapters; account, model and permission limits.
+- [Visual walkthroughs](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/walkthroughs/README.md): Choose a practical task with illustrated steps.
+- [Multi-agent workflows](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/walkthroughs/multi-agent-workflows.md): Compare independent answers or hand completed work to another agent.
+- [Canvas walkthrough](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/walkthroughs/canvas.md): Create a visual design, inspect it and understand persistence and export.
+- [Visual Test walkthrough](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/walkthroughs/visual-test.md): Observe a local application, read its report and request a separate fix.
+- [History and checkpoints](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/walkthroughs/history-and-checkpoints.md): Reopen, fork, export and understand code rewind boundaries.
+- [Troubleshooting](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/TROUBLESHOOTING.md): Diagnose setup, authentication, transport, browser and recovery failures.
+- [Backup and recovery](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/BACKUP-AND-RECOVERY.md): Protect data, export conversations and rehearse upgrade or recovery.
+- [Privacy and data controls](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/PRIVACY.md): Understand data flows, credentials, telemetry and deletion boundaries.
+- [Feature guide](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/FEATURES.md): Chat, context, controls and feature-level guidance.
+- [Agent assignments and context mentions](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/MENTIONS.md): Tags, roles, dependency ordering and context syntax.
+- [Brainstorm](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/BRAINSTORM.md): Discussion strategies, team selection and synthesis.
+- [Personas and skills](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/PERSONAS-AND-SKILLS.md): Select or author reusable personas and skills.
+- [Context compaction](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/COMPACTION.md): Context limits, compaction strategies and tracking.
+- [Autonomous mode](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/AUTONOMOUS-MODE.md): Autonomy controls, safety classification and limits.
+- [Proactive inbox](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/PROACTIVE.md): Local and connected watches, prerequisites and coverage.
+- [Settings reference](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/SETTINGS.md): Generated contributed keys, declared defaults, scopes and values.
+- [Command reference](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/COMMANDS.md): Generated command IDs, visible titles, keybindings and conditions.
+- [Native approval contracts](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/NATIVE_APPROVAL.md): Current transport-specific authority and approval boundaries.
+- [Architecture](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/ARCHITECTURE.md): Host and webview boundaries, routing, persistence and module map.
+- [Developer notes](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/DEVELOPER-NOTES.md): CLI resolution, native commands, usage accounting and persistence invariants.
+- [Contributing](https://raw.githubusercontent.com/DeepMyst/Mysti/main/CONTRIBUTING.md): Development setup, focused validation and contribution workflow.
+- [Maintenance and releases](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/MAINTENANCE.md): Required checks, dependencies, runtime constraints and publishing.
+- [Production readiness and release checklist](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/PRODUCTION_READINESS.md): Established evidence, remaining acceptance work and reusable release record.
+- [Feature demos](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/DEMO_GALLERY.md): Native GitHub players with labelled sample-data demonstrations.
+- [Documentation maintenance](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/DOCS-MAINTENANCE.md): Update source-backed guides, generated references and discovery metadata.
+- [Publishing GitHub demos](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/media/README.md): Upload canonical native videos and verify real playback.
+- [Security reporting](https://raw.githubusercontent.com/DeepMyst/Mysti/main/.github/SECURITY.md): Report a vulnerability privately and understand support scope.
+- [Changelog](https://raw.githubusercontent.com/DeepMyst/Mysti/main/CHANGELOG.md): Versioned changes and unreleased work.
+- [Walkthrough screenshot provenance](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/media/walkthroughs/README.md): Reproduce the current Visual Test form screenshot and inspect its source hashes.
+
+## Optional
+
+- [Beta 2 release notes](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/releases/2.0.1-beta.2/RELEASE-NOTES.md): Changes and distribution notes for the published Beta 2 artifact.
+- [Beta 2 validation](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/releases/2.0.1-beta.2/VALIDATION.md): Exact source, artifact identity and scoped qualification evidence.
+- [Historical implementation review](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/REVIEW.md): Historical review context; consult current source and production readiness before acting.
+- [October 3 issue review](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/ISSUE-REVIEW-2026-10-03.md): Historical review context; consult current source and production readiness before acting.

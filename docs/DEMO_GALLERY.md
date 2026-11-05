@@ -12,23 +12,25 @@ https://github.com/user-attachments/assets/edb4beb3-08e1-4790-be3a-6550b2afd227
 
 ## Choose a workflow
 
-| What you want to do | Watch |
-| --- | --- |
-| Connect and get started | [11 sec](#getting-started) |
-| Choose your provider | [21 sec](#provider-switching) |
-| Control context and permissions | [12 sec](#context-and-trust) |
-| Tune the response | [7 sec](#composer-controls) |
-| Design, then review | [17 sec](#agent-workflow) |
-| Compare independent opinions | [10 sec](#agent-opinions) |
-| Ask for another perspective | [6 sec](#second-opinion) |
-| Brainstorm a decision | [12 sec](#brainstorm) |
-| Stop and refocus | [11 sec](#stop-and-recovery) |
-| Return, branch or rewind | [21 sec](#history-and-rewind) |
-| Find settings and help | [25 sec](#settings-and-help) |
-| Explore a design in Canvas | [15 sec](#canvas-design) |
-| Read a visual report | [15 sec](#visual-test) |
-| Manage connected tools | [7 sec](#connected-tools) |
-| Check relevant evidence | [8 sec](#proactive-inbox) |
+[Follow the visual walkthroughs](walkthroughs/README.md) for prerequisites, numbered actions and expected results.
+
+| What you want to do | Watch | Read |
+| --- | --- | --- |
+| Connect and get started | [11 sec](#getting-started) | [Guide](GETTING-STARTED.md) |
+| Choose your provider | [21 sec](#provider-switching) | [Guide](PROVIDERS.md) |
+| Control context and permissions | [12 sec](#context-and-trust) | [Guide](FEATURES.md#context-management) |
+| Tune the response | [7 sec](#composer-controls) | [Guide](FEATURES.md#model-and-effort-menus) |
+| Design, then review | [17 sec](#agent-workflow) | [Guide](walkthroughs/multi-agent-workflows.md) |
+| Compare independent opinions | [10 sec](#agent-opinions) | [Guide](walkthroughs/multi-agent-workflows.md) |
+| Ask for another perspective | [6 sec](#second-opinion) | [Guide](walkthroughs/multi-agent-workflows.md) |
+| Brainstorm a decision | [12 sec](#brainstorm) | [Guide](BRAINSTORM.md) |
+| Stop and refocus | [11 sec](#stop-and-recovery) | [Guide](TROUBLESHOOTING.md) |
+| Return, branch or rewind | [21 sec](#history-and-rewind) | [Guide](walkthroughs/history-and-checkpoints.md) |
+| Find settings and help | [25 sec](#settings-and-help) | [Guide](SETTINGS.md) |
+| Explore a design in Canvas | [15 sec](#canvas-design) | [Guide](walkthroughs/canvas.md) |
+| Read a visual report | [15 sec](#visual-test) | [Guide](walkthroughs/visual-test.md) |
+| Manage connected tools | [7 sec](#connected-tools) | [Guide](PRIVACY.md#credentials-and-settings) |
+| Check relevant evidence | [8 sec](#proactive-inbox) | [Guide](PROACTIVE.md) |
 
 ## Start with a focused task
 

@@ -4,6 +4,8 @@ This document describes the source checkout. Historical release notes and design
 proposals under `plans/` are not evidence that a feature is shipped or fully wired.
 See [maintenance](MAINTENANCE.md) for verification and release work.
 
+[Documentation index](README.md) · [Provider contracts](NATIVE_APPROVAL.md) · [Settings reference](SETTINGS.md) · [Maintenance](MAINTENANCE.md)
+
 ## Runtime boundaries
 
 Mysti is a VS Code extension with three distinct execution environments:
@@ -104,7 +106,7 @@ still be denied so they cannot leave a job blocked forever.
 
 The registry currently contains Claude Code, Codex, Gemini, Cline, Copilot,
 Cursor, OpenClaw, OpenCode, Qwen Code, Ollama, LocalAI, Hermes, Continue,
-OpenRouter and Kimi Code. `ManusProvider.ts` is legacy and unregistered.
+OpenRouter, MiniMax and Kimi Code. `ManusProvider.ts` is legacy and unregistered.
 
 CLI, persistent ACP and HTTP transports expose different capabilities. Declare
 those differences in provider metadata and consume that metadata in the UI.
@@ -112,12 +114,15 @@ Do not infer support from a provider name or assume interactive CLI commands
 also work through the headless entry point. Parse external responses as
 `unknown`, narrow fields, and preserve missing measurements as unknown.
 
-Hermes and Kimi implement blocking ACP permission requests. They wait for a
-decision before returning a native response and skip the legacy notification
-pause gate. A native denial cannot be widened by a host card. Cancellation,
-process replacement and registration disposal invalidate the issuing request;
-a later turn cannot acquire its answer. Other transports need equivalent native
-enforcement before their permission cards can carry the same timing guarantee.
+Claude Code and Codex use native request/response approval transports; Hermes
+and Kimi bridge emitted ACP permission requests, and OpenCode remote HTTP/SSE
+bridges server permission requests. Kimi still rejects restricted modes because
+native saved permissions can bypass callbacks. Unsupported CLI approval modes
+fail before dispatch; Continue uses a read-only mapping for Ask-tier work.
+A native denial cannot be widened by a host card. Cancellation, process
+replacement and registration disposal invalidate the issuing request; a later
+turn cannot acquire its answer. See the current [approval matrix](NATIVE_APPROVAL.md)
+for the distinct contracts of each provider and transport.
 
 `TokenAccounting` is the shared accounting boundary. Current context occupancy
 and cumulative spend are different values; cache conventions differ by backend.

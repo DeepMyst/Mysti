@@ -2318,6 +2318,8 @@
     "build:core-manifest": "node scripts/generate-core-agent-manifest.js",
     "build:vendor": "node scripts/build-vendor.js",
     "check:vendor": "node scripts/check-vendor.js",
+    "docs:generate": "node scripts/docs-reference.cjs --write",
+    "check:docs": "node scripts/check-docs.cjs",
     "compile": "npm run build:core-manifest && webpack --mode production",
     "compile:release": "node scripts/generate-core-agent-manifest.js --check && npm run check:vendor && webpack --mode production",
     "watch": "npm run build:core-manifest && webpack --mode development --watch",

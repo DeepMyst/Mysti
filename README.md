@@ -242,6 +242,8 @@ Mysti 2.0.1 remains beta. The release includes automated source, browser, runtim
 
 ## Documentation
 
+**[Documentation home](docs/README.md)** · [Visual walkthroughs](docs/walkthroughs/README.md) · [Troubleshooting](docs/TROUBLESHOOTING.md) · [Backup and recovery](docs/BACKUP-AND-RECOVERY.md) · [Privacy](docs/PRIVACY.md)
+
 | Start building | Go deeper |
 | --- | --- |
 | [Getting started](docs/GETTING-STARTED.md) — installation, first task and troubleshooting | [Feature guide](docs/FEATURES.md) — chat, context, controls and settings |
@@ -249,6 +251,8 @@ Mysti 2.0.1 remains beta. The release includes automated source, browser, runtim
 | [Agent assignments](docs/MENTIONS.md) — tags, roles, parallel opinions and handoffs | [Proactive](docs/PROACTIVE.md) — watches, evidence and coverage |
 | [Brainstorm](docs/BRAINSTORM.md) — discussion strategies and synthesis | [Architecture](docs/ARCHITECTURE.md) — host, webview, routing and providers |
 | [Demo gallery](docs/DEMO_GALLERY.md) — 15 focused feature walkthroughs | [Production readiness](docs/PRODUCTION_READINESS.md) — status and release checklist |
+
+**Reference:** [Settings](docs/SETTINGS.md) · [Commands and shortcuts](docs/COMMANDS.md). **For agents:** [AGENTS.md](AGENTS.md) · [llms.txt](llms.txt) · [Machine-readable documentation map](docs/navigation.json).
 
 **Translations:** [العربية](README.ar.md) · [中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md) · [Português](README.pt-BR.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · [Türkçe](README.tr.md) · [Русский](README.ru.md). Community translations may describe an earlier release; this README is the current Beta 2 reference.
 

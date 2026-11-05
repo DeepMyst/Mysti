@@ -86,6 +86,14 @@ switch to a different provider's result.
 
 ## Remaining work toward a stable release
 
+User-facing procedures now live in [visual walkthroughs](walkthroughs/README.md),
+[troubleshooting](TROUBLESHOOTING.md), [backup and recovery](BACKUP-AND-RECOVERY.md)
+and [privacy](PRIVACY.md). These describe current implementation boundaries;
+they do not close the native acceptance cases below. In particular, the current
+CodeLens telemetry event includes a function name. Review whether that code
+identifier is necessary, minimize or remove it as appropriate, and verify the
+telemetry opt-out and disclosure before making a no-code-data collection claim.
+
 The release maintainer owns triage and assigns a named owner to each selected
 item. The case IDs below join this handoff to the detailed test plan.
 

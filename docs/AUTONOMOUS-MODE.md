@@ -1,6 +1,8 @@
 # Autonomous Mode
 
-Autonomous Mode allows your AI agent to work independently with minimal intervention, automatically handling permissions and answering routine questions based on learned preferences and safety rules.
+Autonomous Mode can handle permission requests and routine questions that reach Mysti's autonomous controller, using classification, learned preferences and configured limits. It is not a universal sandbox or a promise that every provider operation passes through that controller.
+
+[Documentation index](README.md) · [Provider compatibility](PROVIDERS.md#permissions-and-compatibility) · [Approval contracts](NATIVE_APPROVAL.md) · [Privacy and stored memory](PRIVACY.md)
 
 ## Overview
 
@@ -8,43 +10,40 @@ When Autonomous Mode is active:
 
 - **Permissions** are automatically approved or denied based on safety classification
 - **Routine questions** from the AI are auto-answered using learned preferences
-- **Dangerous operations** are always blocked regardless of settings
-- **All decisions** are logged to an audit trail for review
+- **Recognized blocked requests** are denied by the controller; unsupported provider permission modes remain unavailable
+- **Controller decisions** enter a bounded in-memory audit log for the current session
 
 ## Enabling Autonomous Mode
 
-Toggle via the `mysti.toggleAutonomous` command or the autonomous mode button in the chat interface.
+Toggle via the `mysti.toggleAutonomous` command or the autonomous mode button in the chat interface. Activation is session-only and is not restored automatically after an extension restart. Start in a disposable workspace, choose a compatible provider, and keep normal version-control and backup practices.
 
 ## Safety System
 
-At the core of Autonomous Mode is a three-level safety classifier that evaluates every operation before it's auto-approved.
+The classifier evaluates permission requests passed to it. Native tools, subprocesses, hooks and external services still depend on the selected provider's [transport contract](NATIVE_APPROVAL.md). A blocked pattern cannot establish the absence of every equivalent destructive command.
 
 ### Safety Levels
 
 | Level | Action | Description |
 |-------|--------|-------------|
-| **Safe** | Auto-approve | Read-only operations, test commands, version checks |
-| **Caution** | Depends on mode | File creation/editing, non-destructive bash commands |
-| **Blocked** | Always deny | File deletion, force push, hard reset, sudo, chmod 777 |
+| **Safe** | Auto-approve at this controller | Recognized file reads, allowed creation/edit paths and allowlisted commands |
+| **Caution** | Matching learned decision or user input | Operations needing review under the selected mode, including unknown action types |
+| **Blocked** | Deny at this controller | File-delete requests and recognized blocked command patterns |
 
 ### Hardcoded Blocks
 
-These operations are **always blocked** regardless of safety mode:
+The classifier denies matching requests regardless of safety mode. Recognized patterns include:
 
-- File deletion (`rm`, `del`, recursive delete)
+- File-delete operations, `rm`, `rmdir`, and recognized recursive Windows deletion commands
 - Git force operations (`git push --force`, `git reset --hard`)
 - Database destructive operations (`DROP TABLE`, `DROP DATABASE`)
 - System-level commands (`sudo`, `chmod 777`)
-- Custom patterns you configure
+- Configured custom patterns matched against shell-command text
 
-### Always Safe
+### Command matching is not a safety proof
 
-These operations are **always auto-approved**:
+Simple forms of commands such as `ls`, `cat`, `node --version` and `git status` can match the allowlist. Bare `find`, arbitrary `npx`, redirected commands and compound commands are not automatically safe merely because their first word looks harmless. Block checks run first; compound or unrecognized commands use the mode-specific policy.
 
-- Read-only commands (`ls`, `cat`, `grep`, `find`, `head`, `tail`)
-- Test commands (`npm test`, `pytest`, `jest`, `cargo test`)
-- Version checks (`node -v`, `npm -v`, `git --version`)
-- Git status commands (`git status`, `git log`, `git diff`)
+The allowlist also includes test/build tools. Those can execute project code and can have side effects; the classification name is not a guarantee that a test command is read-only. The Mysti coordinator has additional command/sandbox restrictions separate from this shared classifier.
 
 ## Safety Modes
 
@@ -52,31 +51,33 @@ Configure how aggressive the auto-approval behavior is:
 
 ### Conservative
 
-The most restrictive mode — only clearly safe operations are auto-approved.
+The most restrictive classification mode. Caution decisions can still use a matching learned permission preference; without one, Mysti asks the user.
 
 - File reads: Auto-approve
-- File creates/edits: **Require user approval**
+- File creation: Auto-approve when `mysti.autonomous.allowFileCreation` is enabled
+- Existing-file and multi-file edits: Caution; learned preference or user input
 - Bash commands: Only safe-listed commands auto-approved
-- Everything else: Require user approval
+- Unknown action types: Caution; learned preference or user input
 
 ### Balanced (Default)
 
 A moderate approach that auto-approves common development operations.
 
 - File reads: Auto-approve
-- File creates/edits: **Auto-approve**
+- File creation and single-file edits: Auto-approve when the respective allow setting is enabled
+- Multi-file edits: Caution; learned preference or user input
 - Safe bash commands: Auto-approve
-- Unknown bash commands: Require user approval
+- Some build/compile patterns are auto-approved; other unknown commands use caution and can require user input
 - Destructive operations: Always blocked
 
 ### Aggressive
 
-The most permissive mode — auto-approves everything except hardcoded blocks.
+The most permissive shell/edit classification mode. Recognized blocks and explicit disabled operation settings still deny requests; delegation and unknown action types remain caution.
 
 - File reads: Auto-approve
 - File creates/edits: Auto-approve
 - Bash commands: **Auto-approve** (unless blocked)
-- Only hardcoded blocks are denied
+- Hardcoded/custom blocks and disabled operation classes remain denied
 
 ```json
 { "mysti.autonomous.safetyMode": "balanced" }
@@ -100,7 +101,7 @@ Memories are stored in two locations:
 
 ### Confidence Decay
 
-Memories lose confidence over time (decay factor: 0.95 per day). This means:
+Memory queries weight recency using a factor of **0.95 per day since last access**. Pruning also adjusts stored confidence and ranks entries by confidence, recency and access count. This means:
 - Recent decisions are weighted more heavily
 - Old preferences gradually fade if not reinforced
 - The system adapts as your preferences change
@@ -148,7 +149,7 @@ All autonomous decisions are recorded with:
 - Whether memory was used
 - Timestamp
 
-The audit log is capped at a configurable maximum (default 100 entries).
+The in-memory audit log retains the latest **1,000 decisions**, set by an implementation constant rather than a contributed setting. It is not a durable, complete audit trail across extension restarts. See [Privacy](PRIVACY.md) for storage and retention boundaries.
 
 ### Session Stats
 
@@ -172,7 +173,7 @@ Add your own patterns to the block list:
 }
 ```
 
-Any operation matching these patterns will be blocked in autonomous mode.
+These patterns are matched against shell-command text seen by the classifier. They are not a universal filter for file paths, network requests, provider tools or external side effects.
 
 ## Configuration
 
@@ -191,4 +192,8 @@ Any operation matching these patterns will be blocked in autonomous mode.
 2. **Review the audit log** after autonomous sessions to see what decisions were made
 3. **Add project-specific block patterns** for sensitive operations (e.g., deploy commands)
 4. **Use Task Queue mode** for predictable, structured work
-5. **Memory learns from you** — the more you use Mysti, the better it understands your preferences
+5. **Review learned preferences** — a past approval can influence a later caution decision; matching text is not proof the actions are equivalent
+
+## Source and scope
+
+[AutonomousManager](../src/managers/AutonomousManager.ts) implements activation, learned decisions and session logging; [SafetyClassifier](../src/managers/SafetyClassifier.ts) defines request/command classification; [MemoryManager](../src/managers/MemoryManager.ts) defines preference storage and scoring. [Settings](SETTINGS.md) lists current defaults. [Production readiness](PRODUCTION_READINESS.md) tracks native permission and endurance acceptance; a long session-duration setting is not evidence that a long-duration test passed.

@@ -4,9 +4,24 @@ Feature reference for Mysti 2.0.1 Beta 2. Start with [Getting started](GETTING-S
 
 Explicit agent assignments now honor every tagged provider. Independent advisory work can run in parallel; dependent handoffs and writers serialize. The [assignment guide](MENTIONS.md) is the authoritative syntax and behavior reference.
 
+[Documentation index](README.md) · [Visual walkthroughs](walkthroughs/README.md) · [Troubleshooting](TROUBLESHOOTING.md) · [All settings](SETTINGS.md)
+
+Use this guide to understand the controls. For a first task with screenshots, expected results and recovery steps, start with a walkthrough:
+
+| Your task | Walkthrough |
+| --- | --- |
+| Compare agents or hand completed work to a reviewer | [Multi-agent workflows](walkthroughs/multi-agent-workflows.md) |
+| Explore a design across themes and devices | [Canvas](walkthroughs/canvas.md) |
+| Inspect a local application's visual test report | [Visual Test](walkthroughs/visual-test.md) |
+| Reopen, fork or rewind a conversation | [History and checkpoints](walkthroughs/history-and-checkpoints.md) |
+
+Provider capabilities and supported access modes differ. An interface description is not an all-provider acceptance result; consult [provider compatibility](PROVIDERS.md#permissions-and-compatibility) and [release readiness](PRODUCTION_READINESS.md).
+
 ## Table of Contents
 
 - [Chat Interface](#chat-interface)
+- [Canvas](#canvas)
+- [Visual Test](#visual-test)
 - [Providers](#providers)
 - [Brainstorm Mode](#brainstorm-mode)
 - [Autonomous Mode](#autonomous-mode)
@@ -38,7 +53,7 @@ The Mysti chat interface is accessible from the Activity Bar sidebar or as a sta
 **Opening the Chat:**
 - Click the Mysti icon in the Activity Bar
 - Use keyboard shortcut: `Ctrl+Shift+M` (Windows/Linux) or `Cmd+Shift+M` (Mac)
-- Run command: `Mysti: Open Mysti Chat`
+- Run command: `Mysti: Open Chat`
 
 **Opening in New Tab:**
 - Use keyboard shortcut: `Ctrl+Shift+N` (Windows/Linux) or `Cmd+Shift+N` (Mac)
@@ -101,7 +116,21 @@ The composer accepts up to ten attachments, including files still loading. Paste
 - Each conversation persists across VSCode sessions
 - Per-conversation settings (mode, model, provider) are preserved
 
+Forking creates a new conversation from an earlier point; rewinding targets supported local code changes using a checkpoint. They serve different purposes. Follow [History and checkpoints](walkthroughs/history-and-checkpoints.md) before a rewind, and use [Backup and recovery](BACKUP-AND-RECOVERY.md) for export/import, storage backups and upgrade recovery. Closing or reloading a view discards its unsent in-memory recovery cards; they are not durable conversation backups.
+
 ---
+
+## Canvas
+
+Open **Mysti: Open Canvas** from the Command Palette. Canvas provides a document surface for inspecting design artifacts, artboards, device sizes and themes. It is distinct from running your application's development server.
+
+The [Canvas walkthrough](walkthroughs/canvas.md) shows the available controls with a labelled screenshot and short video, then explains the first task, persistence, and current limitations. Use the guide's supported actions rather than assuming every proposed design operation is implemented.
+
+## Visual Test
+
+Open **Mysti: Open Visual Test Dashboard** to inspect visual test sessions and their reports. A screenshot or a sample report alone is not proof that your application's assertions ran.
+
+The [Visual Test walkthrough](walkthroughs/visual-test.md) separates preparing a permitted local application, running a supported inspection, and reading its screenshots/results. It also explains browser availability, allowed origins and failure states. Use [Troubleshooting](TROUBLESHOOTING.md) when the server or browser cannot start.
 
 ## Providers
 
@@ -113,7 +142,7 @@ Mysti offers its coordinator plus 16 registered backends through CLI, ACP, WebSo
 | **Codex** | Quick iterations, OpenAI ecosystem |
 | **Gemini** | Fast responses, Google integration |
 | **GitHub Copilot** | Multi-model access via GitHub subscription |
-| **Cline** | Plan/Act workflow, structured tasks |
+| **Cline** | Structured CLI tasks; version-dependent mode/model support |
 | **Cursor** | Auto model selection, multi-model |
 | **OpenClaw** | WebSocket streaming, thinking levels |
 | **Mysti** | Coordinator, local tools and delegated agents |
@@ -125,6 +154,7 @@ Mysti offers its coordinator plus 16 registered backends through CLI, ACP, WebSo
 | **Ollama** | Local inference; tool proposals are displayed, not executed |
 | **LocalAI** | Self-hosted inference; tool proposals are displayed, not executed |
 | **OpenRouter** | HTTP chat with a selected OpenRouter model |
+| **MiniMax** | HTTP text and reasoning; no tool execution |
 
 **Switching Providers:**
 - Use the `/agent` slash command
@@ -170,7 +200,7 @@ Let the AI work independently with safety controls. See [AUTONOMOUS-MODE.md](AUT
 
 ### Safety Classification
 
-Every operation is classified before auto-approval:
+The autonomous controller classifies the operations submitted to its approval policy. This does not replace a provider's native permission enforcement; unsupported access modes remain unavailable. See [approval contracts](NATIVE_APPROVAL.md).
 
 | Level | Action | Examples |
 |-------|--------|---------|
@@ -234,10 +264,10 @@ Switch to @cursor
 
 Automatic context management to prevent overflow. See [COMPACTION.md](COMPACTION.md) for the full guide.
 
-- Tracks per-panel token usage
-- Triggers at configurable threshold (default 75%)
-- Native CLI strategy for Claude Code (`/compact`)
-- Client-side summarization for other providers
+- Distinguishes latest context fill from cumulative token usage
+- Uses the configured threshold (default 75%) only on eligible, measured paths
+- Requests native Claude Code compaction through `/compact`
+- Uses client summarization for full-history HTTP adapters; native-session, recent-history and no-history transports have different boundaries. See the [provider support table](COMPACTION.md#strategies-and-provider-support).
 
 ---
 
@@ -247,11 +277,11 @@ Customize AI behavior with personas and skills. See [PERSONAS-AND-SKILLS.md](PER
 
 ### Developer Personas
 
-16 built-in personas: Architect, Prototyper, Product-Centric, Refactorer, DevOps, Domain Expert, Researcher, Builder, Debugger, Integrator, Mentor, Designer, Full-Stack, Security-Minded, Performance Tuner, Toolsmith.
+The bundled personas include Architect, Debugger, Builder, Designer, Code Reviewer and others. See the [current catalog and selection steps](PERSONAS-AND-SKILLS.md#built-in-personas).
 
 ### Toggleable Skills
 
-12 skills: Concise, Repo Hygiene, Organized, Auto-Commit, First Principles, Auto-Compact, Dependency-Aware, Graceful Degradation, Scope Discipline, Doc Reflexes, Test-Driven, Rollback Ready.
+Combine practices such as Concise, Test-Driven, Repo Hygiene and Rollback Ready. The [skill catalog](PERSONAS-AND-SKILLS.md#built-in-skills) links each bundled definition and explains how to enable it for the conversation.
 
 ### Three-Tier Loading
 
@@ -293,9 +323,9 @@ Each plan card shows:
 
 | Mode | Description |
 |------|-------------|
-| **Ask Before Edit** | AI explains changes and waits for approval |
-| **Edit Automatically** | AI makes changes directly |
-| **Plan** | AI creates detailed plan without making changes |
+| **Ask Before Edit** | Use a provider with a supported native approval path for requested changes |
+| **Edit Automatically** | Allow automatic work within the selected access level and configured tool gates |
+| **Plan** | Request planning under the provider's supported read-only policy; unavailable providers reject dispatch |
 
 ---
 
@@ -307,18 +337,18 @@ Control what actions the AI can perform.
 
 | Level | Description |
 |-------|-------------|
-| **Read-only** | AI cannot modify any files |
-| **Ask-permission** | AI requests approval for each action |
-| **Full-access** | AI can perform all operations |
+| **Read-only** | Use the selected provider's supported native read-only contract; incompatible adapters are blocked |
+| **Ask-permission** | Side-effecting operations require a supported approval path; not every adapter can supply one |
+| **Full-access** | Permit tools within the chosen mode and remaining trust/tool gates; this does not bypass those gates |
 
 ### Permission Requests
 
-In `ask-permission` mode, the AI shows requests for:
+With a supported native approval provider, policy can require a permission card for:
 - File creation, editing, deletion
 - Bash commands
 - Web requests
 
-Each request includes action description, risk level, diff preview, and approve/deny buttons.
+Cards identify the requested operation and offer the decisions supported by that native request. A diff is shown when the request supplies one. A tool-activity card alone is not an approval request. Read [provider contracts](NATIVE_APPROVAL.md) before relying on a particular access mode.
 
 ### Timeout Behavior
 
@@ -374,6 +404,8 @@ Type `/` in the chat to access slash commands organized by section.
 
 ## Settings Reference
 
+These are commonly used settings. [SETTINGS.md](SETTINGS.md) is the complete generated reference for names, defaults, scopes and allowed values in the current manifest.
+
 ### Provider Settings
 
 | Setting | Default | Description |
@@ -392,7 +424,7 @@ Type `/` in the chat to access slash commands organized by section.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `mysti.defaultMode` | `"ask-before-edit"` | Default operation mode |
-| `mysti.defaultThinkingLevel` | `"medium"` | Thinking level (none/low/medium/high) |
+| `mysti.defaultThinkingLevel` | `"none"` | Thinking level (none/low/medium/high) |
 | `mysti.accessLevel` | `"ask-permission"` | File operation access level |
 | `mysti.autoContext` | `true` | Auto-include relevant context |
 
@@ -401,10 +433,10 @@ Type `/` in the chat to access slash commands organized by section.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `mysti.brainstorm.enabled` | `false` | Enable brainstorm mode |
-| `mysti.brainstorm.agents` | `["claude-code", "openai-codex"]` | Which 2 agents to use |
+| `mysti.brainstorm.agents` | `["claude-code","openai-codex"]` | Which 2 agents to use |
 | `mysti.brainstorm.strategy` | `"quick"` | Collaboration strategy |
 | `mysti.brainstorm.autoConverge` | `true` | Auto-exit when agents converge |
-| `mysti.brainstorm.maxDiscussionRounds` | `3` | Maximum discussion rounds |
+| `mysti.brainstorm.maxDiscussionRounds` | `2` | Maximum discussion rounds |
 
 ### Autonomous Settings
 
@@ -450,3 +482,15 @@ Type `/` in the chat to access slash commands organized by section.
 ## Proactive inbox
 
 Opt in to local Git monitoring and selected GitHub/Slack topics through DeepMyst. Review evidence, pause watches, and enable quiet-hour-aware VS Code notifications. Cloud monitoring requires the new DeepMyst backend deployment. See [setup, coverage, and current limits](PROACTIVE.md).
+
+## Language and accessibility
+
+VS Code's Russian locale enables the contributed command/settings and runtime catalogs, including localized webview chrome. Conversation text, code and agent outputs retain their original language. Newer beta features without a catalog entry fall back to English. Translation resources ship in the VSIX; contributors can run `npm run verify:localization` to check keys and placeholders.
+
+The model/effort controls support arrow keys, Tab and Escape as described above. Walkthrough text and screenshot descriptions provide a text path through the visual examples. The wider keyboard/screen-reader and high-contrast acceptance work is tracked in [production readiness](PRODUCTION_READINESS.md#remaining-work-toward-a-stable-release).
+
+## Help, privacy and recovery
+
+- [Troubleshooting](TROUBLESHOOTING.md): identify the failing layer and prepare a redacted report.
+- [Backup and recovery](BACKUP-AND-RECOVERY.md): export/import, storage, upgrades and restoring data.
+- [Privacy and data controls](PRIVACY.md): configured destinations, credential storage, telemetry and deletion.

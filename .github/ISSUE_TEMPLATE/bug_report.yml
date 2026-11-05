@@ -42,6 +42,7 @@ body:
         - Continue
         - OpenRouter
         - Kimi Code
+        - MiniMax
         - Several / brainstorm mode
         - Not provider-specific
     validations:
@@ -52,7 +53,7 @@ body:
     attributes:
       label: Versions
       description: Mysti version, VS Code version, OS, and the backend CLI's version if relevant.
-      placeholder: "Mysti 0.5.0, VS Code 1.95.3, macOS 15.1, claude-code 1.0.44"
+      placeholder: "Mysti 2.0.1, VS Code version, OS version, selected provider and detected CLI version"
     validations:
       required: true
 
@@ -61,7 +62,9 @@ body:
     attributes:
       label: Extension log
       description: >
-        Output panel → "Mysti", or the Debug Console filtered to `[Mysti]`.
+        Use Developer: Show Logs → Extension Host (or Log (Extension Host)
+        in Output), then search for `[Mysti]`. In a development host, use
+        the parent window's Debug Console. See docs/TROUBLESHOOTING.md.
         **Redact API keys and paths you would rather not publish before pasting.**
       render: text
 

@@ -17,6 +17,7 @@ credentials. Browser suites use the installed Playwright version and Chromium:
 
 ```sh
 npx playwright install chromium
+npm run check:docs
 npm run typecheck
 npm run lint
 npm run test:release:unit
@@ -43,6 +44,14 @@ browser/performance phases.
 building. `compile` and `watch` regenerate it for development. Regenerate and
 review the manifest only when intentionally changing bundled core agents; do
 not use write mode to make an unexplained integrity failure disappear.
+
+## Documentation maintenance
+
+Run `npm run check:docs` after editing guides, commands, settings or provider references. It checks the documentation index, links and generated reference consistency; it does not establish that a native provider/account journey works. Use the Node version in `.nvmrc`.
+
+Keep [the documentation index](README.md) and the repository's agent entry points aligned with the current source. Add a practical walkthrough when exposing a major workflow: include prerequisites, numbered actions, expected results, a real screenshot/video with text alternatives, limitations and recovery. Reuse the canonical [video manifest](media/github-videos.json) instead of uploading duplicate clips or linking to MP4 file pages.
+
+When changing configuration, run `npm run docs:generate` to regenerate the [settings reference](SETTINGS.md), then review provider setup tables and sample configurations. When changing permissions, update [approval contracts](NATIVE_APPROVAL.md) and distinguish implemented flags/bridges from native acceptance. When changing storage or network behavior, update [backup/recovery](BACKUP-AND-RECOVERY.md) and [privacy](PRIVACY.md). Preserve historical release results as evidence for their recorded artifact.
 
 ## Required checks
 
@@ -293,7 +302,7 @@ transport behavior, persistence and UI state simultaneously.
 
 ### Mysti 2.0 BETA distribution
 
-The 2.0.0 candidate uses `npm run package:pre-release`, including the CI artifact tested by the packaged-editor jobs. Keep the numeric package version and lockfile synchronized; the pre-release marker lives in VSIX metadata, not a semver suffix. The README badge reports the published Marketplace version, which may differ from a candidate checkout.
+The beta line uses `npm run package:pre-release`, including the CI artifact tested by the packaged-editor jobs. Keep the numeric package version and lockfile synchronized; the pre-release marker lives in VSIX metadata, not a semver suffix. The README Marketplace badge is an Install link; inspect the actual listing for its published version. Record GitHub, Marketplace and Open VSX publication separately.
 
 Inspect PNG/GIF/video assets and relative links before publication. Assets under `docs/` stay out of the VSIX but must exist at the repository URLs used by its README. Preserve sample-data labels on deterministic captures; record live-provider validation separately. Do not promote a package to stable by merely removing the word BETA: require a reviewed newer version and a deliberate channel change.
 

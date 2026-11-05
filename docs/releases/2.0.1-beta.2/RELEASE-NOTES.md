@@ -65,6 +65,7 @@ handoff; its commands and links do not depend on one maintainer's machine.
 Download the VSIX from the [Beta 2 release](https://github.com/DeepMyst/Mysti/releases/tag/v2.0.1-beta.2),
 then use **Extensions → ⋯ → Install from VSIX** and reload VS Code. Keep a backup
 of your workspace and VS Code profile/storage before upgrading or downgrading.
+Follow the [backup and recovery guide](../../BACKUP-AND-RECOVERY.md) for the current procedure.
 
 - Package version: **2.0.1**.
 - Release tag: **v2.0.1-beta.2**.
@@ -74,8 +75,9 @@ of your workspace and VS Code profile/storage before upgrading or downgrading.
   credentials remain separate from Mysti.
 
 GitHub release publication and Marketplace/Open VSX publication are separate
-operations. The Marketplace badge reports the version actually available there;
-do not assume a registry updated merely because a GitHub release exists.
+operations. Check the actual Marketplace or Open VSX listing for the available
+version; the current README badge is an Install link. A GitHub release does not
+imply either registry was updated.
 
 ## Beta limits
 
