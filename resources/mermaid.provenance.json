@@ -1,5 +1,5 @@
 {
-  "source": "https://github.com/mermaid-js/mermaid/tree/mermaid%4012.1.0",
+  "source": "https://github.com/mermaid-js/mermaid/tree/mermaid%4012.2.0",
   "build": "npm ci && npm run build:vendor",
   "buildScriptSha256": "2663bdb15d96763d106199abc74039ebc48edce601ebdb69a3c7f49fe01d939b",
   "webpackVersion": "5.111.1",
@@ -471,8 +471,8 @@
       "integrity": "sha512-AGrQ4QSgssa1NGmWmLPqN5NY2KajF5MqxetNEO+o0n3ZwZZeTmt7bBnvzHWrmkZFxGgr4HdyFgelzgi06otLuQ=="
     },
     "node_modules/dompurify": {
-      "version": "3.4.16",
-      "integrity": "sha512-sqo+pNp3qRhCIpbgRi1y8Tgk27Bo2Ry7w0dC1NBeNTdZChWjz9Xb/KOoZbRP/R6pQZ80Qw8YhXw13hWWBbMRnQ=="
+      "version": "3.4.17",
+      "integrity": "sha512-B/pSlYVHQ58kqISD/yDjuJ1yfzI34m1gF4lAod2bwSRhiN4K5Cl3H8Af7hqB2PmTL911tdEudnnXn5FnhRoz0w=="
     },
     "node_modules/elkjs": {
       "version": "0.9.3",
@@ -487,8 +487,8 @@
       "integrity": "sha512-5Hh7Y1wQbvY5ooGgPbDaL5iYLAPzMTUrjMulskHLH6wnv/A+1q5rgEaiuqEjB+oxGXIVZs1FF+R/KPN3ZSQYYg=="
     },
     "node_modules/katex": {
-      "version": "0.16.47",
-      "integrity": "sha512-Eeo8Ys1doU1z+x8AZsPpQu+p/QcZBI5PeOo7QGQdy2x2m0MU/hYagBbGOmXwr5KVbEfVuWv9LpnQWeehogurjg=="
+      "version": "0.18.10",
+      "integrity": "sha512-/B6p9eY9DX7aHBfpkHdpirDTZ5QH9xTwL9y837PWuzuv41O5jFdqNQwVQEQsimY0/iVNkwBY4+4hMfhQ7d4Dbw=="
     },
     "node_modules/khroma": {
       "version": "2.1.0",
@@ -503,8 +503,8 @@
       "integrity": "sha512-J8xewKD/Gk22OZbhpOVSwcs60zhd95ESDwezOFuA3/099925PdHJ7OFHNTGtajL3AlZkykD32HykiMo+BIBI8A=="
     },
     "node_modules/mermaid": {
-      "version": "12.1.0",
-      "integrity": "sha512-wlVCp+8eTupfCeeFvoZNNiTuHrvag0P2jz/ILgb/f/6jkVokUefOcujefi8qUe/j2asHiSePncVsz/xzzA80LQ=="
+      "version": "12.2.0",
+      "integrity": "sha512-w7nr/SFrLO7BaVTs3dQTvYSV6nYSBj0Yy9DjBhsIJtAcHqRzXSq4Pg32ujHZ/AdWsAMNEvvhbm5dt9E2tOiHzw=="
     },
     "node_modules/mermaid/node_modules/marked": {
       "version": "16.4.2",
@@ -532,7 +532,7 @@
     }
   },
   "assets": {
-    "mermaid.min.js": "6077d8bb2debd74d36a8482f76692f3c42f49292115db5267505a95fe6d5d423",
-    "mermaid.min.js.LICENSE.txt": "eee5cdc53303f6a12f02a5e8c13a9330dc2c3c9ad1c3828726841786d2980725"
+    "mermaid.min.js": "f42c8c058323190afbbec1ac3442341aeffe0983a81e33466a075de976ddc0a5",
+    "mermaid.min.js.LICENSE.txt": "f6dd9257d53c478b9168f1bbedeb81ee4268b4e2f4076e23f0ee55b59d73843e"
   }
 }
