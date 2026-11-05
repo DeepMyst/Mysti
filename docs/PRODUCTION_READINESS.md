@@ -188,7 +188,7 @@ For a stable release, use `npm run package` and verify the intended channel.
 - [ ] Record focused demonstrations of setup/provider choice, normal chat/context, multi-agent review/handoffs, Brainstorm/session workflows, approvals/Stop, history/forks/rewind, Canvas and supported integrations.
 - [ ] Use a clean synthetic project, readable framing, deliberate pacing, captions and consistent visual treatment. Show the action and result; avoid incidental windows, private paths, credentials or unrelated notifications.
 - [ ] Label scripted/sample-data recordings and distinguish them from native/account-backed evidence. Never use an illustrative animation as proof of a live backend result.
-- [ ] Export a compact poster/GIF plus linked video where useful. Check every README/release link and review the actual rendered media at narrow widths.
+- [ ] Export a compact poster/GIF where useful. Publish playable GitHub demos using the [native media guide](media/README.md); verify actual playback and seeking on the public README, gallery and release page, as well as every link and narrow-width layout. A repository MP4 link is not an inline player.
 - [ ] Keep promotional media out of the installed VSIX; retain capture instructions, scenario descriptions and version/build provenance in the media manifest.
 
 ### 5. Publish and verify

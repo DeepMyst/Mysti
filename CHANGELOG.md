@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Documentation
+
+- Rework the GitHub README with clearer installation choices, practical multi-agent workflows, broader feature coverage and provider/account FAQs.
+- Replace repository-file video links with native GitHub players across the README and feature gallery, with a lightweight inline workflow preview and a reproducible media-publishing guide.
+
+These documentation updates do not change the already qualified 2.0.1 Beta 2 VSIX.
+
 All notable changes to the Mysti extension are documented here.
 
 ## [2.0.1] — 2026-11-05 · Beta 2 (pre-release)

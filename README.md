@@ -39,9 +39,9 @@ A coding task often needs more than one kind of thinking: understand the code, p
 
 ## See it work
 
-**Watch the 3-minute, 19-second tour:** setup, provider choice, agent handoffs, Brainstorm, approvals, history, Canvas and connected tools.
+**Watch the 3-minute, 19-second tour:** setup, provider choice, agent handoffs, Brainstorm, access controls, history, Canvas and connected tools.
 
-<!-- MYSTI_NATIVE_TOUR: insert the GitHub-hosted video attachment on its own line here. -->
+https://github.com/user-attachments/assets/edb4beb3-08e1-4790-be3a-6550b2afd227
 
 [Explore all 15 feature demos →](docs/DEMO_GALLERY.md) · [Tour chapters](docs/releases/2.0.1-beta.2/media/CHAPTERS.md) · [Download the video kit](https://github.com/DeepMyst/Mysti/releases/download/v2.0.1-beta.2/mysti-2.0.1-beta.2-feature-demos.zip)
 
@@ -280,7 +280,6 @@ Thanks to everyone who has helped make Mysti better!
 <a href="https://github.com/3em0"><img src="https://avatars.githubusercontent.com/u/59153706?v=4" width="60" height="60" style="border-radius:50%" alt="3em0" /></a>
 
 Join the community through the [contribution guide](CONTRIBUTING.md).
-
 
 ## Ready to try it?
 
