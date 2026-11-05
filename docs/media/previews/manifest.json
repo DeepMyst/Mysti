@@ -1,0 +1,30 @@
+{
+  "purpose": "GitHub-compatible inline animated previews derived from existing Beta 2 recordings; no recapture or provider calls.",
+  "source_manifest": "../../releases/2.0.1-beta.2/media/capture.json",
+  "profile": {
+    "width": 840,
+    "height": 630,
+    "fps": 8,
+    "palette_colors": 192,
+    "dither": "bayer",
+    "bayer_scale": 4,
+    "loop": "infinite",
+    "crop": false,
+    "speed_change": false
+  },
+  "command": "ffmpeg -hide_banner -loglevel error -threads 1 -filter_complex_threads 1 -y -i docs/releases/2.0.1-beta.2/media/agent-opinions.mp4 -filter_complex 'fps=8,scale=840:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=192:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle' -loop 0 docs/media/previews/agent-opinions.gif",
+  "previews": [
+    {
+      "name": "agent-opinions",
+      "file": "agent-opinions.gif",
+      "bytes": 367235,
+      "sha256": "51c769ccaf7c674c76808ee0b0e85a87e19c374d538481c97ceee4e9e9abc73c",
+      "duration_seconds": 10.51,
+      "frames": 84,
+      "source_mp4_sha256": "4c956a32cd36159c38057933af20d96fbe8906ed934501b8f4bbd45eeee0f73e",
+      "decode_check": "passed",
+      "visual_review": "start, middle and end frames; sample-data banner and full uncropped interface preserved"
+    }
+  ],
+  "ffmpeg_version": "ffmpeg version 8.0.1 Copyright (c) 2000-2025 the FFmpeg developers"
+}
