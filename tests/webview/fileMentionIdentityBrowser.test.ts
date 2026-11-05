@@ -15,6 +15,7 @@ interface CapturedPayload { content: string; mentions?: Mention[]; context: unkn
 // parser or private webview-state hook participates in the identity oracle.
 describe('selected file mention identity in the shipped browser', () => {
   let browser: Browser, page: Page, fixtureRoot: string, manifest: unknown;
+  let browserLaunch: Promise<Browser> | undefined;
   let errors: string[], selectedRows: Array<{ selectedPath: string; observed: { value: string | null; name?: string | null; label: string | null } }>;
   let files: Array<{ path: string; content: string }>;
   let named: Record<string, string>;
@@ -34,7 +35,7 @@ describe('selected file mention identity in the shipped browser', () => {
       ['unique', 'notes/unique.md', 'EW04_UNIQUE_REFERENCE\n'],
       ['space', 'notes/retry contract.md', 'EW04_SPACE_REFERENCE\n'],
       ['unicode', 'notes/ملف.ts', 'const نص = "EW04_UNICODE_REFERENCE_🙂";\n'],
-      ['quote', 'notes/quote"note.ts', 'export const quoted = "EW04_QUOTED_REFERENCE";\n'],
+      ['quote', process.platform === 'win32' ? "notes/quote'note.ts" : 'notes/quote"note.ts', 'export const quoted = "EW04_QUOTED_REFERENCE";\n'],
       ['agentName', 'odd/ref @claude and @codex note.ts', 'EW04_LITERAL_AGENT_FILENAME\n'],
       ['backtick', 'odd/tick` @claude note.ts', 'EW04_BACKTICK_FILENAME\n'],
       ['rootA', 'root-a/src/util.ts', 'export const root = "EW04_MULTIROOT_A";\n'],
@@ -54,8 +55,9 @@ describe('selected file mention identity in the shipped browser', () => {
     const registry = new ProviderRegistry({ subscriptions: [], globalState: { get: () => undefined }, secrets: {} } as any);
     try { manifest = buildProviderManifestPayload(registry); }
     finally { registry.dispose(); }
-    browser = await chromium.launch();
-  });
+    browserLaunch = chromium.launch({ timeout: 30_000 });
+    browser = await browserLaunch;
+  }, 60_000);
   beforeEach(async () => {
     if (CHROMIUM_UNAVAILABLE) return;
     errors = []; selectedRows = []; multiRoot = undefined;
@@ -63,19 +65,27 @@ describe('selected file mention identity in the shipped browser', () => {
     page.setDefaultTimeout(3000);
     page.on('pageerror', error => errors.push(error.message));
     await page.route('**/*', route => route.abort());
-    await page.setContent(composeChatHtml());
+    // Loading the shipped assets is fixture startup; locator actions below
+    // retain their separate 3s deadline after the page is ready.
+    await page.setContent(composeChatHtml(), { timeout: 30_000 });
     await receive('initialState', {
       ...INITIAL_STATE, panelId: 'file-mention-owner', providerManifest: manifest,
       conversation: { id: 'file-mention-conversation', messages: [] },
       settings: { ...(INITIAL_STATE.settings as object), contextMode: 'manual' },
     });
     await receive('workspaceFiles', files.map(file => file.path));
-  });
-  afterEach(async () => { await page?.close(); if (errors) expect(errors).toEqual([]); });
+  }, 60_000);
+  afterEach(async () => { await page?.close(); if (errors) expect(errors).toEqual([]); }, 60_000);
   afterAll(async () => {
-    await browser?.close();
-    if (fixtureRoot && !process.env.MYSTI_FILE_MENTION_FIXTURE_ROOT) rmSync(fixtureRoot, { recursive: true, force: true });
-  });
+    try {
+      // Retain startup ownership even if the setup hook fails before assigning
+      // browser; a late launch must still be awaited and closed.
+      const launched = await browserLaunch?.catch(() => undefined);
+      await launched?.close();
+    } finally {
+      if (fixtureRoot && !process.env.MYSTI_FILE_MENTION_FIXTURE_ROOT) rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  }, 60_000);
 
   async function selectFile(file: string, query: string, prefix = '') {
     await input().fill(prefix + '@' + query);
@@ -404,6 +414,15 @@ describe('selected file mention identity in the shipped browser', () => {
   it.skipIf(CHROMIUM_UNAVAILABLE)('preserves a selected filename containing a literal quote', async () => {
     await selectFile(named.quote, 'quote');
     await send('literal-quote', [named.quote]);
+  });
+  it.skipIf(CHROMIUM_UNAVAILABLE)('preserves literal double quotes in browser cache metadata without a filesystem read', async () => {
+    // Double quotes are valid hostile cache metadata on every host, even where
+    // the local filesystem cannot create such a name. Keep that browser
+    // boundary separate from the physical fixture used by the test above.
+    const cachedPath = path.join(fixtureRoot, 'notes', 'cache"quote.ts');
+    await receive('workspaceFiles', [cachedPath]);
+    await selectFile(cachedPath, 'cache');
+    await send('literal-double-quote-cache-metadata', [cachedPath]);
   });
   it.skipIf(CHROMIUM_UNAVAILABLE)('resolves an explicitly typed qualified relative path', async () => {
     await input().fill('Review @packages/b/utils.ts please.');

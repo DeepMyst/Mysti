@@ -27,11 +27,15 @@ const notices = async () => (await page.locator('.mysti-toast').allTextContents(
 function file(directory: string, name: string) {
   const target = path.join(directory, name); fs.writeFileSync(target, `Owned bytes ${name} — العربية 🧪\n`); return target;
 }
-function legacyPrefix(directory: string, result: string[] = []): string[] {
-  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+function utf8Prefix(directory: string, result: string[] = []): string[] {
+  // Native readdir order differs on Windows. The traversal contract is UTF-8
+  // byte order on every platform, including astral versus private-use names.
+  const entries = fs.readdirSync(directory, { withFileTypes: true }).sort((a, b) =>
+    Buffer.compare(Buffer.from(a.name, 'utf8'), Buffer.from(b.name, 'utf8')));
+  for (const entry of entries) {
     if (result.length === 20) break;
     const target = path.join(directory, entry.name);
-    if (entry.isDirectory()) legacyPrefix(target, result); else if (entry.isFile()) result.push(target);
+    if (entry.isDirectory()) utf8Prefix(target, result); else if (entry.isFile()) result.push(target);
   }
   return result;
 }
@@ -104,7 +108,11 @@ function assertExactBytes() {
 
 describe('EW01 actual directory work and visible partial-scan limits', () => {
   it.skipIf(CHROMIUM_UNAVAILABLE)('preserves the legacy depth-first UTF-8 prefix for listings within the scan budget', async () => {
-    const expected = legacyPrefix(small); await add(small);
+    const expected = utf8Prefix(small);
+    expect(expected.slice(0, 6).map(file => path.basename(file))).toEqual([
+      'A.txt', 'z.txt', 'é.txt', 'العربية.txt', '\ue000.txt', '🧪.txt',
+    ]);
+    await add(small);
     expect(context.getContext('owner').map(item => item.path)).toEqual(expected); assertExactBytes();
     expect(await notices()).not.toMatch(/200|10,?000/);
   });
@@ -157,7 +165,7 @@ describe('EW01 actual directory work and visible partial-scan limits', () => {
     };
     await add(small);
     const first = path.join(small, handles[0].names[0]);
-    const expected = fs.statSync(first).isDirectory() ? legacyPrefix(first) : [first];
+    const expected = fs.statSync(first).isDirectory() ? utf8Prefix(first) : [first];
     expect(context.getContext('owner').map(item => item.path)).toEqual(expected); assertExactBytes();
     expect(await notices()).toContain('Could not read folder "small"');
   });
@@ -165,7 +173,7 @@ describe('EW01 actual directory work and visible partial-scan limits', () => {
     afterClose = async record => {
       if (record.path === small) throw Object.assign(new Error('controlled close result failure'), { code: 'EIO' });
     };
-    await add(small); expect(context.getContext('owner').map(item => item.path)).toEqual(legacyPrefix(small));
+    await add(small); expect(context.getContext('owner').map(item => item.path)).toEqual(utf8Prefix(small));
     assertExactBytes(); expect(await notices()).toContain('Could not read folder "small"');
   });
   it.skipIf(CHROMIUM_UNAVAILABLE)('finishing exactly 200 directories does not claim a further directory was skipped', async () => {

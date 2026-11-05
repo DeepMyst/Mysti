@@ -35,8 +35,11 @@ beforeAll(async () => {
 });
 beforeEach(async () => {
   errors = []; hostMessages = []; probes = []; deliveries = []; posted = []; bridgeCursor = 0;
-  root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-context-drop-')));
-  file = path.join(root, 'report # % ? العربية.txt'); fs.writeFileSync(file, content);
+  root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-context-drop-')));
+  // Win32 forbids '?' in a real filename. Retain URI-sensitive #, %, spaces,
+  // Unicode and a literal '+' there; malformed query suffixes are tested below.
+  const name = process.platform === 'win32' ? 'report # % + العربية.txt' : 'report # % ? العربية.txt';
+  file = path.join(root, name); fs.writeFileSync(file, content);
   page = await browser.newPage(); page.on('pageerror', error => errors.push(error.message));
   await page.route('**/*', route => route.abort());
   await page.setContent(composeChatHtml());

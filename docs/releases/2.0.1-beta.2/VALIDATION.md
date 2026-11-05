@@ -138,6 +138,28 @@ Git-config credential-read restriction and newer build/test tooling. The final
 release therefore requires fresh results for the merged source, rather than
 reusing the earlier candidate's green jobs.
 
+The merged `d7d1772` candidate passed all four jobs in
+[editor integration 42000800343](https://github.com/DeepMyst/Mysti/actions/runs/42000800343)
+and all platform unit phases. In
+[CI 42000776479](https://github.com/DeepMyst/Mysti/actions/runs/42000776479), Linux and
+macOS passed their complete test jobs, but Windows browser fixtures exposed
+additional filesystem-illegal names and an oracle that depended on native
+directory ordering. Corrections preserve hostile metadata and exact file
+identity checks while using legal physical names; the scan oracle now explicitly
+requires UTF-8 ordering, including a literal Unicode ordering assertion.
+Local identity-suite attempts also expired during Chromium/page startup before
+the affected test bodies. Setup/teardown now use the existing browser lifecycle
+budget, with an explicit page-boot bound. The Chromium launch, feature-interaction
+and assertion deadlines remain unchanged. All **113 focused browser checks**
+across the four corrected suites then passed locally, without skips. Failed
+setup and hosted runs are retained; they are not counted as passes.
+
+Hosted runs retain explicit platform-specific skips. The live-artboard diagnostic
+also requires a sibling `Mysti-Test-Project` design artifact that is absent from
+hosted runners. Chromium is required for the portable browser suites; this
+external-fixture diagnostic is not claimed as hosted performance evidence.
+Final per-platform counts and skip reasons belong in the published release record.
+
 ### Artifact identity and hosted checks
 
 Once qualified and published, the

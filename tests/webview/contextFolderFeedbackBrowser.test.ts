@@ -20,6 +20,7 @@ const realDirectory = fs.promises.opendir.bind(fs.promises);
 let browser: Browser, page: Page, root: string, folder: string, host: any, context: ContextManager;
 let errors: string[], messages: any[], deliveries: Promise<unknown>[], reads: string[], walks: string[];
 let deniedFiles: Set<string>, deniedFolders: Set<string>;
+let syntheticEntryNames: Map<string, string>;
 const receive = (type: string, payload?: unknown) => page.evaluate(message =>
   window.dispatchEvent(new MessageEvent('message', { data: message })), { type, payload });
 const warnings = () => page.locator('.mysti-toast').allTextContents();
@@ -37,6 +38,7 @@ beforeAll(async () => {
 });
 beforeEach(async () => {
   errors = []; messages = []; deliveries = []; reads = []; walks = []; deniedFiles = new Set(); deniedFolders = new Set();
+  syntheticEntryNames = new Map();
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-folder-feedback-')));
   folder = path.join(root, 'folder # العربية'); fs.mkdirSync(folder);
   page = await browser.newPage(); page.on('pageerror', error => errors.push(error.message));
@@ -55,14 +57,25 @@ beforeEach(async () => {
   }) as any);
   vi.spyOn(fs.promises, 'opendir').mockImplementation((async (directory: any, ...args: any[]) => {
     walks.push(String(directory)); if (deniedFolders.has(String(directory))) throw failure();
-    return (realDirectory as any)(directory, ...args);
+    const handle = await (realDirectory as any)(directory, ...args);
+    if (syntheticEntryNames.size) {
+      const read = handle.read.bind(handle);
+      vi.spyOn(handle, 'read').mockImplementation(async () => {
+        const entry = await read();
+        const name = entry && syntheticEntryNames.get(path.join(String(directory), entry.name));
+        if (name) entry.name = name;
+        return entry;
+      });
+    }
+    return handle;
   }) as any);
 });
 afterEach(async () => {
   await Promise.all(deliveries);
   if (page && process.env.MYSTI_CONTEXT_FOLDER_RECEIPTS) {
     fs.appendFileSync(process.env.MYSTI_CONTEXT_FOLDER_RECEIPTS, JSON.stringify({ test: expect.getState().currentTestName,
-      reads, walks, deniedFiles: [...deniedFiles], deniedFolders: [...deniedFolders], messages,
+      reads, walks, deniedFiles: [...deniedFiles], deniedFolders: [...deniedFolders],
+      syntheticEntryNames: [...syntheticEntryNames], messages,
       context: context.getContext('owner'), dom: { warnings: await warnings(), contextText: await page.locator('#context-panel').textContent() } }) + '\n');
   }
   vi.restoreAllMocks(); await page?.close(); fs.rmSync(root, { recursive: true, force: true }); expect(errors).toEqual([]);
@@ -104,15 +117,26 @@ describe('EW01 folder feedback through actual host routes and browser warning re
         }
       });
     }
-    it.skipIf(CHROMIUM_UNAVAILABLE)(`${route}: an unreadable subfolder does not hide readable sibling files`, async () => {
-      const denied = path.join(folder, 'a-denied-<img src=x onerror=alert(1)>'); fs.mkdirSync(denied); createFiles(1, denied);
-      const later = path.join(folder, 'b-readable'); fs.mkdirSync(later); const files = createFiles(2, later);
-      expect(fs.readdirSync(folder)).toEqual([path.basename(denied), path.basename(later)]);
-      deniedFolders.add(denied); await add(route); assertFiles(files);
-      expect((await warnings()).join(' ')).toContain(path.basename(denied));
-      expect(await page.locator('.mysti-toast img').count()).toBe(0);
-      expect(walks).toEqual([folder, denied, later]);
-    });
+    for (const labels of ['filesystem', 'synthetic markup'] as const) {
+      it.skipIf(CHROMIUM_UNAVAILABLE)(`${route}: an unreadable subfolder with ${labels} labels does not hide readable sibling files`, async () => {
+        const hostileName = 'a-denied-<img src=x onerror=alert(1)>';
+        // Windows cannot create '<' or '>' in a filename. The filesystem case
+        // uses its legal spelling; every OS also checks the exact hostile label
+        // through synthetic metadata, keeping enumeration and sibling reads real.
+        const synthetic = labels === 'synthetic markup';
+        const diskName = synthetic || process.platform === 'win32' ? 'a-denied (fixture)' : hostileName;
+        const deniedOnDisk = path.join(folder, diskName);
+        const denied = synthetic ? path.join(folder, hostileName) : deniedOnDisk;
+        fs.mkdirSync(deniedOnDisk); createFiles(1, deniedOnDisk);
+        if (synthetic) syntheticEntryNames.set(deniedOnDisk, hostileName);
+        const later = path.join(folder, 'b-readable'); fs.mkdirSync(later); const files = createFiles(2, later);
+        expect(fs.readdirSync(folder)).toEqual([path.basename(deniedOnDisk), path.basename(later)]);
+        deniedFolders.add(denied); await add(route); assertFiles(files);
+        expect((await warnings()).join(' ')).toContain(path.basename(denied));
+        expect(await page.locator('.mysti-toast img').count()).toBe(0);
+        expect(walks).toEqual([folder, denied, later]);
+      });
+    }
     it.skipIf(CHROMIUM_UNAVAILABLE)(`${route}: a partial file read failure is visible while valid files stay available`, async () => {
       const files = createFiles(3); deniedFiles.add(files[1]); await add(route); assertFiles([files[0], files[2]]);
       expect((await warnings()).join(' ')).toContain(path.basename(files[1]));

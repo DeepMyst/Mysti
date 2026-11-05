@@ -58,6 +58,12 @@ descendants exited, the delayed write was prevented, and the next request
 recovered. Focused regression tests check unrelated-process isolation. Broader
 platform and fault acceptance remains open; see the release validation report.
 
+The live-artboard performance diagnostic currently depends on a design artifact
+in the sibling `Mysti-Test-Project` repository and explicitly skips on hosted
+runners without it. Replace that dependency with a shareable representative
+fixture before treating this diagnostic as a portable release gate. Other
+portable browser checks require Chromium and fail when it is unavailable.
+
 ### Provider acceptance still needed
 
 | Provider | Current evidence or constraint | Required next evidence |
