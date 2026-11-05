@@ -20,7 +20,11 @@ function diskStore(initial?: unknown) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-history-recovery-'));
   directories.push(directory);
   const file = path.join(directory, 'memento.json');
-  fs.writeFileSync(file, JSON.stringify(initial === undefined ? {} : { [KEY]: initial }));
+  const initialBytes = JSON.stringify(initial === undefined ? {} : { [KEY]: initial });
+  fs.writeFileSync(file, initialBytes);
+  // This fixture owns the file. Compose updates from the last acknowledged
+  // detached map; reads and restarted managers still load the actual bytes.
+  let committed: Record<string, any> = JSON.parse(initialBytes);
   let rejected = false;
   let writeTarget = file;
   const read = (): Record<string, any> => JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -29,8 +33,9 @@ function diskStore(initial?: unknown) {
     update: vi.fn(async (key: string, value: unknown) => {
       const detached = clone(value);
       if (rejected) { throw Object.assign(new Error('controlled storage full'), { code: 'ENOSPC' }); }
-      const store = read(); store[key] = detached;
+      const store = { ...committed, [key]: detached };
       fs.writeFileSync(writeTarget, JSON.stringify(store));
+      committed = store;
     }),
   } } as any;
   return { context, read, file, fail: (value: boolean) => { rejected = value; },
