@@ -64,6 +64,16 @@ runners without it. Replace that dependency with a shareable representative
 fixture before treating this diagnostic as a portable release gate. Other
 portable browser checks require Chromium and fail when it is unavailable.
 
+The documentation-update candidate also exposed an intermittent Windows browser
+test timeout: the split-UTF-16 rendering case exceeded its five-second deadline
+in [PR CI](https://github.com/DeepMyst/Mysti/actions/runs/42075793517), but passed
+in the [independent push run](https://github.com/DeepMyst/Mysti/actions/runs/42075783921)
+at the same commit. The original failure did not identify the pending operation.
+Failure-only stage diagnostics now support the investigation; all assertions,
+chunk boundaries and deadlines remain unchanged. The release maintainer owns
+this unresolved timing investigation. A later green run does not establish its
+cause or close it, and every release still needs its own complete required gates.
+
 ### Provider acceptance still needed
 
 | Provider | Current evidence or constraint | Required next evidence |

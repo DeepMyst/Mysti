@@ -81,6 +81,13 @@ on 5 November 2026. The matrix label stays `ubuntu-latest` to preserve the requi
 check name. Revisit the runner pin with a qualified Playwright upgrade; do not
 change assertions or skip browser tests to accommodate a runner-image update.
 
+The split-UTF-16 case in `renderingReliabilityBrowser.test.ts` records stage
+timings and its pending operation only when it fails. A Windows PR run hit the
+five-second test deadline while the identical independent push case passed;
+the original log did not identify the stalled operation. Preserve both results
+and inspect these diagnostics before changing the fixture or application.
+The additional logging does not resolve or waive the intermittent timing issue.
+
 ### Live developer conversations
 
 Run `npm run test:live:conversations` explicitly with authenticated Claude Code
