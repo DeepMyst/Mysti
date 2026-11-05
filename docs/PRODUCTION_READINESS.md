@@ -86,6 +86,20 @@ now supplies the platform font defaults VS Code normally injects, correcting
 its unintended Times fallback. No font warmup, retry or deadline increase was
 introduced. The diagnostic is not release qualification evidence.
 
+The corrected font fixture still encountered the same dispatch timeout in the
+[independent push for `5f0ee5f`](https://github.com/DeepMyst/Mysti/actions/runs/42095850055),
+while all 15 PR CI/editor jobs passed. A separate macOS build job could not
+acquire a hosted runner and ran no steps. Both outcomes remain recorded in
+[the documentation PR](https://github.com/DeepMyst/Mysti/pull/81).
+
+The streaming path now combines scroll measurements within an animation frame,
+removing the repeated synchronous layouts observed in a single chunk burst.
+Text and Markdown still update immediately; terminal events flush after the
+final DOM changes, and replaced turns/conversations invalidate pending work.
+This is a bounded performance correction with ownership regressions, not proof
+of the earlier Windows timeout's exact cause. It is unreleased and is not in
+the existing Beta 2 VSIX; any new build still needs its own complete gates.
+
 A later [macOS Canvas gate](https://github.com/DeepMyst/Mysti/actions/runs/42082967578)
 also reported a zoomed-out pan p95 of 44.2 ms against a 36.2 ms limit; the
 independent run at the same source passed. The threshold remains in force.

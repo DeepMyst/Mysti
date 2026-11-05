@@ -96,6 +96,14 @@ omitted them and inherited Chromium's Times font. Keep this host setup in
 or move measured actions into setup to accommodate a timeout. This corrects
 fixture fidelity, not the unassigned cause of the earlier Windows timing failures.
 
+Streamed text updates its Markdown immediately, while transcript scroll
+measurement is coalesced into an owned animation frame. Completion and
+cancellation flush after the final DOM changes; replacement turns and
+conversations invalidate pending work. Keep the separate explicit
+`scrollToBottom()` helper synchronous. The streaming-scroll browser regressions
+check native read counts, final position and stale-callback isolation instead of
+using a wall-clock speed threshold.
+
 Disposable OpenClaw test-data writers use `PRAGMA synchronous=OFF` for
 [reproducible database construction](https://www.sqlite.org/pragma.html#pragma_synchronous).
 They still create real SQLite files with the existing SQL operations and

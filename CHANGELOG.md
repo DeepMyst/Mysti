@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- Coalesce streamed-text scroll measurements into one animation frame while keeping Markdown updates immediate. Flush the final view after completion or cancellation, and discard queued scrolling when its conversation or turn is replaced.
+
 ### Documentation
 
 - Add visual task walkthroughs, troubleshooting, privacy and backup/recovery guides, with source-checked provider and approval references.
@@ -9,7 +13,7 @@
 - Rework the GitHub README with clearer installation choices, practical multi-agent workflows, broader feature coverage and provider/account FAQs.
 - Replace repository-file video links with native GitHub players across the README and feature gallery, with a lightweight inline workflow preview and a reproducible media-publishing guide.
 
-These documentation updates do not change the already qualified 2.0.1 Beta 2 VSIX.
+These unreleased changes are not included in the already qualified 2.0.1 Beta 2 VSIX.
 
 ### Maintenance
 
