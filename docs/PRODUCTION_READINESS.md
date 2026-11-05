@@ -74,6 +74,18 @@ chunk boundaries and deadlines remain unchanged. The release maintainer owns
 this unresolved timing investigation. A later green run does not establish its
 cause or close it, and every release still needs its own complete required gates.
 
+The later [Windows PR run](https://github.com/DeepMyst/Mysti/actions/runs/42086893006)
+localized the stall to dispatching 174 code-unit chunks; the
+[independent run](https://github.com/DeepMyst/Mysti/actions/runs/42086881593) instead
+timed out on two composer-fill actions containing the Deseret letter U+10400.
+A single [instrumented Windows diagnostic](https://github.com/DeepMyst/Mysti/actions/runs/42091942355)
+passed all 59 original cases at their original deadlines. Its measured fills
+spent most time in native text layout before the application input handler;
+it did not reproduce the failures or establish their cause. The shared fixture
+now supplies the platform font defaults VS Code normally injects, correcting
+its unintended Times fallback. No font warmup, retry or deadline increase was
+introduced. The diagnostic is not release qualification evidence.
+
 A later [macOS Canvas gate](https://github.com/DeepMyst/Mysti/actions/runs/42082967578)
 also reported a zoomed-out pan p95 of 44.2 ms against a 36.2 ms limit; the
 independent run at the same source passed. The threshold remains in force.
@@ -166,6 +178,9 @@ artifact identity together so another maintainer or agent can continue the work.
 
 Use the Node version in `.nvmrc`. Run a clean install in the release checkout.
 Require Chromium rather than silently accepting browser-test skips.
+If the manifest, English localization or `docs/navigation.json` changed, run
+`npm run docs:generate` after installation and review the generated diff before
+continuing with the checks.
 
 ```sh
 npm ci
@@ -173,6 +188,7 @@ npm exec --no -- playwright install chromium
 npm run typecheck
 npm run lint
 npm run check:vendor
+npm run check:docs
 node scripts/validation/feature-plan.cjs
 npm run test:release:unit
 npm run test:release:browser

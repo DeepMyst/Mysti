@@ -88,6 +88,14 @@ the original log did not identify the stalled operation. Preserve both results
 and inspect these diagnostics before changing the fixture or application.
 The additional logging does not resolve or waive the intermittent timing issue.
 
+The shared chat browser fixture supplies the six font custom properties that
+[VS Code injects into webviews](https://github.com/microsoft/vscode/blob/1.86.0/src/vs/workbench/contrib/webview/browser/themeing.ts),
+using the minimum supported editor's default platform fonts. Earlier fixtures
+omitted them and inherited Chromium's Times font. Keep this host setup in
+`tests/webview/chatPageHtml.ts`; do not substitute a font warmup, alter user input
+or move measured actions into setup to accommodate a timeout. This corrects
+fixture fidelity, not the unassigned cause of the earlier Windows timing failures.
+
 Disposable OpenClaw test-data writers use `PRAGMA synchronous=OFF` for
 [reproducible database construction](https://www.sqlite.org/pragma.html#pragma_synchronous).
 They still create real SQLite files with the existing SQL operations and

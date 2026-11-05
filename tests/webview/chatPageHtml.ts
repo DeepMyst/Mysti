@@ -25,6 +25,31 @@ import * as path from 'path';
 
 const ROOT = path.resolve(__dirname, '../..');
 
+// VS Code injects these into every webview. Without them the shipped CSS
+// inherits Chromium's Times default instead of the editor's platform fonts.
+// Match the minimum supported host's uncustomized defaults:
+// https://github.com/microsoft/vscode/blob/1.86.0/src/vs/workbench/contrib/webview/browser/themeing.ts
+// https://github.com/microsoft/vscode/blob/1.86.0/src/vs/workbench/browser/style.ts
+// https://github.com/microsoft/vscode/blob/1.86.0/src/vs/editor/common/config/editorOptions.ts
+const uiFontFamily = process.platform === 'win32'
+  ? '"Segoe WPC", "Segoe UI", sans-serif'
+  : process.platform === 'darwin'
+    ? '-apple-system, BlinkMacSystemFont, sans-serif'
+    : 'system-ui, "Ubuntu", "Droid Sans", sans-serif';
+const editorFontFamily = process.platform === 'darwin'
+  ? 'Menlo, Monaco, "Courier New", monospace'
+  : process.platform === 'linux'
+    ? '"Droid Sans Mono", "monospace", monospace'
+    : 'Consolas, "Courier New", monospace';
+const hostFontStyles = `<style>:root {
+  --vscode-font-family: ${uiFontFamily};
+  --vscode-font-weight: normal;
+  --vscode-font-size: 13px;
+  --vscode-editor-font-family: ${editorFontFamily};
+  --vscode-editor-font-weight: normal;
+  --vscode-editor-font-size: ${process.platform === 'darwin' ? 12 : 14}px;
+}</style>`;
+
 function read(rel: string): string {
   return fs.readFileSync(path.join(ROOT, rel), 'utf8');
 }
@@ -64,7 +89,7 @@ export function composeChatHtml(): string {
     .replace('<link rel="stylesheet" href="{{deskCssUri}}">', () => `<style>${read('media/chat/desk.css')}</style>`)
     .replace('{{bootJson}}', () => JSON.stringify(bootPayload()))
     // Playwright waits for a STABLE box before acting; nothing here tests an animation.
-    .replace('</head>', () => '<style>*,*::before,*::after{animation:none!important;transition:none!important}</style></head>');
+    .replace('</head>', () => `${hostFontStyles}<style>*,*::before,*::after{animation:none!important;transition:none!important}</style></head>`);
 
   for (const [tag, file] of [
     ['<script nonce="n" src="/dompurify.min.js"></script>', 'resources/dompurify.min.js'],
