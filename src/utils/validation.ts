@@ -45,7 +45,7 @@ export function validateModelName(model: string): { valid: boolean; error?: stri
 }
 
 /**
- * Profile name validation (Codex profile from ~/.codex/config.toml)
+ * Profile name validation (Codex resolves storage for the named profile)
  * More restrictive: no colons or slashes.
  */
 export const PROFILE_NAME_MAX_LENGTH = 64;

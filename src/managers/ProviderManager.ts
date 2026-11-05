@@ -14,7 +14,7 @@
 import * as vscode from 'vscode';
 import { ChildProcess } from 'child_process';
 import { ProviderRegistry } from '../providers/ProviderRegistry';
-import type { ICliProvider, PersonaConfig, NativeApprovalHandler, NativeApprovalHost } from '../providers/base/IProvider';
+import type { ICliProvider, PersonaConfig, NativeApprovalHandler, NativeApprovalHost, ProviderInputResolver } from '../providers/base/IProvider';
 import type { BaseCliProvider } from '../providers/base/BaseCliProvider';
 import type { AgentContextManager } from './AgentContextManager';
 import type {
@@ -32,6 +32,7 @@ import type {
 import { DEFAULT_PROVIDER, DEFAULT_FALLBACK_MODEL, PROCESS_KILL_GRACE_PERIOD_MS } from '../constants';
 import { killProcessTree } from '../utils/processKill';
 import { createAbortScope } from '../utils/abortScope';
+import { finalizeStreamText } from '../utils/streamText';
 
 interface NativeApprovalRegistration {
   handler: NativeApprovalHandler | NativeApprovalHost;
@@ -56,7 +57,8 @@ interface ModelRegistrySink {
  * while letting ProviderManager report child PIDs as processes are registered.
  */
 interface ProcessPidSink {
-  registerProcessPid(panelId: string, pid: number): void;
+  registerProcessPid(panelId: string, pid: number, providerId?: ProviderType): void;
+  clearProcessPid?(panelId: string, expectedPid?: number): void;
 }
 
 /**
@@ -431,8 +433,15 @@ export class ProviderManager {
     persona?: PersonaConfig,
     panelId?: string,
     agentConfig?: AgentConfiguration,
-    attachments?: Attachment[]
+    attachments?: Attachment[],
+    resolveInput?: ProviderInputResolver,
+    acceptTextRevisions = false
   ): AsyncGenerator<StreamChunk> {
+    if (resolveInput) {
+      const input = resolveInput();
+      if (!input) { return; }
+      ({ content, context } = input);
+    }
     const provider = this._getActiveProvider(settings.provider);
     provider.setNativeApprovalHost?.(this._nativeApprovalHost);
     const previous = panelId ? this._panelProviders.get(panelId) : undefined;
@@ -442,7 +451,8 @@ export class ProviderManager {
     if (panelId && settings.provider) {
       this._panelProviders.set(panelId, settings.provider);
     }
-    yield* provider.sendMessage(content, context, settings, conversation, persona, panelId, this, agentConfig, attachments);
+    const stream = provider.sendMessage(content, context, settings, conversation, persona, panelId, this, agentConfig, attachments, resolveInput);
+    yield* provider.capabilities?.emitsTextRevisions && !acceptTextRevisions ? finalizeStreamText(stream, true) : stream;
   }
 
   /**
@@ -456,8 +466,14 @@ export class ProviderManager {
     settings: Settings,
     conversation: Conversation | null,
     persona?: PersonaConfig,
-    panelId?: string
+    panelId?: string,
+    resolveInput?: ProviderInputResolver
   ): AsyncGenerator<StreamChunk> {
+    if (resolveInput) {
+      const input = resolveInput();
+      if (!input) { return; }
+      ({ content, context } = input);
+    }
     const provider = this._getActiveProvider(providerId);
     provider.setNativeApprovalHost?.(this._nativeApprovalHost);
     const previous = panelId ? this._panelProviders.get(panelId) : undefined;
@@ -467,7 +483,8 @@ export class ProviderManager {
     if (panelId && providerId) {
       this._panelProviders.set(panelId, providerId);
     }
-    yield* provider.sendMessage(content, context, settings, conversation, persona, panelId, this);
+    const stream = provider.sendMessage(content, context, settings, conversation, persona, panelId, this, undefined, undefined, resolveInput);
+    yield* provider.capabilities?.emitsTextRevisions ? finalizeStreamText(stream, true) : stream;
   }
 
   /**
@@ -488,7 +505,7 @@ export class ProviderManager {
       this._panelProviders.set(panelId, providerId);
     }
     if (typeof process.pid === 'number') {
-      this._lifecycleSink?.registerProcessPid(panelId, process.pid);
+      this._lifecycleSink?.registerProcessPid(panelId, process.pid, providerId as ProviderType | undefined);
     }
   }
 
@@ -496,24 +513,48 @@ export class ProviderManager {
    * Cancel request for a specific panel only with graceful shutdown
    */
   public cancelRequest(panelId: string): void {
-    this._nativeApprovalTurns.get(panelId)?.abort();
+    // Abort and provider callbacks can synchronously register a replacement.
+    // This Stop owns only the handle/provider captured before either callback.
+    const process = this._activePanelProcesses.get(panelId);
+    const providerId = this._panelProviders.get(panelId);
+    const approval = this._nativeApprovalTurns.get(panelId);
+    const stillOwnsPanel = () => this._activePanelProcesses.get(panelId) === process
+      && this._panelProviders.get(panelId) === providerId;
+    let provider: ICliProvider | undefined;
+    let delegated = false;
+    let delegationFailed = false;
+    try { provider = this._getPanelProvider(panelId); }
+    catch (err) {
+      delegationFailed = true;
+      console.warn(`[Mysti] Provider cancel failed for panel ${panelId}:`, err);
+    }
+    approval?.abort();
     // Delegate to the panel's OWNING provider first (B12) — it handles SIGKILL
     // for suspended processes (avoids SIGCONT+SIGTERM which would give the CLI a
     // window to execute tools).
-    try {
-      const provider = this._getPanelProvider(panelId);
-      provider.cancelCurrentRequest(panelId);
-    } catch (err) {
-      console.warn(`[Mysti] Provider cancel failed for panel ${panelId}:`, err);
+    if (provider && stillOwnsPanel()) {
+      try {
+        provider.cancelCurrentRequest(panelId);
+        delegated = true;
+      } catch (err) {
+        delegationFailed = true;
+        console.warn(`[Mysti] Provider cancel failed for panel ${panelId}:`, err);
+      }
     }
-    // Backstop (B3/B4/B12): SIGKILL the tracked handle regardless, so a hung
-    // process dies even if the owning provider's teardown misbehaves.
-    const process = this._activePanelProcesses.get(panelId);
+    // The owner sends TERM (or immediate KILL for a suspended denial). Observe
+    // its existing grace without overriding it; hung owned groups still escalate.
+    // A failed delegate retains the immediate fail-safe. If approval replaced
+    // the panel before delegation, stop only the captured old process directly.
     if (process) {
-      void killProcessTree(process, PROCESS_KILL_GRACE_PERIOD_MS, { label: `cancel ${panelId}`, initialSignal: 'SIGKILL' });
+      void killProcessTree(process, PROCESS_KILL_GRACE_PERIOD_MS, {
+        label: `cancel ${panelId}`, initialSignal: delegationFailed ? 'SIGKILL' : delegated ? null : 'SIGTERM',
+      });
     }
-    this._activePanelProcesses.delete(panelId);
-    this._panelProviders.delete(panelId);
+    if (stillOwnsPanel()) {
+      this._activePanelProcesses.delete(panelId);
+      this._panelProviders.delete(panelId);
+      this._lifecycleSink?.clearProcessPid?.(panelId, process?.pid);
+    }
   }
 
   /**
@@ -548,8 +589,10 @@ export class ProviderManager {
    */
   public clearProcess(panelId: string, expectedProcess?: ChildProcess): void {
     if (expectedProcess && this._activePanelProcesses.get(panelId) !== expectedProcess) { return; }
+    const pid = this._activePanelProcesses.get(panelId)?.pid;
     this._activePanelProcesses.delete(panelId);
     this._panelProviders.delete(panelId);
+    this._lifecycleSink?.clearProcessPid?.(panelId, pid);
   }
 
   /**
@@ -566,6 +609,7 @@ export class ProviderManager {
     // not the broken `.killed` flag, and cleans up its own escalation timer.
     for (const [panelId, process] of this._activePanelProcesses) {
       void killProcessTree(process, PROCESS_KILL_GRACE_PERIOD_MS, { label: `cancel-all ${panelId}` });
+      this._lifecycleSink?.clearProcessPid?.(panelId, process.pid);
     }
     this._activePanelProcesses.clear();
     this._panelProviders.clear();
@@ -574,7 +618,13 @@ export class ProviderManager {
   /**
    * Clear session on the default provider
    */
-  public clearSession(panelId?: string): void {
+  public clearSession(panelId?: string, options?: { allProviders?: boolean }): void {
+    // Conversation changes must clear every backend used by this panel, even
+    // when its last request already removed the transient owner mapping.
+    if (panelId && options?.allProviders) {
+      for (const provider of this._registry.getAll()) { provider.clearSession(panelId); }
+      return;
+    }
     // B12: clear the session on the panel's owning provider, not the default.
     const provider = this._getPanelProvider(panelId);
     provider?.clearSession(panelId);

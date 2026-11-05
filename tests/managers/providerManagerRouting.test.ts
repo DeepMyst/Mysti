@@ -152,6 +152,19 @@ describe('ProviderManager panel -> provider routing (B12)', () => {
     expect(y.clearSession).not.toHaveBeenCalled();
   });
 
+  it('clears all provider histories for a changed conversation after owner tracking was released', () => {
+    const x = spyProvider('provider-x');
+    const y = spyProvider('provider-y');
+    const manager = buildManager('provider-y', [x, y]);
+    manager.registerProcess('panel-P', deadProcess(), 'provider-x');
+    manager.cancelRequest('panel-P');
+    manager.clearSession('panel-P', { allProviders: true });
+    expect(x.clearSession).toHaveBeenCalledWith('panel-P');
+    expect(y.clearSession).toHaveBeenCalledWith('panel-P');
+    expect(x.clearSession).toHaveBeenCalledTimes(1);
+    expect(y.clearSession).toHaveBeenCalledTimes(1);
+  });
+
   it('disposePersistentProcess routes to the panel-owning provider', () => {
     const x = spyProvider('provider-x');
     const y = spyProvider('provider-y');
@@ -233,7 +246,7 @@ describe('ProviderManager panel -> provider routing (B12)', () => {
     } as unknown as ChildProcess;
     manager.registerProcess('panel-P', proc, 'provider-x');
 
-    expect(registerProcessPid).toHaveBeenCalledWith('panel-P', 12345);
+    expect(registerProcessPid).toHaveBeenCalledWith('panel-P', 12345, 'provider-x');
   });
 
   it('does not call the lifecycle sink when the process has no pid', () => {
@@ -254,5 +267,24 @@ describe('ProviderManager panel -> provider routing (B12)', () => {
     manager.registerProcess('panel-P', proc, 'provider-x');
 
     expect(registerProcessPid).not.toHaveBeenCalled();
+  });
+
+  it('a late old close cannot clear the replacement lifecycle PID; matching close and Stop do clear it', () => {
+    const x = spyProvider('provider-x');
+    const manager = buildManager('provider-x', [x]);
+    const clearProcessPid = vi.fn();
+    manager.setLifecycleSink({ registerProcessPid: vi.fn(), clearProcessPid });
+    const old = Object.assign(deadProcess(), { pid: 40001 });
+    const replacement = Object.assign(deadProcess(), { pid: 40002 });
+    manager.registerProcess('panel', old, 'provider-x');
+    manager.registerProcess('panel', replacement, 'provider-x');
+    manager.clearProcess('panel', old);
+    expect(clearProcessPid).not.toHaveBeenCalled();
+    manager.clearProcess('panel', replacement);
+    expect(clearProcessPid).toHaveBeenCalledExactlyOnceWith('panel', 40002);
+    clearProcessPid.mockClear();
+    manager.registerProcess('panel', old, 'provider-x');
+    manager.cancelRequest('panel');
+    expect(clearProcessPid).toHaveBeenCalledExactlyOnceWith('panel', 40001);
   });
 });

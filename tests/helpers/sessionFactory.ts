@@ -70,8 +70,6 @@ export function createClineSession(panelId = 'test-panel') {
     lastUserInput: '',
     askReceived: false,
     jsonBuffer: [] as string[],
-    clineruleBackup: null as string | null,
-    clineruleWritten: false,
   };
 }
 
@@ -147,6 +145,7 @@ export function createKimiSession(panelId = 'test-panel'): KimiCodeSessionState 
     rpcId: 0,
     initializeId: null,
     sessionNewId: null,
+    modelSetId: null,
     promptId: null,
     acpSessionId: null,
     pendingPrompt: null,

@@ -166,7 +166,8 @@ describe('OpenClawProvider.parseStreamLine', () => {
         input_tokens: 500,
         output_tokens: 200,
       }), session);
-      expect(session.lastUsageStats).toEqual({ input_tokens: 500, output_tokens: 200 });
+      expect(session.lastUsageStats).toEqual({ input_tokens: 500, output_tokens: 200, normalized: true });
+      expect(session.lastContextUsageStats).toBeNull();
     });
   });
 });

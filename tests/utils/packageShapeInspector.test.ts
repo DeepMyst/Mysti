@@ -32,6 +32,19 @@ describe('package shape inspects the artifact contents', () => {
     expect(result.failures).toEqual([]);
   });
 
+  it('recognizes the prefix-only SQLite builtin used by the guarded auth-store reader', () => {
+    const result = inspectArchive(archive({ 'dist/extension.js':
+      'try { require("node:sqlite"); } catch { /* older extension host */ }',
+    }), manifest);
+    expect(result.failures).toEqual([]);
+  });
+
+  it.each(['sqlite', 'node:sqlite/nonexistent'])('does not treat %s as the SQLite builtin', spec => {
+    const result = inspectArchive(archive({ 'dist/extension.js': `require(${JSON.stringify(spec)});` }), manifest);
+    expect(result.failures).toHaveLength(1);
+    expect(result.failures[0].assertion).toBe('D (runtime requires resolve)');
+  });
+
   it('rejects an absent extension entrypoint even when another bundle exists', () => {
     const result = inspectArchive(archive({ 'dist/canvasWebview.js': 'const canvas = true;' }), manifest);
     expect(result.failures.some(f => /entrypoint is missing/.test(f.message))).toBe(true);

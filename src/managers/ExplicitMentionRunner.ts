@@ -47,6 +47,18 @@ export async function runExplicitMentions(
       }
       previous = next.value.outcomes;
       outcomes.push(...previous);
+    } catch (error) {
+      if (input.isCancelled?.()) { return ''; }
+      // A setup/dispatch failure in a later phase must not discard work that
+      // already finished. Record this phase as failed so dependent work stays
+      // blocked, while subsequent independent assignments can still run.
+      const failure = error instanceof Error ? error.message : String(error);
+      previous = phase.assignments.map((a, index) => ({
+        collaboratorId: String(index), agentId: a.agentId,
+        label: getProviderDisplayName(a.agentId), text: '', hasError: true, failure,
+      }));
+      outcomes.push(...previous);
+      post({ type: 'collaborationError', payload: { runId, message: failure } });
     } finally {
       await gen.return(undefined as never);
       if (!input.isCancelled?.()) { post({ type: 'collaborationComplete', payload: { runId } }); }

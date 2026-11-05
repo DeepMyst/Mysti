@@ -307,20 +307,23 @@ describe('CliDiscoveryService', () => {
       expect(service.peekStatus('claude-code')).toBeUndefined();
     });
 
-    it('onDidChange fires when a re-probe flips a CLI to installed — and only then', async () => {
+    it('onDidChange publishes initial discovery and a later install without duplicate refresh events', async () => {
       const cursor = fakeProvider('cursor', { found: false });
       service = new CliDiscoveryService(new FakeSource([cursor]));
       const changes: Array<{ providerId: string; found: boolean }> = [];
       service.onDidChange((s) => changes.push({ providerId: s.providerId, found: s.found }));
 
-      await service.getStatus('cursor');         // first probe: nothing to compare with
+      await service.getStatus('cursor');         // initial facts refresh open capability consumers
       await service.refresh('cursor');           // same answer: no change
-      expect(changes).toEqual([]);
+      expect(changes).toEqual([{ providerId: 'cursor', found: false }]);
 
       cursor.discoverCli.mockResolvedValue({ found: true, path: '/usr/local/bin/cursor-agent' });
       service.invalidate('cursor');              // what an install does
       await service.refresh('cursor');
-      expect(changes).toEqual([{ providerId: 'cursor', found: true }]);
+      expect(changes).toEqual([
+        { providerId: 'cursor', found: false },
+        { providerId: 'cursor', found: true },
+      ]);
     });
 
     it('stops listening after dispose()', async () => {

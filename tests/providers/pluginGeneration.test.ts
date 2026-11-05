@@ -52,6 +52,7 @@ function claudeSession(provider: unknown, s: Settings, extra: Record<string, unk
 function snapshot(provider: unknown, s: Settings) {
   const p = provider as any;
   return {
+    cwd: '/mock/workspace',
     model: p._getEffectiveModel(s),
     permissionMode: p._derivePermissionMode(s),
     thinkingLevel: s.thinkingLevel || 'none',

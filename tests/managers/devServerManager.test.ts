@@ -129,7 +129,11 @@ describe('DevServerManager', () => {
       const child = new FakeChild();
       await startServer(mgr, child);
 
-      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+      let groupExists = true;
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
+        if (!groupExists) { throw Object.assign(new Error('group exited'), { code: 'ESRCH' }); }
+        return true;
+      });
 
       const stopPromise = mgr.stop('panel-1');
 
@@ -138,6 +142,7 @@ describe('DevServerManager', () => {
       expect(killSpy).toHaveBeenCalledWith(-child.pid, 'SIGTERM');
       expect(child.signals).toEqual([]);
 
+      groupExists = false;
       child.simulateExit(null, 'SIGTERM');
       await stopPromise;
 
@@ -194,18 +199,21 @@ describe('DevServerManager', () => {
       await expect(mgr.stop('nope')).resolves.toBeUndefined();
     });
 
-    it('just clears tracking when the server already exited (no signals sent)', async () => {
+    it('just clears tracking when the server and its group already exited (no termination signals sent)', async () => {
       const mgr = new DevServerManager();
       const child = new FakeChild();
       await startServer(mgr, child);
 
       child.simulateExit(0);
 
-      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
+        throw Object.assign(new Error('group exited'), { code: 'ESRCH' });
+      });
       await mgr.stop('panel-1');
 
       expect(child.signals).toEqual([]);
-      expect(killSpy).not.toHaveBeenCalledWith(-child.pid, expect.anything());
+      // Signal 0 checks whether native descendants survived the wrapper.
+      expect(killSpy.mock.calls.every(([, signal]) => signal === 0)).toBe(true);
       expect(mgr.isRunning('panel-1')).toBe(false);
     });
   });

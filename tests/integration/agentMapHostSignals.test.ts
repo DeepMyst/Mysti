@@ -33,6 +33,8 @@ function host(extra: Record<string, unknown> = {}) {
   const posted: WebviewMessage[] = [];
   const h = Object.assign(Object.create(ChatViewProvider.prototype), {
     _cancelledPanels: new Set<string>(),
+    _mystiRunGen: new Map(),
+    _panelStates: new Map([['a', { currentConversationId: 'signal-conversation' }]]),
     _mystiActiveDelegationRuns: new Map(),
     _mentionRouter: { stripMentions: (c: string) => c },
     _providerManager: { getProvider: () => undefined },

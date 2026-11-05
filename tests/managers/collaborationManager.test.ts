@@ -507,6 +507,33 @@ describe('CollaborationManager cancelPanel (Plan 18 1.3)', () => {
     pm = new MockProviderManager();
   });
 
+  it('finishes Stop during provider readiness and prevents a late probe from spawning work', async () => {
+    vi.useFakeTimers();
+    try {
+      let release!: (status: null) => void;
+      vi.spyOn(pm, 'getProviderStatus').mockImplementation(() => new Promise(resolve => { release = resolve; }));
+      const manager = makeManager(pm);
+      let finished = false;
+      const pending = drain(manager.run({
+        brief: 'Ask Codex to review the migration.',
+        collaborators: [{ agentId: 'openai-codex', roleId: 'reviewer' }],
+        context: [], settings: collabSettings(), panelId: 'readiness-stop',
+      })).then(result => { finished = true; return result; });
+      await vi.advanceTimersByTimeAsync(1);
+      manager.cancelPanel('readiness-stop');
+      await vi.advanceTimersByTimeAsync(1);
+      expect(finished).toBe(true);
+      const { result } = await pending;
+      expect(result.outcomes[0].failure).toBe('cancelled');
+      release(null);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(pm.sendCalls).toHaveLength(0);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it('cancels all live children for the panel while a run is active', async () => {
     pm.setProviderAvailable('google-gemini');
     let release: () => void = () => {};

@@ -294,13 +294,15 @@ describe('webview updateThinkingSectionVisibility (W1)', () => {
     expect(hint.hiddenState).toBe(false); // advisory hint shown
   });
 
-  it('keeps the selector visible for unknown ids (brainstorm, pre-manifest)', () => {
+  it('keeps orchestration controls visible but hides unknown backend capabilities', () => {
     const { section, hint } = run({ providerManifest: fixtureManifest() }, 'brainstorm');
     expect(section.style.display).toBe('block');
     expect(hint.hiddenState).toBe(true);
 
     const pre = run({ providerManifest: null }, 'claude-code');
-    expect(pre.section.style.display).toBe('block');
+    expect(pre.section.style.display).toBe('none');
+    const unknown = run({ providerManifest: fixtureManifest() }, 'unknown-backend');
+    expect(unknown.section.style.display).toBe('none');
   });
 });
 

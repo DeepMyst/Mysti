@@ -45,7 +45,11 @@ describe('Cline permission flag mapping', () => {
     { mode: 'default' as const, accessLevel: 'full-access' as const },
     { mode: 'edit-automatically' as const, accessLevel: 'full-access' as const },
     { mode: 'ask-before-edit' as const, accessLevel: 'ask-permission' as const },
-  ])('should use --mode act --yolo for mode=$mode access=$accessLevel', ({ mode, accessLevel }) => {
+  ])('honors or explicitly rejects mode=$mode access=$accessLevel', ({ mode, accessLevel }) => {
+    if (accessLevel !== 'full-access') {
+      expect(() => provider.buildCliArgs(s({ mode, accessLevel }), createClineSession())).toThrow(/native approvals/);
+      return;
+    }
     const args = provider.buildCliArgs(s({ mode, accessLevel }), createClineSession());
     expect(args).toContain('--mode');
     expect(args).toContain('act');

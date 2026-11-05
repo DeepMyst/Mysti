@@ -48,6 +48,31 @@ function createMockContext(initialStore?: Record<string, unknown>) {
 
 const STORAGE_KEY = 'mysti.conversations';
 
+describe('Qwen reported model persistence', () => {
+  beforeEach(() => clearMockConfig());
+  it('retains requested and actual attribution through storage reload and JSON export/import', () => {
+    const { context } = createMockContext();
+    const manager = new ConversationManager(context), id = manager.getCurrentConversation()!.id;
+    manager.addMessageToConversation(id, 'assistant', 'Owned answer.', undefined, undefined, undefined,
+      { provider: 'qwen-code', model: 'coder-model', requestedModel: 'qwen3-coder' } as any);
+    const reloaded = new ConversationManager(context);
+    expect(reloaded.getConversation(id)!.messages.at(-1)).toMatchObject({ model: 'coder-model', requestedModel: 'qwen3-coder' });
+    const imported = reloaded.importFromContent(reloaded.exportToJson(id), 'owned.mysti.json');
+    expect(imported!.messages.at(-1)).toMatchObject({ model: 'coder-model', requestedModel: 'qwen3-coder' });
+    expect(imported!.model).toBe(manager.getConversation(id)!.model);
+  });
+  it('discards malformed or redundant requested-model metadata on import', () => {
+    const { context } = createMockContext(); const manager = new ConversationManager(context);
+    for (const requestedModel of [7, null, {}, 'bad\nmodel', '<img src=x>', 'x'.repeat(129), 'coder-model']) {
+      const imported = manager.importFromContent(JSON.stringify({ messages: [
+        { id: 'owned', role: 'assistant', content: 'Answer.', model: 'coder-model', requestedModel },
+      ] }), 'owned.json');
+      expect(imported!.messages[0].requestedModel).toBeUndefined();
+      expect(imported!.messages[0].model).toBe('coder-model');
+    }
+  });
+});
+
 describe('ConversationManager — Plan 02 Phase 3 persistence', () => {
   beforeEach(() => {
     clearMockConfig();

@@ -21,7 +21,8 @@ import type {
   CliDiscoveryResult,
   AuthConfig,
   ProviderCapabilities,
-  PersonaConfig
+  PersonaConfig,
+  ProviderInputResolver
 } from '../base/IProvider';
 import type {
   Attachment,
@@ -44,6 +45,8 @@ import { validateModelName } from '../../utils/validation';
 import { getEnrichedEnv } from '../../utils/platform';
 import { toolKind } from '../../utils/toolNames';
 import { clampEffort } from '../../utils/effort';
+import { normalizeAskUserQuestions } from '../../utils/askUserQuestions';
+import { isRecord } from '../../utils/valueGuards';
 import { killProcessTree, isProcessLive } from '../../utils/processKill';
 import { PROCESS_KILL_GRACE_PERIOD_MS } from '../../constants';
 import { handleClaudeControl, initializeClaudeControl, isClaudeControlFailure, type ClaudeControlState } from './ClaudeControlProtocol';
@@ -257,6 +260,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     supportsThinking: true,
     supportsToolUse: true,
     supportsNativeApproval: true,
+    supportsAskPermission: true,
     supportsSessions: true,
     supportsNativeCompact: true,
     supportsPersistentProcess: true,
@@ -307,6 +311,10 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       paths.push(extensionCli);
     }
     return paths;
+  }
+
+  protected override getAuthenticationEnvironmentKeys(): readonly string[] {
+    return ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CONFIG_DIR'];
   }
 
   async getAuthConfig(): Promise<AuthConfig> {
@@ -647,10 +655,10 @@ export class ClaudeCodeProvider extends BaseCliProvider {
    * Detect response boundary in Claude CLI stream-json output.
    * The `result` event marks the end of a response in interactive mode.
    */
-  protected _isResponseBoundary(line: string): boolean {
+  protected _isResponseBoundary(line: string, session?: PanelSessionState): boolean {
     try {
       const data = JSON.parse(line.trim());
-      return data.type === 'result' || isClaudeControlFailure(data);
+      return data.type === 'result' || isClaudeControlFailure(data, (session as ClaudeSessionState | undefined)?.control);
     } catch {
       return false;
     }
@@ -781,8 +789,9 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       const data = JSON.parse(line);
 
       if (data.type === 'control_request' || data.type === 'control_response') {
+        const initializationFailed = isClaudeControlFailure(data, claudeSession.control);
         const chunk = handleClaudeControl(data, claudeSession.control, session.persistentProcess, this._nativeApprovalRequests(session));
-        if (isClaudeControlFailure(data)) { this.disposePersistentProcess(session.panelId); }
+        if (initializationFailed) { this.disposePersistentProcess(session.panelId); }
         return chunk;
       }
 
@@ -860,13 +869,17 @@ export class ClaudeCodeProvider extends BaseCliProvider {
             }
 
             // Check if this is AskUserQuestion tool - emit special chunk type
-            if (completedTool.name === 'AskUserQuestion' && parsedInput.questions) {
-              console.log('[Mysti] Claude: AskUserQuestion completed with', (parsedInput.questions as unknown[]).length, 'questions');
+            if (completedTool.name === 'AskUserQuestion') {
+              const questions = normalizeAskUserQuestions(isRecord(parsedInput) ? parsedInput.questions : undefined);
+              if (!questions || typeof completedTool.id !== 'string' || !completedTool.id.trim()) {
+                return { type: 'error', content: 'Claude returned an invalid question. Retry this request or ask Claude to restate the question.' };
+              }
+              console.log('[Mysti] Claude: AskUserQuestion completed with', questions.length, 'questions');
               return {
                 type: 'ask_user_question',
                 askUserQuestion: {
                   toolCallId: completedTool.id,
-                  questions: parsedInput.questions as import('../../types').AskUserQuestionItem[]
+                  questions
                 }
               };
             }
@@ -931,6 +944,11 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       // For normal messages, text was already streamed via text_delta chunks — skip to avoid duplication.
       // For CLI internal commands like /compact, no text_delta events are emitted, so emit the result text.
       if (data.type === 'result') {
+        if (data.is_error === true) {
+          const errors = Array.isArray(data.errors) ? data.errors.filter((error: unknown): error is string => typeof error === 'string') : [];
+          return { type: 'error', content: typeof data.result === 'string' && data.result
+            ? data.result : errors.join('\n') || 'Claude could not complete this turn.' };
+        }
         const window = reportedContextWindow(data.modelUsage, claudeSession.reportedModel);
         if (window) { claudeSession.reportedContextWindow = window; }
         if (!claudeSession.hasStreamedText && data.result && typeof data.result === 'string') {
@@ -1080,6 +1098,13 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     }
   }
 
+  protected override _takePendingStreamChunks(session: PanelSessionState): StreamChunk[] {
+    // The persistent reader parses multiple lines before yielding. Transfer
+    // each line's siblings immediately so a later batch cannot overtake text
+    // or the first result of an earlier batch.
+    return (session as ClaudeSessionState).pendingChunks?.splice(0) ?? [];
+  }
+
   /**
    * Single-shot stream wrapper: emit queued sibling chunks immediately after
    * each base-yielded chunk, and flush once more after the stream ends so
@@ -1088,6 +1113,8 @@ export class ClaudeCodeProvider extends BaseCliProvider {
   protected async *processStream(stderrRef: { output: string }, session: PanelSessionState): AsyncGenerator<StreamChunk> {
     const claudeSession = session as ClaudeSessionState;
     claudeSession.pendingChunks = []; // drop any stale leftovers from a cancelled run
+    claudeSession.hasStreamedText = false;
+    claudeSession.activeToolCalls.clear();
     for await (const chunk of super.processStream(stderrRef, session)) {
       yield chunk;
       yield* this._drainPendingChunks(claudeSession);
@@ -1108,11 +1135,14 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     persona?: PersonaConfig,
     agentConfig?: AgentConfiguration,
     attachments?: Attachment[],
+    resolveInput?: ProviderInputResolver,
   ): AsyncGenerator<StreamChunk> {
     const claudeSession = session as ClaudeSessionState;
     claudeSession.pendingChunks = []; // drop any stale leftovers from a cancelled run
+    claudeSession.hasStreamedText = false;
+    claudeSession.activeToolCalls.clear();
     for await (const chunk of super._sendViaPersistentProcess(
-      content, context, settings, conversation, session, persona, agentConfig, attachments,
+      content, context, settings, conversation, session, persona, agentConfig, attachments, resolveInput,
     )) {
       yield chunk;
       yield* this._drainPendingChunks(claudeSession);
@@ -1151,10 +1181,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     return super.prepareAttachments(attachments, args);
   }
 
-  /**
-   * Override buildPromptAsync to append attachment file path references.
-   * Claude Code CLI can read and analyze files when given file paths in the prompt.
-   */
+  /** Preserve the existing async prompt API, including slash-command attachments. */
   protected async buildPromptAsync(
     content: string,
     context: ContextItem[],
@@ -1165,31 +1192,47 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     attachments?: Attachment[],
     _systemContext?: string
   ): Promise<string> {
-    // Skip systemContext for Claude — it's injected as real system instructions via --append-system-prompt in buildCliArgs()
-    let prompt = await super.buildPromptAsync(content, context, conversation, settings, persona, agentConfig, undefined, undefined);
+    const prompt = await super.buildPromptAsync(content, context, conversation, settings, persona, agentConfig, undefined, undefined);
+    return this._appendAttachmentReferences(prompt, attachments);
+  }
 
-    // Prepend attachment file references so Claude sees them first and uses its Read tool
-    const imageAttachments = (attachments || []).filter(a => a.type === 'image' && a.filePath);
-    const fileAttachments = (attachments || []).filter(a => a.type === 'file' && a.filePath);
+  /** Keep Claude attachments and CLI system instructions on the late-rendering path. */
+  protected async preparePromptRenderer(
+    conversation: Conversation | null,
+    settings: Settings,
+    persona?: PersonaConfig,
+    agentConfig?: AgentConfiguration,
+    attachments?: Attachment[],
+    _systemContext?: string
+  ): Promise<(content: string, context: ContextItem[]) => string> {
+    // System context is already supplied through --append-system-prompt.
+    const render = await super.preparePromptRenderer(conversation, settings, persona, agentConfig, undefined, undefined);
+    return (content, context) => this._appendAttachmentReferences(render(content, context), attachments);
+  }
 
-    if (imageAttachments.length > 0 || fileAttachments.length > 0) {
-      let attachmentSection = '[Attached Files — use your Read tool to view these files]\n';
+  private _appendAttachmentReferences(prompt: string, attachments?: Attachment[]): string {
+  // Prepend attachment file references so Claude sees them first and uses its Read tool
+  const imageAttachments = (attachments || []).filter(a => a.type === 'image' && a.filePath);
+  const fileAttachments = (attachments || []).filter(a => a.type === 'file' && a.filePath);
 
-      if (imageAttachments.length > 0) {
-        for (const att of imageAttachments) {
-          attachmentSection += `Image "${att.fileName}": ${att.filePath}\n`;
-        }
+  if (imageAttachments.length > 0 || fileAttachments.length > 0) {
+    let attachmentSection = '[Attached Files — use your Read tool to view these files]\n';
+
+    if (imageAttachments.length > 0) {
+      for (const att of imageAttachments) {
+        attachmentSection += `Image "${att.fileName}": ${att.filePath}\n`;
       }
-
-      if (fileAttachments.length > 0) {
-        for (const att of fileAttachments) {
-          attachmentSection += `File "${att.fileName}": ${att.filePath}\n`;
-        }
-      }
-
-      attachmentSection += '\n';
-      prompt = attachmentSection + prompt;
     }
+
+    if (fileAttachments.length > 0) {
+      for (const att of fileAttachments) {
+        attachmentSection += `File "${att.fileName}": ${att.filePath}\n`;
+      }
+    }
+
+    attachmentSection += '\n';
+    prompt = attachmentSection + prompt;
+  }
 
     return prompt;
   }

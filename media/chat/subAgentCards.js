@@ -9,6 +9,31 @@
   'use strict';
   let instanceSequence = 0;
 
+  // Shared with inline delegation and collaboration traces. Parent completion
+  // cannot manufacture a result, and a proposal can never become execution.
+  function setToolStatus(card, tool) {
+    const proposal = tool.proposalOnly === true || tool.status === 'proposed' || card.dataset.proposalOnly === 'true';
+    const status = proposal ? 'proposed'
+      : ['running', 'pending', 'completed', 'failed', 'unconfirmed'].includes(tool.status) ? tool.status : 'unconfirmed';
+    if (proposal) { card.dataset.proposalOnly = 'true'; }
+    card.classList.remove('running', 'pending', 'completed', 'failed', 'proposed', 'unconfirmed');
+    card.classList.add(status);
+    const icon = card.ownerDocument.createElement('span');
+    icon.className = status === 'running' || status === 'pending' ? 'subagent-tool-spinner' : 'subagent-tool-icon ' + status;
+    icon.textContent = status === 'completed' ? '✓' : status === 'failed' ? '✕' : '';
+    const previous = card.querySelector('.subagent-tool-spinner, .subagent-tool-icon');
+    if (previous) { previous.replaceWith(icon); }
+    let label = card.querySelector('.subagent-tool-status');
+    if (status === 'proposed' || status === 'unconfirmed') {
+      if (!label) {
+        label = card.ownerDocument.createElement('span');
+        label.className = 'subagent-tool-status';
+        card.querySelector('.subagent-tool-header').appendChild(label);
+      }
+      label.textContent = status === 'proposed' ? 'Not executed' : 'result unavailable';
+    } else if (label) { label.remove(); }
+  }
+
   function create(ports) {
     const document = ports.document;
     const records = new Map();
@@ -158,12 +183,8 @@
 
     function settleTools(record, status) {
       for (const tool of record.tools.values()) {
-        if (!tool.classList.contains('running')) { continue; }
-        tool.classList.replace('running', status);
-        const spinner = tool.querySelector('.subagent-tool-spinner');
-        if (spinner) {
-          spinner.replaceWith(element('span', 'subagent-tool-icon ' + status, status === 'failed' ? '✕' : '✓'));
-        }
+        if (!tool.classList.contains('running') && !tool.classList.contains('pending')) { continue; }
+        setToolStatus(tool, { status });
       }
     }
 
@@ -176,7 +197,7 @@
       record.rawText = '';
       // Some backends emit tool_use without a matching tool_result. Completion
       // settles those indicators while preserving every explicit tool outcome.
-      settleTools(record, payload.hasError ? 'failed' : 'completed');
+      settleTools(record, payload.hasError ? 'failed' : 'unconfirmed');
       badge(record, payload.hasError ? 'Partial' : 'Done', payload.hasError ? 'error' : 'complete');
       if (record.content.scrollHeight > 400 && !record.content.querySelector('.subagent-expand-btn')) {
         const button = element('button', 'subagent-expand-btn', 'Show full output');
@@ -212,8 +233,9 @@
 
     function toolUse(payload) {
       const record = find(payload);
-      const tool = isRecord(payload) && payload.toolCall;
+      let tool = isRecord(payload) && payload.toolCall;
       if (!record || !isRecord(tool) || !isId(tool.id) || typeof tool.name !== 'string') { return; }
+      if (ports.getToolDisplayRecord) { tool = ports.getToolDisplayRecord(tool, record.agentId); }
       badge(record, 'Tool: ' + tool.name, 'streaming');
       const previous = record.tools.get(tool.id);
       if (previous) { previous.remove(); }
@@ -239,6 +261,7 @@
       output.append(element('span', 'subagent-tool-detail-label', 'Output'), outputPre);
       detail.append(inputSection, output);
       card.append(header, detail);
+      setToolStatus(card, { ...tool, status: tool.status || 'running' });
       header.addEventListener('click', () => {
         card.classList.toggle('detail-open');
         toggle.textContent = card.classList.contains('detail-open') ? '▾' : '▸';
@@ -251,16 +274,13 @@
 
     function toolResult(payload) {
       const record = find(payload);
-      const tool = isRecord(payload) && payload.toolCall;
+      let tool = isRecord(payload) && payload.toolCall;
       if (!record || !isRecord(tool) || !isId(tool.id)) { return; }
+      if (ports.getToolDisplayRecord) { tool = ports.getToolDisplayRecord(tool, record.agentId); }
       // Tool IDs are opaque data, never CSS selectors.
       const card = record.tools.get(tool.id);
       if (!card) { return; }
-      const status = tool.status === 'failed' ? 'failed' : 'completed';
-      card.classList.remove('running', 'failed', 'completed');
-      card.classList.add(status);
-      const spinner = card.querySelector('.subagent-tool-spinner, .subagent-tool-icon');
-      if (spinner) { spinner.replaceWith(element('span', 'subagent-tool-icon ' + status, status === 'failed' ? '✕' : '✓')); }
+      setToolStatus(card, tool);
       if (tool.output !== undefined && tool.output !== null) {
         const text = stringify(tool.output);
         card.querySelector('.subagent-tool-output-code').textContent = text.length > 2000 ? text.slice(0, 2000) + '\n... (truncated)' : text;
@@ -362,5 +382,5 @@
     return { started, chunk, complete, error, toolUse, toolResult, retry, askUserQuestion, status, stop, reset, dispose };
   }
 
-  global.MystiSubAgentCards = { create };
+  global.MystiSubAgentCards = { create, setToolStatus };
 })(typeof window !== 'undefined' ? window : globalThis);

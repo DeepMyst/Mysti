@@ -24,10 +24,13 @@ describe('installer reliability', () => {
     let resolve!: (v: any) => void;
     const actual = vi.spyOn(manager as any, '_autoInstallCli').mockImplementation(() => new Promise(r => { resolve = r; }));
     const a = manager.autoInstallCli('openai-codex'), b = manager.autoInstallCli('openai-codex');
+    // The shared run is registered before its first stage starts in a microtask.
+    await Promise.resolve();
     expect(actual).toHaveBeenCalledOnce();
     resolve({ success: false });
     expect(await a).toEqual(await b);
     const c = manager.autoInstallCli('openai-codex');
+    await Promise.resolve();
     expect(actual).toHaveBeenCalledTimes(2);
     resolve({ success: true });
     expect(await c).toEqual({ success: true });

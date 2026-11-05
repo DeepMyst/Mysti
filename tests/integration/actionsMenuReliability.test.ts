@@ -5,12 +5,13 @@ import * as os from 'os';
 import * as path from 'path';
 import { ChatViewProvider } from '../../src/providers/ChatViewProvider';
 function harness() {
+  const conversation = { id: 'conversation', messages: [] };
   const view = Object.assign(Object.create(ChatViewProvider.prototype), {
     _panelStates: new Map([['tab', { currentConversationId: 'conversation' }]]),
     _postToPanel: vi.fn(), _getPanelProvider: vi.fn(() => 'openai-codex'), _getPanelAgent: vi.fn(() => 'openai-codex'),
     _getPanelModel: () => 'gpt-test', _handleUpdateSettings: vi.fn(),
     _providerManager: { enhancePrompt: vi.fn(async () => ({ prompt: 'Enhanced', changed: true })), getProviderInstance: () => ({ capabilities: { supportsImages: true, supportsFileAttachments: true } }) },
-    _conversationManager: { exportToMarkdown: vi.fn(() => '# Conversation') },
+    _conversationManager: { getConversation: () => conversation, exportToMarkdown: vi.fn(() => '# Conversation') },
     _engagementManager: { trackExport: () => [] }, _emitBadgeUnlocks: vi.fn(),
   });
   return view;
@@ -33,7 +34,7 @@ describe('menu actions in the extension host', () => {
     await view._handleExportConversation('empty');
     expect(view._postToPanel).toHaveBeenCalledWith('empty', { type: 'exportResult', payload: { success: false, error: expect.stringContaining('no conversation') } });
     clipboard.mockRejectedValue(new Error('Clipboard unavailable')); await view._handleExportConversation('tab');
-    expect(view._postToPanel).toHaveBeenCalledWith('tab', { type: 'exportResult', payload: { success: false, error: 'Clipboard unavailable' } });
+    expect(view._postToPanel).toHaveBeenCalledWith('tab', { type: 'exportResult', payload: expect.objectContaining({ success: false, error: 'Clipboard unavailable', operation: 'copy', conversationId: 'conversation' }) });
   });
   it('applies a custom model through the shared writer and cancels safely after switching providers', async () => {
     const view = harness(); const input = vi.spyOn(vscode.window, 'showInputBox').mockResolvedValue(' local/model:latest ');

@@ -41,6 +41,7 @@ vi.mock('../../src/managers/PlanOptionManager', () => ({
 }));
 
 import { ChatViewProvider } from '../../src/providers/ChatViewProvider';
+import { ContextManager } from '../../src/managers/ContextManager';
 import { ProviderManager } from '../../src/managers/ProviderManager';
 import { PermissionManager } from '../../src/managers/PermissionManager';
 import { clearMockConfig, setMockConfig, Uri } from '../helpers/mockVscode';
@@ -218,12 +219,7 @@ function createHarness(options: { passThroughFirstSend?: boolean; visibleConvers
   const provider = new ChatViewProvider({
     extensionUri,
     extensionContext,
-    contextManager: {
-      getContext: () => [],
-      setAutoContext: () => undefined,
-      clearPanelContext: () => undefined,
-      restorePanelContext: async () => [],
-    } as any,
+    contextManager: new ContextManager(extensionContext),
     conversationManager,
     providerManager,
     suggestionManager: { generateSuggestions: async () => [] } as any,
@@ -276,7 +272,12 @@ function createHarness(options: { passThroughFirstSend?: boolean; visibleConvers
     compactionSettings,
     setStream(chunks) { streamChunks = chunks; },
     queueDuringResponse(messages) { queueOnNextStream = messages; },
-    queueDuringDelay(messages) { (provider as any)._channelBridge._queuedMessages.set('sidebar', messages); },
+    queueDuringDelay(messages) {
+      const queue = (provider as any)._channelBridge._queuedMessages;
+      // An inbound arrival appends to the batch still owned by ChannelBridge.
+      // The batch is intentionally not drained into the delayed timer closure.
+      queue.set('sidebar', [...(queue.get('sidebar') || []), ...messages]);
+    },
     replaceWithManualMessage() {
       return realSend({ content: 'manual replacement', context: [], settings: { ...BASE_SETTINGS } }, 'sidebar');
     },
@@ -481,17 +482,31 @@ describe('queued channel turns', () => {
     expect(h.sentMessages).toEqual([]);
   });
 
-  it('a manual replacement prevents delayed old input from restarting work', async () => {
+  it('a manual follow-up reschedules the retained channel batch after its own completion', async () => {
     await finishOriginal();
+    await vi.advanceTimersByTimeAsync(200);
     await h.replaceWithManualMessage();
-    await vi.advanceTimersByTimeAsync(500);
+    // The cancelled original timer must not race the manual follow-up. The
+    // accepted channel messages remain queued for the new completed turn.
+    await vi.advanceTimersByTimeAsync(300);
     expect(h.sentMessages).toEqual([]);
+    expect((h.provider as any)._providerManager.sendMessage.mock.calls.map((call: unknown[]) => call[0]))
+      .toEqual(['start', 'manual replacement']);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(h.sentMessages).toEqual([{
+      panelId: 'sidebar',
+      content: `[Via Telegram from Alice]: ${queued[0].content}\n\n---\n\n[Via WhatsApp from Bob]: Second request`,
+    }]);
     expect((h.provider as any)._delayedChannelTurns.has('sidebar')).toBe(false);
+    expect((h.provider as any)._channelBridge.drainQueuedMessages('sidebar')).toEqual([]);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(h.sentMessages).toHaveLength(1);
   });
 
   it('a successful conversation switch cancels the old batch', async () => {
     await finishOriginal();
-    (h.provider as any)._conversationManager.getConversation = () => ({ id: 'other', messages: [] });
+    const other = { id: 'other', messages: [] };
+    (h.provider as any)._conversationManager.getConversation = () => other;
     await (h.provider as any)._handleMessage({ type: 'switchConversation', panelId: 'sidebar', payload: { id: 'other' } });
     await vi.advanceTimersByTimeAsync(500);
     expect(h.sentMessages).toEqual([]);

@@ -14,8 +14,12 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import type { Browser, Page } from 'playwright';
+import { ProviderRegistry } from '../../src/providers/ProviderRegistry';
+import { buildProviderManifestPayload } from '../../src/providers/base/ProviderManifest';
 
 const ROOT = path.resolve(__dirname, '../..');
+const fixtureRegistry = new ProviderRegistry({ subscriptions: [], globalState: { get: () => undefined }, secrets: {} } as any);
+const fixtureManifest = buildProviderManifestPayload(fixtureRegistry);
 let browser: Browser | undefined;
 const dirs: string[] = [];
 const pageErrors: string[] = [];
@@ -98,7 +102,7 @@ async function openPage(view: 'chat' | 'hub', extra: Record<string, unknown> = {
   fs.writeFileSync(file, composeHtml(view), 'utf8');
   await pg.setViewportSize({ width: 900, height: 700 });
   await pg.goto(`file://${file}`, { waitUntil: 'load' });
-  await send(pg, { type: 'initialState', payload: { settings: { ...INITIAL_SETTINGS }, messages: [], context: [], conversations: [], ...extra } });
+  await send(pg, { type: 'initialState', payload: { settings: { ...INITIAL_SETTINGS }, providerManifest: fixtureManifest, messages: [], context: [], conversations: [], ...extra } });
   // Boot ends with uiReady, posted in the NEXT animation frame. Under load that
   // frame can land after a test's clearPosted and read as a post of its own.
   await pg.waitForFunction(() => (window as unknown as { __posted: Array<{ type: string }> }).__posted
@@ -114,6 +118,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await browser?.close();
+  fixtureRegistry.dispose();
   for (const d of dirs) { fs.rmSync(d, { recursive: true, force: true }); }
 });
 

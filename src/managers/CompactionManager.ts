@@ -126,20 +126,23 @@ export class CompactionManager {
   }
 
   /**
-   * Record usage from a completed response and return whether threshold is exceeded.
+   * Record a completed response. Context is the latest model call; optional
+   * turnUsage retains multi-call totals for lifetime accounting. Explicit null
+   * context clears a prior measurement without pretending the new fill is zero.
    */
-  public recordUsage(panelId: string, usage: UsageStats, contextWindow: number): boolean {
+  public recordUsage(panelId: string, usage: UsageStats | null, contextWindow: number, turnUsage: UsageStats | null = usage): boolean {
     const existing = this._panelUsage.get(panelId) || this._createEmptyUsage();
 
-    existing.totalInputTokens += usage.input_tokens || 0;
-    existing.totalOutputTokens += usage.output_tokens || 0;
-    existing.totalCacheReadTokens += usage.cache_read_input_tokens || 0;
-    existing.totalCacheCreationTokens += usage.cache_creation_input_tokens || 0;
+    existing.totalInputTokens += turnUsage?.input_tokens || 0;
+    existing.totalOutputTokens += turnUsage?.output_tokens || 0;
+    existing.totalCacheReadTokens += turnUsage?.cache_read_input_tokens || 0;
+    existing.totalCacheCreationTokens += turnUsage?.cache_creation_input_tokens || 0;
     existing.messageCount += 1;
     existing.lastUpdated = Date.now();
 
     this._panelUsage.set(panelId, existing);
-    this._panelLastFill.set(panelId, usage);
+    if (usage) { this._panelLastFill.set(panelId, usage); }
+    else { this._panelLastFill.delete(panelId); }
 
     // Context fill for the most recent turn. `usage` must ALREADY be normalized
     // (ChatViewProvider normalizes at the stream boundary) — the fill is the sum
@@ -149,9 +152,11 @@ export class CompactionManager {
     const currentFill = contextFillTokens(usage);
     const percentage = (currentFill / contextWindow) * 100;
 
-    console.log(`[Mysti] CompactionManager: Panel ${panelId} - ${currentFill}/${contextWindow} tokens (${percentage.toFixed(1)}%, threshold: ${this._thresholdPercent}%)`);
+    console.log(usage
+      ? `[Mysti] CompactionManager: Panel ${panelId} - ${currentFill}/${contextWindow} tokens (${percentage.toFixed(1)}%, threshold: ${this._thresholdPercent}%)`
+      : `[Mysti] CompactionManager: Panel ${panelId} - latest context unknown; turn totals retained`);
 
-    return percentage >= this._thresholdPercent;
+    return usage !== null && percentage >= this._thresholdPercent;
   }
 
   /**

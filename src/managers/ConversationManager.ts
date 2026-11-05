@@ -16,6 +16,7 @@ import { randomUUID } from 'crypto';
 import * as zlib from 'zlib';
 import type { Conversation, Message, MessageSegment, MessageThinking, ContextItem, Attachment, OperationMode, ProviderType, AgentConfiguration, ToolCall } from '../types';
 import { PROVIDER_DISPLAY_META } from '../providers/base/ProviderManifest';
+import { validateModelName } from '../utils/validation';
 
 /**
  * Cap (in characters) for each persisted tool input string field and tool
@@ -74,6 +75,18 @@ export const SHAREABLE_CONTENT_CAP = 2000;
 export const SHAREABLE_TITLE_CAP = 200;
 export const SHAREABLE_INFLATED_MAX_BYTES = 1024 * 1024;
 
+export interface ShareableExportInfo {
+  data: string;
+  totalMessages: number;
+  includedMessages: number;
+  omittedMessages: number;
+  truncatedMessages: number;
+  titleTruncated: boolean;
+  metadataOmitted: boolean;
+}
+
+const MARKDOWN_WATERMARK = '*I was Mysting — built with [Mysti](https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti), the multi-agent AI coding assistant*';
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -86,6 +99,7 @@ export interface MessagePersistExtras {
   provider?: ProviderType;
   participants?: ProviderType[];
   model?: string;
+  requestedModel?: string;
   toolCalls?: ToolCall[];
   segments?: MessageSegment[];
 }
@@ -124,6 +138,11 @@ export class ConversationManager {
   private _recoveryReady: Promise<boolean> | null = null;
   /** One notification per instance — a broken store must not spam toasts. */
   private _notifiedLoadFailure = false;
+  /** A burst of writes during one storage outage gets one actionable notice. */
+  private _notifiedSaveFailure = false;
+  private _lastImportDiagnostic: string | null = null;
+
+  public getLastImportDiagnostic(): string | null { return this._lastImportDiagnostic; }
 
   constructor(context: vscode.ExtensionContext) {
     this._extensionContext = context;
@@ -176,6 +195,7 @@ export class ConversationManager {
   public switchConversation(id: string): boolean {
     if (this._conversations.has(id)) {
       this._currentConversationId = id;
+      void this._saveConversations();
       return true;
     }
     return false;
@@ -212,7 +232,7 @@ export class ConversationManager {
       mode: source.mode,
       model: source.model,
       provider: source.provider,
-      agentConfig: source.agentConfig ? { ...source.agentConfig } : undefined
+      agentConfig: source.agentConfig ? JSON.parse(JSON.stringify(source.agentConfig)) : undefined
     };
 
     this._conversations.set(fork.id, fork);
@@ -224,14 +244,10 @@ export class ConversationManager {
   private _cloneMessage(m: Message): Message {
     // Normalized on the way in: a fork of a conversation that predates the
     // store-side guard must not duplicate its oversized payloads.
-    return this._normalizeMessageForStorage({
-      ...m,
-      context: m.context ? m.context.map(c => ({ ...c })) : undefined,
-      attachments: m.attachments ? m.attachments.map(a => ({ ...a })) : undefined,
-      toolCalls: m.toolCalls ? m.toolCalls.map(t => ({ ...t })) : undefined,
-      segments: m.segments ? m.segments.map(s => ({ ...s })) : undefined,
-      checkpoint: m.checkpoint ? { ...m.checkpoint } : undefined
-    });
+    // Messages use the same JSON contract as globalState. Copy the entire
+    // normalized value, including nested tool inputs, thinking and extensible
+    // metadata; shallow copies let a late source turn rewrite a saved branch.
+    return JSON.parse(JSON.stringify(this._normalizeMessageForStorage(m)));
   }
 
   public deleteConversation(id: string): boolean {
@@ -335,12 +351,13 @@ export class ConversationManager {
     thinking?: string | MessageThinking,
     extras?: MessagePersistExtras
   ): Message {
-    // Get the specific conversation or fall back to current
-    let conversation: Conversation | null = null;
+    // An explicit identity belongs to its originating panel/turn. A delayed
+    // completion after deletion must never spill into the globally current chat.
+    let conversation: Conversation | null;
     if (conversationId) {
       conversation = this._conversations.get(conversationId) || null;
-    }
-    if (!conversation) {
+      if (!conversation) { throw new Error(`Conversation no longer exists: ${conversationId}`); }
+    } else {
       conversation = this.getCurrentConversation();
     }
     if (!conversation) {
@@ -361,6 +378,7 @@ export class ConversationManager {
       if (extras.provider) { message.provider = extras.provider; }
       if (extras.participants) { message.participants = extras.participants; }
       if (extras.model) { message.model = extras.model; }
+      if (extras.requestedModel) { message.requestedModel = extras.requestedModel; }
       if (extras.toolCalls && extras.toolCalls.length > 0) { message.toolCalls = extras.toolCalls; }
       if (extras.segments && extras.segments.length > 0) { message.segments = extras.segments; }
     }
@@ -390,6 +408,10 @@ export class ConversationManager {
    */
   private _normalizeMessageForStorage(message: Message): Message {
     const normalized: Message = { ...message };
+    if (typeof normalized.requestedModel !== 'string' || !validateModelName(normalized.requestedModel).valid
+      || !normalized.model || normalized.requestedModel.trim() === normalized.model) {
+      delete normalized.requestedModel;
+    } else { normalized.requestedModel = normalized.requestedModel.trim(); }
     if (Array.isArray(message.participants)) {
       normalized.participants = [...new Set(message.participants.filter(id =>
         typeof id === 'string' && Object.prototype.hasOwnProperty.call(PROVIDER_DISPLAY_META, id)))].slice(0, 5);
@@ -599,13 +621,20 @@ export class ConversationManager {
    * Export a conversation as Markdown with Mysti attribution watermark.
    * Returns empty string if conversation not found.
    */
-  public exportToMarkdown(conversationId: string): string {
+  public exportToMarkdown(conversationId: string, includeImportFraming = false): string {
     const conversation = this._conversations.get(conversationId);
     if (!conversation) {
       return '';
     }
 
     const lines: string[] = [];
+    let boundary = '';
+    if (includeImportFraming) {
+      do { boundary = randomUUID(); } while (conversation.messages.some(message => message.content.includes(boundary)));
+      const metadata = JSON.stringify({ title: conversation.title, provider: conversation.provider, model: conversation.model, boundary })
+        .replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
+      lines.push(`<!-- mysti-transcript-v1 ${metadata} -->`);
+    }
 
     // Title header
     lines.push(`# ${conversation.title}`);
@@ -617,6 +646,7 @@ export class ConversationManager {
 
     // Messages
     for (const message of conversation.messages) {
+      if (boundary) { lines.push(`<!-- mysti-message:${boundary} ${message.role} -->`); }
       if (message.role === 'user') {
         lines.push('### User');
       } else if (message.role === 'assistant') {
@@ -627,12 +657,13 @@ export class ConversationManager {
       lines.push('');
       lines.push(message.content);
       lines.push('');
+      if (boundary) { lines.push(`<!-- mysti-message-end:${boundary} -->`, ''); }
     }
 
     // Footer watermark
     lines.push('---');
     lines.push('');
-    lines.push('*I was Mysting — built with [Mysti](https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti), the multi-agent AI coding assistant*');
+    lines.push(MARKDOWN_WATERMARK);
     lines.push('');
 
     return lines.join('\n');
@@ -706,97 +737,150 @@ export class ConversationManager {
    * - .mysti.json: Full Mysti conversation format
    * - .jsonl: OpenClaw JSONL format (best-effort)
    * - Generic .json with messages[] array
+   * - Mysti .md transcript export (text and roles; legacy headings best-effort)
    * Returns the imported conversation or null on failure.
    */
   public importFromContent(content: string, fileName: string): Conversation | null {
+    this._lastImportDiagnostic = null;
     try {
-      if (fileName.endsWith('.jsonl')) {
-        return this._importFromJsonl(content);
-      }
-
-      const parsed = JSON.parse(content);
+      const text = content.replace(/^\uFEFF/, '');
+      const extension = fileName.toLowerCase();
+      if (extension.endsWith('.jsonl')) { return this._importFromJsonl(text); }
+      if (extension.endsWith('.md') || extension.endsWith('.markdown')) { return this._importFromMarkdown(text); }
+      const parsed: unknown = JSON.parse(text);
+      if (!isRecord(parsed)) { throw new Error('Expected a conversation object.'); }
 
       // Mysti format
-      if (parsed.format === 'mysti' && parsed.conversation) {
+      if (parsed.format === 'mysti') {
+        if (parsed.version !== undefined && parsed.version !== 1) { throw new Error('Unsupported Mysti export version.'); }
+        if (!isRecord(parsed.conversation)) { throw new Error('Missing Mysti conversation.'); }
         return this._importMystiJson(parsed.conversation);
       }
-
-      // Generic messages array
-      if (parsed.messages && Array.isArray(parsed.messages)) {
-        return this._importGenericJson(parsed);
-      }
-
-      // Try as conversation object directly
-      if (parsed.id && parsed.title && Array.isArray(parsed.messages)) {
+      // Legacy direct conversations must keep their metadata too.
+      if (Array.isArray(parsed.messages)) {
         return this._importMystiJson(parsed);
       }
-
-      console.log('[Mysti] Import: Unrecognized format');
-      return null;
+      throw new Error('Unrecognized conversation format.');
     } catch (error) {
-      console.error('[Mysti] Import failed:', error);
+      this._lastImportDiagnostic = error instanceof Error ? error.message : 'Conversation import failed.';
       return null;
     }
   }
 
-  private _importMystiJson(data: Partial<Conversation>): Conversation | null {
-    const conversation: Conversation = {
-      id: this._generateId(),
-      title: data.title || 'Imported Conversation',
-      // Imported messages go through the SAME storage guard as sent ones:
-      // the file is untrusted and can carry a megabyte of base64 or an
-      // uncapped tool payload straight into globalState.
-      messages: (Array.isArray(data.messages) ? data.messages : [])
-        .filter(isRecord)
-        .map(m => this._normalizeMessageForStorage({
-          id: m.id || this._generateId(),
-          role: m.role || 'assistant',
-          content: m.content || '',
-          timestamp: m.timestamp || Date.now(),
-          context: m.context,
-          attachments: m.attachments,
-          thinking: m.thinking,
-          toolCalls: m.toolCalls
-        })),
-      createdAt: data.createdAt || Date.now(),
-      updatedAt: Date.now(),
-      mode: data.mode || 'ask-before-edit',
-      model: data.model || 'unknown',
-      // Never persist a provider id that is not a ProviderType (the old
-      // fallback wrote the literal 'imported', which no consumer handles).
-      provider: this._coerceProvider(data.provider),
-      agentConfig: data.agentConfig
-    };
-
+  private _importMystiJson(data: Record<string, unknown>): Conversation {
+    if (!Array.isArray(data.messages)) { throw new Error('Conversation messages must be an array.'); }
+    const now = Date.now(), notes: string[] = [];
+    const messages = data.messages.map((raw, index) => {
+      if (!isRecord(raw)) { throw new Error(`Message ${index + 1} is not an object.`); }
+      const role = raw.role === 'human' ? 'user' : raw.role;
+      const content = this._importText(raw.content);
+      if (!['user', 'assistant', 'system'].includes(role as string) || content === null) {
+        throw new Error(`Message ${index + 1} needs a supported role and text content.`);
+      }
+      const message = this._coerceStoredMessage({ ...raw, id: this._generateId(), role, content }, now)!;
+      if (Array.isArray(raw.toolCalls) && raw.toolCalls.some(tool => isRecord(tool)
+        && !['pending', 'running', 'completed', 'failed', 'proposed', 'unconfirmed'].includes(tool.status as string))) {
+        notes.push('An invalid tool status was replaced with failed; its recorded input and output were preserved.');
+      }
+      if (message.provider !== undefined) {
+        if (typeof message.provider !== 'string' || !Object.prototype.hasOwnProperty.call(PROVIDER_DISPLAY_META, message.provider)) { delete message.provider; }
+      }
+      if (raw.checkpoint !== undefined) { notes.push('Imported checkpoint references cannot restore files in this workspace.'); }
+      delete message.checkpoint;
+      if (message.attachments?.some(attachment => attachment.base64Data !== undefined)) { notes.push('Attachment cards were kept without embedded file data.'); }
+      if (message.toolCalls?.length) {
+        message.toolCalls = message.toolCalls.map(tool => ({ ...tool, historicalOnly: true }));
+        notes.push('Imported tool calls are historical records and cannot undo local files.');
+      }
+      const normalized = this._normalizeMessageForStorage(message);
+      if (normalized.toolCalls?.some(tool => tool.truncated)) { notes.push('Oversized tool inputs or outputs were truncated to the history storage limits.'); }
+      return normalized;
+    });
+    const id = this._generateId();
+    const candidate = { ...data, id, title: typeof data.title === 'string' ? data.title : vscode.l10n.t('Imported Conversation'), messages,
+      createdAt: typeof data.createdAt === 'number' ? data.createdAt : now, updatedAt: now,
+      provider: this._coerceProvider(data.provider), model: typeof data.model === 'string' ? data.model : 'unknown',
+      mode: data.mode || 'ask-before-edit' };
+    const conversation = this._coerceStoredEntry([id, candidate])![1];
+    if (notes.length) { this._lastImportDiagnostic = [...new Set([this._lastImportDiagnostic, ...notes].filter(Boolean))].join(' '); }
     this._conversations.set(conversation.id, conversation);
     this._currentConversationId = conversation.id;
     this._saveConversations();
     return conversation;
   }
 
-  private _importGenericJson(data: { messages: Array<{ role?: string; content?: string }> }): Conversation | null {
-    const messages: Message[] = data.messages.map(m => ({
-      id: this._generateId(),
-      role: (m.role === 'user' || m.role === 'assistant' || m.role === 'system') ? m.role : 'assistant',
-      content: m.content || '',
-      timestamp: Date.now()
-    }));
+  private _importText(value: unknown): string | null {
+    if (typeof value === 'string') { return value; }
+    if (Array.isArray(value) && value.every(block => isRecord(block) && block.type === 'text' && typeof block.text === 'string')) {
+      return value.map(block => (block as { text: string }).text).join('');
+    }
+    return null;
+  }
 
-    const conversation: Conversation = {
-      id: this._generateId(),
-      title: vscode.l10n.t('Imported Conversation'),
-      messages,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      mode: 'ask-before-edit' as OperationMode,
-      model: 'unknown',
-      provider: 'claude-code' as ProviderType
-    };
+  private _importFromMarkdown(content: string): Conversation {
+    const framed = content.match(/^<!-- mysti-transcript-v1 (.+) -->\r?\n/);
+    if (framed) {
+      const metadata: unknown = JSON.parse(framed[1]);
+      if (!isRecord(metadata) || typeof metadata.boundary !== 'string' || !/^[a-f0-9-]{36}$/.test(metadata.boundary)) {
+        throw new Error('Invalid Mysti Markdown framing.');
+      }
+      const boundary = metadata.boundary;
+      // Framing has one known newline convention. Accepting optional CRs at
+      // the content boundary would consume a legitimate final bare CR.
+      const newline = framed[0].endsWith('\r\n') ? '\r\n' : '\n';
+      const header = `# ${metadata.title}\n\n> Provider: ${metadata.provider} | Model: ${metadata.model}\n\n`
+        .replace(/\n/g, newline);
+      if (!content.startsWith(header, framed[0].length)) { throw new Error('Invalid Mysti Markdown framing header.'); }
+      const start = new RegExp(`<!-- mysti-message:${boundary} (user|assistant|system) -->\\r?\\n### (?:User|Assistant|system)\\r?\\n\\r?\\n`, 'g');
+      const end = new RegExp(`${newline}${newline}<!-- mysti-message-end:${boundary} -->`, 'g');
+      const messages: Array<{ role: string; content: string }> = [];
+      let match: RegExpExecArray | null, previousEnd = framed[0].length + header.length;
+      start.lastIndex = previousEnd;
+      while ((match = start.exec(content))) {
+        if (content.slice(previousEnd, match.index).trim()) { throw new Error('Invalid Mysti Markdown message boundary.'); }
+        end.lastIndex = start.lastIndex;
+        const ending = end.exec(content);
+        if (!ending) { throw new Error('Truncated Mysti Markdown message.'); }
+        const nextStart = content.indexOf(`<!-- mysti-message:${boundary} `, start.lastIndex);
+        if (nextStart !== -1 && nextStart < ending.index) { throw new Error('Truncated Mysti Markdown message boundary.'); }
+        messages.push({ role: match[1], content: content.slice(start.lastIndex, ending.index) });
+        previousEnd = end.lastIndex; start.lastIndex = end.lastIndex;
+      }
+      if (content.slice(previousEnd).trim() !== `---\n\n${MARKDOWN_WATERMARK}`) {
+        // Match the framing's line endings while leaving actual message bytes intact.
+        // An empty transcript is valid only with the same complete header/footer.
+        const footer = content.slice(previousEnd).replace(/\r\n/g, '\n').trim();
+        if (footer !== `---\n\n${MARKDOWN_WATERMARK}`) { throw new Error('Invalid or truncated Mysti Markdown transcript.'); }
+      }
+      this._lastImportDiagnostic = 'Markdown imports preserve transcript text and roles; use Mysti JSON for attachments and structured metadata.';
+      return this._importMystiJson({ title: metadata.title, provider: metadata.provider, model: metadata.model, messages });
+    }
 
-    this._conversations.set(conversation.id, conversation);
-    this._currentConversationId = conversation.id;
-    this._saveConversations();
-    return conversation;
+    // Older readable exports have no unambiguous boundaries. Accept only the
+    // recognizable Mysti wrapper and ignore role-looking lines inside fences.
+    const text = content.replace(/\r\n/g, '\n');
+    const header = text.match(/^# (.*)\n\n> Provider: ([^\n]*?) \| Model: ([^\n]*)\n\n/);
+    const footer = `\n\n---\n\n${MARKDOWN_WATERMARK}`;
+    const footerAt = text.lastIndexOf(footer);
+    if (!header || footerAt < header[0].length || text.slice(footerAt + footer.length).trim()) { throw new Error('Only Mysti Markdown transcript exports are supported.'); }
+    const body = text.slice(header[0].length, footerAt), messages: Array<{ role: string; content: string }> = [];
+    let fence: { character: string; length: number } | null = null;
+    let role: string | null = null, lines: string[] = [];
+    const finish = () => { if (role) { if (lines[0] === '') { lines.shift(); } if (lines.at(-1) === '') { lines.pop(); } messages.push({ role, content: lines.join('\n') }); } lines = []; };
+    for (const line of body.split('\n')) {
+      const delimiter = line.match(/^ {0,3}(`{3,}|~{3,})/);
+      const heading = !fence && line.match(/^### (User|Assistant|system)$/);
+      if (heading) { finish(); role = heading[1].toLowerCase(); continue; }
+      if (delimiter) {
+        if (!fence) { fence = { character: delimiter[1][0], length: delimiter[1].length }; }
+        else if (delimiter[1][0] === fence.character && delimiter[1].length >= fence.length && /^ {0,3}(?:`+|~+)\s*$/.test(line)) { fence = null; }
+      }
+      lines.push(line);
+    }
+    finish();
+    if (!messages.length) { throw new Error('No messages found in the Mysti Markdown transcript.'); }
+    this._lastImportDiagnostic = 'Legacy Markdown was imported as text using best-effort heading boundaries; structured metadata is unavailable.';
+    return this._importMystiJson({ title: header[1], provider: header[2], model: header[3], messages });
   }
 
   /**
@@ -804,28 +888,41 @@ export class ConversationManager {
    * Compresses with zlib to keep URIs small. Only includes last 10 messages.
    */
   public exportToShareable(conversationId: string): string {
+    return this.exportToShareableWithInfo(conversationId).data;
+  }
+
+  public exportToShareableWithInfo(conversationId: string): ShareableExportInfo {
     const conversation = this._conversations.get(conversationId);
     if (!conversation) {
-      return '';
+      return { data: '', totalMessages: 0, includedMessages: 0, omittedMessages: 0, truncatedMessages: 0, titleTruncated: false, metadataOmitted: false };
     }
+    const included = conversation.messages.slice(-SHAREABLE_MESSAGE_LIMIT);
     const shareData = {
-      // Same cap the importer enforces, so import(export(c)) is lossless.
+      // Text-only sharing is deliberately bounded; the caller uses the
+      // accompanying counts to choose full JSON before any data is lost.
       t: conversation.title.slice(0, SHAREABLE_TITLE_CAP),
       p: conversation.provider,
-      m: conversation.messages.slice(-SHAREABLE_MESSAGE_LIMIT).map(m => ({
-        r: m.role === 'user' ? 'u' : 'a',
+      m: included.map(m => ({
+        r: m.role === 'user' ? 'u' : m.role === 'system' ? 's' : 'a',
         c: m.content.slice(0, SHAREABLE_CONTENT_CAP),
       }))
     };
     const json = JSON.stringify(shareData);
     const compressed = zlib.deflateSync(Buffer.from(json));
-    return compressed.toString('base64url');
+    return { data: compressed.toString('base64url'), totalMessages: conversation.messages.length, includedMessages: included.length,
+      omittedMessages: conversation.messages.length - included.length,
+      truncatedMessages: included.filter(message => message.content.length > SHAREABLE_CONTENT_CAP).length,
+      titleTruncated: conversation.title.length > SHAREABLE_TITLE_CAP,
+      // IDs/timestamps and conversation configuration are also intentionally
+      // absent, even for a transcript with no tools or attachments.
+      metadataOmitted: true };
   }
 
   /**
    * Import conversation from a shareable base64 deep link payload.
    */
   public importFromShareable(data: string): Conversation | null {
+    this._lastImportDiagnostic = null;
     try {
       const compressed = Buffer.from(data, 'base64url');
       // Bound the inflation BEFORE a single field is looked at; an oversized
@@ -844,12 +941,13 @@ export class ConversationManager {
         .slice(-SHAREABLE_MESSAGE_LIMIT)
         .map(m => this._normalizeMessageForStorage({
           id: this._generateId(),
-          role: m.r === 'u' ? 'user' as const : 'assistant' as const,
+          role: m.r === 'u' ? 'user' as const : m.r === 's' ? 'system' as const : 'assistant' as const,
           content: (m.c as string).slice(0, SHAREABLE_CONTENT_CAP),
           timestamp: Date.now()
         }));
 
       if (messages.length === 0) {
+        this._lastImportDiagnostic = 'The share link contains no readable text messages.';
         return null;
       }
 
@@ -871,61 +969,37 @@ export class ConversationManager {
       this._conversations.set(conversation.id, conversation);
       this._currentConversationId = conversation.id;
       this._saveConversations();
+      const truncated = rawMessages.length > messages.length || rawMessages.some(message => isRecord(message) && typeof message.c === 'string' && message.c.length > SHAREABLE_CONTENT_CAP)
+        || (typeof shareData.t === 'string' && shareData.t.length > SHAREABLE_TITLE_CAP);
+      this._lastImportDiagnostic = `Imported a text-only share link; attachments and structured metadata are not included.${truncated ? ' The incoming payload exceeded supported limits or contained unreadable entries; only bounded readable text was kept.' : ''}`;
       return conversation;
-    } catch (e) {
-      console.log('[Mysti] Failed to import shareable conversation:', e);
+    } catch {
+      this._lastImportDiagnostic = 'The share link is invalid or exceeds the supported decompression limit.';
       return null;
     }
   }
 
   private _importFromJsonl(content: string): Conversation | null {
-    const lines = content.split('\n').filter(l => l.trim());
-    const messages: Message[] = [];
-
-    for (const line of lines) {
-      try {
-        const entry = JSON.parse(line);
-        // OpenClaw JSONL format: { type, message, role }
-        if (entry.message && entry.role) {
-          messages.push({
-            id: this._generateId(),
-            role: entry.role === 'human' ? 'user' : entry.role === 'assistant' ? 'assistant' : 'system',
-            content: typeof entry.message === 'string' ? entry.message : JSON.stringify(entry.message),
-            timestamp: entry.timestamp || Date.now()
-          });
-        } else if (entry.content) {
-          // Generic JSONL with content field
-          messages.push({
-            id: this._generateId(),
-            role: (entry.role === 'user' || entry.role === 'assistant') ? entry.role : 'assistant',
-            content: typeof entry.content === 'string' ? entry.content : JSON.stringify(entry.content),
-            timestamp: entry.timestamp || Date.now()
-          });
-        }
-      } catch {
-        // Skip unparseable lines
-      }
+    const lines = content.split('\n');
+    const messages: Record<string, unknown>[] = [];
+    for (let index = 0; index < lines.length; index++) {
+      if (!lines[index].trim()) { continue; }
+      let entry: unknown;
+      try { entry = JSON.parse(lines[index]); }
+      catch { throw new Error(`JSONL line ${index + 1} is invalid or truncated; no messages were imported.`); }
+      if (!isRecord(entry)) { throw new Error(`JSONL line ${index + 1} must be an object.`); }
+      if (isRecord(entry.message)) {
+        messages.push({ ...entry.message, timestamp: entry.message.timestamp ?? entry.timestamp });
+      } else if ('message' in entry && 'role' in entry) {
+        messages.push({ ...entry, content: entry.message });
+      } else if ('content' in entry) {
+        messages.push(entry);
+      } else if (['session', 'session_metadata', 'metadata', 'model_change', 'thinking_level_change'].includes(String(entry.type))) {
+        this._lastImportDiagnostic = 'JSONL session metadata was skipped; readable message records were imported.';
+      } else { throw new Error(`JSONL line ${index + 1} is not a recognized message or session record.`); }
     }
-
-    if (messages.length === 0) {
-      return null;
-    }
-
-    const conversation: Conversation = {
-      id: this._generateId(),
-      title: vscode.l10n.t('Imported Conversation'),
-      messages,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      mode: 'ask-before-edit' as OperationMode,
-      model: 'unknown',
-      provider: 'claude-code' as ProviderType
-    };
-
-    this._conversations.set(conversation.id, conversation);
-    this._currentConversationId = conversation.id;
-    this._saveConversations();
-    return conversation;
+    if (!messages.length) { throw new Error('The JSONL file contains no readable messages.'); }
+    return this._importMystiJson({ messages });
   }
 
   private _generateId(): string {
@@ -1027,11 +1101,13 @@ export class ConversationManager {
     let dropped = 0;
     let droppedMessages = 0;
     let duplicates = 0;
+    let repaired = 0;
     for (const entry of storedEntries) {
       const coerced = this._coerceStoredEntry(entry);
       if (!coerced) { dropped++; continue; }
       if (restored.has(coerced[0])) { duplicates++; continue; }
       droppedMessages += coerced[2];
+      repaired += coerced[3];
       restored.set(coerced[0], coerced[1]);
     }
 
@@ -1040,7 +1116,7 @@ export class ConversationManager {
     this._currentConversationId =
       typeof currentId === 'string' && restored.has(currentId) ? currentId : null;
 
-    if (dropped > 0 || droppedMessages > 0 || duplicates > 0) {
+    if (dropped > 0 || droppedMessages > 0 || duplicates > 0 || repaired > 0) {
       const parts: string[] = [];
       if (dropped > 0) {
         parts.push(`${dropped} stored conversation ${dropped === 1 ? 'entry was' : 'entries were'} not readable`);
@@ -1055,6 +1131,9 @@ export class ConversationManager {
       }
       if (duplicates > 0) {
         parts.push(`${duplicates} stored conversation ${duplicates === 1 ? 'entry reused an ID' : 'entries reused IDs'}`);
+      }
+      if (repaired > 0) {
+        parts.push(`${repaired} stored conversation ${repaired === 1 ? 'entry needed structural repair' : 'entries needed structural repair'}`);
       }
       this._parkUnreadableBlob(snapshotStoredValue(raw), parts.join(' and '));
 
@@ -1073,7 +1152,7 @@ export class ConversationManager {
    * (the schema version is what guards genuinely new shapes); only what a
    * consumer indexes blindly is checked or repaired.
    */
-  private _coerceStoredEntry(entry: unknown): [string, Conversation, number] | null {
+  private _coerceStoredEntry(entry: unknown): [string, Conversation, number, number] | null {
     if (!Array.isArray(entry) || entry.length < 2) { return null; }
     const id: unknown = entry[0];
     const value: unknown = entry[1];
@@ -1082,15 +1161,84 @@ export class ConversationManager {
 
     // Keep entry repairs local; stored data and recovery copies stay intact.
     const conversation = { ...value } as unknown as Conversation;
-    if (typeof conversation.id !== 'string' || conversation.id.length === 0) {
-      conversation.id = id;
+    // History actions pass Conversation.id back to the Map lookup. Even a
+    // nonempty but different id can target another conversation's transcript.
+    conversation.id = id;
+    if (typeof conversation.title !== 'string') { conversation.title = vscode.l10n.t('New Conversation'); }
+    if (typeof conversation.model !== 'string') { conversation.model = 'unknown'; }
+    conversation.provider = this._coerceProvider(conversation.provider);
+    if (!['default', 'ask-before-edit', 'edit-automatically', 'quick-plan', 'detailed-plan'].includes(conversation.mode)) {
+      conversation.mode = 'ask-before-edit';
     }
-    // Renderers and the exporters walk `messages` and read `.role`/`.content`
-    // off each element, so a non-object element would throw far from here.
+    if (!Number.isFinite(conversation.createdAt)) { conversation.createdAt = Date.now(); }
+    if (!Number.isFinite(conversation.updatedAt)) { conversation.updatedAt = conversation.createdAt; }
+    if (conversation.agentConfig !== undefined) {
+      const config = conversation.agentConfig;
+      if (!isRecord(config) || !Array.isArray(config.enabledSkills)
+        || config.enabledSkills.some(skill => typeof skill !== 'string')
+        || (config.personaId !== null && typeof config.personaId !== 'string')) {
+        delete conversation.agentConfig;
+      }
+    }
+    // Keep usable text while removing malformed optional render structures.
+    // All repairs are reported and the untouched original is parked first.
     const source = value.messages as unknown[];
-    const messages = source.filter(isRecord) as unknown as Message[];
+    const messages = source.map(message => this._coerceStoredMessage(message, conversation.createdAt))
+      .filter((message): message is Message => message !== null);
     conversation.messages = messages;
-    return [id, conversation, source.length - messages.length];
+    const repaired = JSON.stringify(conversation) !== JSON.stringify(value) ? 1 : 0;
+    return [id, conversation, source.length - messages.length, repaired];
+  }
+
+  private _coerceStoredMessage(value: unknown, fallbackTimestamp: number): Message | null {
+    if (!isRecord(value) || typeof value.content !== 'string'
+      || !['user', 'assistant', 'system'].includes(value.role as string)) { return null; }
+    const message = { ...value } as unknown as Message;
+    if (typeof message.id !== 'string' || !message.id) { message.id = this._generateId(); }
+    if (!Number.isFinite(message.timestamp)) { message.timestamp = fallbackTimestamp; }
+    // Model IDs are extensible strings, but historical attribution formats
+    // them as strings. Invalid optional values must use the conversation fallback.
+    if (message.model !== undefined && typeof message.model !== 'string') { delete message.model; }
+    if (typeof message.requestedModel !== 'string' || !validateModelName(message.requestedModel).valid
+      || !message.model || message.requestedModel.trim() === message.model) { delete message.requestedModel; }
+    else { message.requestedModel = message.requestedModel.trim(); }
+    for (const field of ['context', 'attachments', 'toolCalls'] as const) {
+      const items = message[field];
+      if (items === undefined) { continue; }
+      if (!Array.isArray(items)) { delete message[field]; continue; }
+      // Consumers spread/index these elements; null/scalar elements are unsafe.
+      (message as unknown as Record<string, unknown>)[field] = items.filter(isRecord);
+    }
+    if (message.segments !== undefined) {
+      const segments = message.segments;
+      if (!Array.isArray(segments) || !segments.every(segment => isRecord(segment)
+        && (((segment.type === 'text' || segment.type === 'thinking') && typeof segment.content === 'string')
+          || (segment.type === 'tool' && typeof segment.toolCallId === 'string')))) {
+        // A filtered subset would hide intact canonical paragraphs because the
+        // renderer prefers segments. Fall back to the whole message instead.
+        delete message.segments;
+      }
+    }
+    if (message.context) {
+      message.context = message.context.filter(item => typeof item.path === 'string'
+        && (item.content === undefined || typeof item.content === 'string'));
+    }
+    if (message.attachments) {
+      message.attachments = message.attachments.filter(item => typeof item.fileName === 'string'
+        && typeof item.mimeType === 'string' && (item.type === 'file' || item.type === 'image'));
+    }
+    if (message.toolCalls) {
+      message.toolCalls = message.toolCalls.filter(tool => typeof tool.id === 'string' && typeof tool.name === 'string')
+        .map(tool => ({ ...tool, input: isRecord(tool.input) ? tool.input : {},
+          status: tool.proposalOnly === true ? 'proposed' : ['pending', 'running', 'completed', 'failed', 'proposed', 'unconfirmed'].includes(tool.status) ? tool.status : 'failed',
+          ...(tool.output !== undefined && typeof tool.output !== 'string' ? { output: undefined } : {}) }));
+    }
+    if (message.thinking !== undefined && typeof message.thinking !== 'string'
+      && (!isRecord(message.thinking) || typeof message.thinking.content !== 'string'
+        || !['streamed', 'complete-blocks'].includes(message.thinking.style))) {
+      delete message.thinking;
+    }
+    return message;
   }
 
   /**
@@ -1171,9 +1319,12 @@ export class ConversationManager {
         conversations: Array.from(this._conversations.entries()),
         currentId: this._currentConversationId
       });
+      this._notifiedSaveFailure = false;
       return true;
     } catch (error) {
       console.error('[Mysti] Failed to save conversations:', error);
+      if (this._notifiedSaveFailure) { return false; }
+      this._notifiedSaveFailure = true;
       try {
         void Promise.resolve(vscode.window.showErrorMessage('Failed to save conversation history'))
           .then(undefined, () => { /* ignore */ });

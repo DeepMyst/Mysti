@@ -12,6 +12,8 @@
  */
 
 import * as vscode from "vscode";
+import type { ChildProcess } from "child_process";
+import { assertNonInteractivePermissionSupport } from "../base/NativeApprovalPolicy";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -25,6 +27,7 @@ import type {
 	CliDiscoveryResult,
 	AuthConfig,
 	ProviderCapabilities,
+	ProviderInputResolver,
 } from "../base/IProvider";
 import type {
 	Settings,
@@ -34,15 +37,13 @@ import type {
 	ContextItem,
 	Conversation,
 	AgentConfiguration,
+	Attachment,
 	ModelInfo,
 } from "../../types";
 
 export interface CursorSessionState extends PanelSessionState {
 	activeToolCalls: Map<string, { id: string; name: string; inputJson: string }>;
 	lastUsageStats: { input_tokens: number; output_tokens: number } | null;
-	/** Chars emitted for the current assistant turn via streaming. Used to skip the
-	 *  final complete `assistant` event that duplicates already-streamed text. */
-	streamedTextLength: number;
 }
 
 /**
@@ -110,6 +111,7 @@ export class CursorProvider extends BaseCliProvider {
 	};
 
 	readonly capabilities: ProviderCapabilities = {
+		supportsAskPermission: false,
 		supportsStreaming: true,
 		supportsThinking: false,
 		supportsToolUse: true,
@@ -140,7 +142,6 @@ export class CursorProvider extends BaseCliProvider {
 			suspended: false,
 			activeToolCalls: new Map(),
 			lastUsageStats: null,
-			streamedTextLength: 0,
 		};
 	}
 
@@ -335,8 +336,11 @@ export class CursorProvider extends BaseCliProvider {
 			"--output-format",
 			"stream-json",
 			"--print",
-			"--stream-partial-output",
 		];
+
+		// stream-json emits complete text blocks at tool/retry/query/final boundaries.
+		// Partial output also emits untagged duplicate summaries, so keep block output
+		// unambiguous. Text not yet flushed by the CLI is unavailable on interruption.
 
 		// Model selection
 		const effectiveModel = this._getEffectiveModel(settings);
@@ -346,6 +350,7 @@ export class CursorProvider extends BaseCliProvider {
 		}
 
 		const { mode, accessLevel } = settings;
+		assertNonInteractivePermissionSupport(this.displayName, settings);
 
 		// --force enables direct file modifications without confirmation
 		// More-restrictive-wins: only auto-approve when BOTH mode and access allow it
@@ -354,18 +359,14 @@ export class CursorProvider extends BaseCliProvider {
 			mode === "detailed-plan" ||
 			accessLevel === "read-only"
 		) {
-			console.log("[Mysti] Cursor: Read-only mode (no --force)");
+			args.push("--mode", "plan");
+			console.log("[Mysti] Cursor: Explicit read-only plan mode");
 		} else if (mode === "edit-automatically" && accessLevel === "full-access") {
 			args.push("--force");
 			console.log("[Mysti] Cursor: Using --force (edit-automatically + full-access)");
 		} else if (mode === "default" && accessLevel === "full-access") {
 			args.push("--force");
 			console.log("[Mysti] Cursor: Using --force (default + full-access)");
-		} else {
-			// Bypass CLI permissions to prevent stdin hang.
-			// The stream-level tool-use gate in ChatViewProvider handles permission prompts.
-			args.push("--force");
-			console.log(`[Mysti] Cursor: Bypassing CLI permissions (stream gate handles UI prompts) [mode=${mode}, access=${accessLevel}]`);
 		}
 
 		return args;
@@ -380,9 +381,8 @@ export class CursorProvider extends BaseCliProvider {
 
 	/**
 	 * Map Cursor tool type names to canonical Claude-compatible names.
-	 * The webview's formatToolSummary() and the stream-level permission gate
-	 * (utils/permissionClassifier.ts) expect these canonical names — the gate
-	 * is the sole enforcement point since the CLI runs with --force.
+	 * The webview's formatToolSummary() and action classifier expect these
+	 * canonical names. Notification events cannot hold native execution.
 	 */
 	private static readonly TOOL_TYPE_MAP: Record<string, string> = {
 		shellToolCall: "Bash",
@@ -396,6 +396,14 @@ export class CursorProvider extends BaseCliProvider {
 		updateTodosToolCall: "TodoWrite",
 		deleteToolCall: "Delete",
 	};
+
+	// Protobuf result alternatives, normalized for camelCase and snake_case JSON.
+	// Metadata alongside the result (for example sandboxPolicy) is not an outcome.
+	private static readonly TOOL_FAILURE_RESULTS = new Set([
+		"error", "failure", "timeout", "rejected", "spawnerror",
+		"permissiondenied", "filenotfound", "invalidfile", "readpermissiondenied",
+		"writepermissiondenied", "notfile", "filebusy", "nospace", "notfound",
+	]);
 
 	/**
 	 * Parse stream-json output from Cursor CLI
@@ -430,10 +438,8 @@ export class CursorProvider extends BaseCliProvider {
 				return null;
 			}
 
-			// Assistant text — with --stream-partial-output, Cursor emits CUMULATIVE
-			// assistant events: each contains ALL text generated so far, not just
-			// the new delta. We track how many chars we've already sent to the
-			// webview and only emit the new suffix each time.
+			// Each assistant event is one completed stream-json text block. Equal
+			// blocks across separate boundaries are legitimate and must both render.
 			if (data.type === "assistant") {
 				let text = "";
 
@@ -459,14 +465,7 @@ export class CursorProvider extends BaseCliProvider {
 					return null;
 				}
 
-				// Cumulative dedup: only emit chars beyond what we've already sent
-				if (text.length <= cursorSession.streamedTextLength) {
-					return null;
-				}
-
-				const newText = text.substring(cursorSession.streamedTextLength);
-				cursorSession.streamedTextLength = text.length;
-				return { type: "text", content: newText };
+				return { type: "text", content: text };
 			}
 
 			// Tool call events — Cursor CLI format (per official docs):
@@ -474,8 +473,6 @@ export class CursorProvider extends BaseCliProvider {
 			//   "call_id": "id", "tool_call": { "readToolCall": { "args": {...} } } }
 			// The specific tool type is a nested key inside data.tool_call, NOT data.type.
 			if (data.type === "tool_call" && data.tool_call) {
-				// Tool calls mark a new assistant turn — reset streaming dedup
-				cursorSession.streamedTextLength = 0;
 				const toolId = data.call_id || `tool_${Date.now()}`;
 
 				// Find the actual tool type key inside data.tool_call
@@ -565,23 +562,26 @@ export class CursorProvider extends BaseCliProvider {
 					const active = cursorSession.activeToolCalls.get(toolId);
 					cursorSession.activeToolCalls.delete(toolId);
 
-					// Extract output from result.success or result.rejected.
-					// Plan 02 Phase 3: rejected results surface as status
-					// 'failed' so the webview tool card shows the rejection
-					// instead of a green "completed" check.
+					// Preserve the selected result variant, including failures that
+					// carry only a path. Its key supplies the otherwise missing reason.
 					let output = "";
-					let rejected = false;
+					let failed = false;
 					if (toolData?.result?.success !== undefined) {
 						output =
 							typeof toolData.result.success === "string"
 								? toolData.result.success
 								: JSON.stringify(toolData.result.success, null, 2);
-					} else if (toolData?.result?.rejected) {
-						rejected = true;
-						output =
-							typeof toolData.result.rejected === "string"
-								? toolData.result.rejected
-								: JSON.stringify(toolData.result.rejected, null, 2);
+					} else if (toolData?.result && typeof toolData.result === "object") {
+						const failure = Object.entries(toolData.result).find(([key, value]) =>
+							value != null && CursorProvider.TOOL_FAILURE_RESULTS.has(key.replace(/_/g, "").toLowerCase()));
+						if (failure) {
+							failed = true;
+							const [key, detail] = failure;
+							output = key === "rejected"
+								? (typeof detail === "string" ? detail : JSON.stringify(detail, null, 2))
+								: JSON.stringify({ [key]: detail }, null, 2);
+							output = this._redactProcessError(output, cursorSession.process ?? undefined);
+						}
 					}
 
 					return {
@@ -591,7 +591,7 @@ export class CursorProvider extends BaseCliProvider {
 							name: active?.name || toolName,
 							input: active ? JSON.parse(active.inputJson) : input,
 							output,
-							status: rejected ? "failed" : "completed",
+							status: failed ? "failed" : "completed",
 						},
 					};
 				}
@@ -601,7 +601,6 @@ export class CursorProvider extends BaseCliProvider {
 
 			// Result event — completion metrics
 			if (data.type === "result") {
-				cursorSession.streamedTextLength = 0;
 				if (data.duration_ms || data.stats) {
 					const stats = data.stats || {};
 					cursorSession.lastUsageStats = {
@@ -625,11 +624,10 @@ export class CursorProvider extends BaseCliProvider {
 				};
 			}
 
-			// Done/complete events — reset turn state but do NOT emit a parser-level
+			// Done/complete events do NOT emit a parser-level
 			// done: sendMessage() yields the single authoritative done (with usage)
 			// after the stream ends (Plan 02 Phase 3: exactly one done per response).
 			if (data.type === "done" || data.type === "complete") {
-				cursorSession.streamedTextLength = 0;
 				return null;
 			}
 
@@ -639,7 +637,8 @@ export class CursorProvider extends BaseCliProvider {
 			}
 
 			// Log unrecognized event types for debugging
-			console.log("[Mysti] Cursor: Unrecognized event type:", data.type, JSON.stringify(data).slice(0, 200));
+			console.log("[Mysti] Cursor: Unrecognized event type:",
+				this._redactProcessError(String(data.type), cursorSession.process ?? undefined));
 			return null;
 		} catch {
 			// Not JSON — treat non-empty lines as plain text
@@ -677,116 +676,105 @@ export class CursorProvider extends BaseCliProvider {
 		panelId?: string,
 		providerManager?: unknown,
 		agentConfig?: AgentConfiguration,
+		_attachments?: Attachment[],
+		resolveInput?: ProviderInputResolver,
 	): AsyncGenerator<StreamChunk> {
-		const session = this._getSession(panelId) as CursorSessionState;
+		if (resolveInput) {
+			const input = resolveInput();
+			if (!input) { return; }
+			({ content, context } = input);
+		}
+		const previous = this._getSession(panelId) as CursorSessionState;
 		const cliPath = this.getCliPath();
-		const baseArgs = this.buildCliArgs(settings, session);
-
-		// Build prompt (without conversation history — Cursor manages its own context)
-		const fullPrompt = await this.buildPromptAsync(
-			content,
-			context,
-			null,
-			settings,
-			persona,
-			agentConfig,
-			undefined,
-			session.channelSystemContext,
-		);
-
-		// Pass prompt via -p flag
-		const args = [...baseArgs, "-p", fullPrompt];
-
-		// Declare outside try so finally block can access for cleanup
+		// Validate permission flags before replacing the predecessor.
+		const baseArgs = this.buildCliArgs(settings, previous);
+		this.cancelCurrentRequest(previous.panelId);
+		const session = this._createSession(previous.panelId);
+		session.channelSystemContext = previous.channelSystemContext;
+		session.sessionId = previous.sessionId;
+		session.autonomousMode = settings.autonomousMode === true;
+		this._panelSessions.set(session.panelId, session);
+		const isCurrent = () => !session.cancelled && this._panelSessions.get(session.panelId) === session;
+		let ownedProcess: ChildProcess | undefined;
 		const stderrRef = { output: "" };
 		const stderrHandler = (data: Buffer) => {
-			const text = data.toString();
-			stderrRef.output += text;
-			console.log("[Mysti] Cursor stderr:", text);
+			// A credential can span chunks. Shared stream handling logs only the
+			// complete diagnostic after redacting the issuing child's secrets.
+			stderrRef.output += data.toString();
 		};
 
 		try {
-			const workspaceFolders = (await import("vscode")).workspace
-				.workspaceFolders;
-			const cwd = workspaceFolders
-				? workspaceFolders[0].uri.fsPath
-				: process.cwd();
-
-			console.log("[Mysti] Cursor: Starting CLI at:", cliPath);
-			console.log("[Mysti] Cursor: Working directory:", cwd);
-
+			// Cursor owns conversation history. Complete instructions and imports
+			// before resolving the transient input used in the final argv.
+			const render = resolveInput ? await this.preparePromptRenderer(
+				null, settings, persona, agentConfig, undefined, session.channelSystemContext,
+			) : undefined;
+			let fullPrompt = render ? '' : await this.buildPromptAsync(
+				content, context, null, settings, persona, agentConfig, undefined, session.channelSystemContext,
+			);
+			if (!isCurrent()) { return; }
+			const workspaceFolders = (await import("vscode")).workspace.workspaceFolders;
+			const cwd = workspaceFolders ? workspaceFolders[0].uri.fsPath : process.cwd();
 			const { spawn } = await import("child_process");
+			if (!isCurrent()) { return; }
 			const envExtra: Record<string, string | undefined> = {};
 			const resolvedKey = this._resolveApiKey();
 			if (resolvedKey) {
-				// Plan 18 (2.4 audit): env only — the key on argv was visible to any
-				// local user via `ps`. CURSOR_API_KEY is the documented channel.
+				// Credentials remain in the environment, never prompt argv.
 				envExtra.CURSOR_API_KEY = resolvedKey;
 			}
-
-			session.process = spawn(cliPath, args, {
-				cwd,
-				env: getEnrichedEnv(envExtra),
-				stdio: ["ignore", "pipe", "pipe"],
+			if (resolveInput && render) {
+				const input = resolveInput();
+				if (!input) { session.cancelled = true; return; }
+				fullPrompt = render(input.content, input.context);
+			}
+			if (!isCurrent()) { return; }
+			const args = [...baseArgs, "-p", fullPrompt];
+			const env = getEnrichedEnv(envExtra);
+			ownedProcess = spawn(cliPath, args, {
+				cwd, env, stdio: ["ignore", "pipe", "pipe"],
 			});
-
-			// Plan 18 (2.4 audit): early error listener — an async spawn failure
-			// otherwise emits an unhandled 'error' event before waitForProcess
-			// attaches its own listener.
-			session.process.on("error", (err) => {
-				console.error("[Mysti] Cursor: Spawn error:", err);
-				stderrRef.output += `\nspawn error: ${err.message}`;
+			this._captureProcessAuthentication(ownedProcess, env);
+			console.log("[Mysti] Cursor: Starting CLI at:", this._redactProcessError(cliPath, ownedProcess));
+			console.log("[Mysti] Cursor: Working directory:", this._redactProcessError(cwd, ownedProcess));
+			session.process = ownedProcess;
+			ownedProcess.on("error", (err) => {
+				// Node's Error object includes spawnargs, including the full prompt.
+				const message = this._redactProcessError(err.message, ownedProcess);
+				console.error("[Mysti] Cursor: Spawn error:", message);
+				stderrRef.output += `\nspawn error: ${message}`;
 			});
-
-			// Register process for per-panel cancellation
-			if (
-				panelId &&
-				providerManager &&
-				typeof (providerManager as ProcessTracker).registerProcess === "function"
-			) {
-				(providerManager as ProcessTracker).registerProcess(panelId, session.process, this.id);
+			if (panelId && providerManager && typeof (providerManager as ProcessTracker).registerProcess === "function") {
+				(providerManager as ProcessTracker).registerProcess(panelId, ownedProcess, this.id);
 			}
-
-			// Capture stderr for error reporting
-			if (session.process.stderr) {
-				session.process.stderr.on("data", stderrHandler);
-			}
-
-			// Emit session_active so the webview shows the session indicator
-			if (!session.sessionId) {
-				session.sessionId = `cursor-${panelId || 'default'}-${Date.now()}`;
-			}
+			ownedProcess.stderr?.on("data", stderrHandler);
+			if (!session.sessionId) { session.sessionId = `cursor-${panelId || 'default'}-${Date.now()}`; }
 			yield { type: 'session_active' as const, sessionId: session.sessionId };
-
-			// Process streaming output
-			yield* this.processStream(stderrRef, session);
-
-			// Yield done with usage stats
+			if (!isCurrent()) { return; }
+			for await (const chunk of this.processStream(stderrRef, session)) {
+				if (!isCurrent()) { return; }
+				yield chunk;
+				if (!isCurrent()) { return; }
+			}
+			if (!isCurrent()) { return; }
 			const storedUsage = this.getStoredUsage(panelId);
-			yield storedUsage
-				? { type: "done", usage: storedUsage }
-				: { type: "done" };
+			yield storedUsage ? { type: "done", usage: storedUsage } : { type: "done" };
 			console.log("[Mysti] Cursor: Stream complete");
 		} catch (error) {
-			yield this.handleError(error);
-			yield { type: "done" };
-		} finally {
-			// Plan 18 (2.4 audit): liveness-gated tree kill with SIGKILL escalation —
-			// the old `.killed` guard skipped a signalled-but-alive CLI, and a bare
-			// SIGTERM orphaned cursor-agent's own children mid-tool-run.
-			if (isProcessLive(session.process)) {
-				if (session.process!.stderr) {
-					session.process!.stderr.removeListener("data", stderrHandler);
-				}
-				void killProcessTree(session.process, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
+			if (isCurrent()) {
+				yield this.handleError(error, ownedProcess);
+				if (isCurrent()) { yield { type: "done" }; }
 			}
-			session.process = null;
-			if (
-				panelId &&
-				providerManager &&
-				typeof (providerManager as ProcessTracker).clearProcess === "function"
-			) {
-				(providerManager as ProcessTracker).clearProcess(panelId);
+		} finally {
+			// A delayed old request owns only its captured child, never the
+			// successor now stored in the panel's current session.
+			ownedProcess?.stderr?.removeListener("data", stderrHandler);
+			if (isProcessLive(ownedProcess)) {
+				void killProcessTree(ownedProcess, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
+			}
+			if (session.process === ownedProcess) { session.process = null; }
+			if (ownedProcess && panelId && providerManager && typeof (providerManager as ProcessTracker).clearProcess === "function") {
+				(providerManager as ProcessTracker).clearProcess(panelId, ownedProcess);
 			}
 		}
 	}
@@ -808,9 +796,6 @@ export class CursorProvider extends BaseCliProvider {
 			}
 
 			const cliArgs = ["--output-format", "text", "--print", "-p", enhancePrompt];
-			if (resolvedKey) {
-				cliArgs.push("--api-key", resolvedKey);
-			}
 
 			const proc = spawn(
 				agentPath,

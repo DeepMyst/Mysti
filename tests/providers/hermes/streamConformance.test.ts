@@ -79,7 +79,11 @@ describe('HermesProvider stream conformance (ACP fixture)', () => {
 
   it('the boundary line is the prompt response and nothing earlier', () => {
     const lines = FIXTURE.map(e => JSON.stringify(e));
-    const boundaries = lines.map(l => provider.isResponseBoundary(l));
+    const boundaries = lines.map(line => {
+      const boundary = provider.isResponseBoundary(line, session);
+      provider.parseStreamLine(line, session);
+      return boundary;
+    });
     expect(boundaries.slice(0, -1).every(b => b === false)).toBe(true);
     expect(boundaries[boundaries.length - 1]).toBe(true);
   });

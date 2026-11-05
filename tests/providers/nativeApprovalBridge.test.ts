@@ -52,7 +52,12 @@ describe.each([
       Object.defineProperty(vscode.workspace, 'workspaceFolders', { value: originalFolders });
       await fs.promises.rm(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
     });
-    const send = (panelId: string) => collect(provider.sendMessage('fixture', [], settings, null, undefined, panelId));
+    // The owned Kimi fixture deliberately emits every callback. Full admits
+    // the transport; our custom host can still defer/deny emitted requests.
+    // This proves callback ownership, not native enforcement of Ask or Plan.
+    const requestSettings: Settings = provider.id === 'kimi-code'
+      ? { ...settings, provider: provider.id, mode: 'edit-automatically', accessLevel: 'full-access' } : settings;
+    const send = (panelId: string) => collect(provider.sendMessage('fixture', [], requestSettings, null, undefined, panelId));
     return { provider, suspend, send, marker: (panel: string) => path.join(directory, panel) };
   }
 
@@ -78,7 +83,7 @@ describe.each([
     const completion = h.send('panel');
     const request = await requested.promise;
     expect(request.toolCall).toMatchObject({ id: 'fixture-tool', name: 'Bash', input: {} });
-    expect(request.defaultDecision).toBe('ask');
+    expect(request.defaultDecision).toBe(_name === 'Kimi' ? 'allow' : 'ask');
     expect(fs.existsSync(h.marker('panel'))).toBe(false);
     expect(h.suspend).not.toHaveBeenCalled();
     approval.resolve(true);

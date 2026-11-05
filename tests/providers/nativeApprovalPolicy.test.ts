@@ -82,13 +82,9 @@ describe('CLI transports without permission requests', () => {
     expect(args).not.toContain('--auto');
   });
 
-  it('legacy Copilot keeps commands disabled in the auto-edit tier', () => {
+  it('legacy Copilot rejects partial auto-edit before dispatch', () => {
     const provider = new TestableCopilotProvider();
     (provider as unknown as { _cachedCliVersion: string })._cachedCliVersion = '0.0.372';
-    const args = provider.buildCliArgs(settings('edit-automatically', 'ask-permission'), createCopilotSession());
-    expect(args).toContain('--deny-tool');
-    expect(args).toContain('shell');
-    expect(args).toContain('write');
-    expect(args).not.toContain('--allow-all-tools');
+    expect(() => provider.buildCliArgs(settings('edit-automatically', 'ask-permission'), createCopilotSession())).toThrow(/native approvals/);
   });
 });

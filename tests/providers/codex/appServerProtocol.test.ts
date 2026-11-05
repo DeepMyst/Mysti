@@ -13,6 +13,22 @@ function harness(overrides: Partial<Settings> = {}) {
   return { state, written, proc, approval, handle };
 }
 describe('Codex app-server protocol boundaries and policy', () => {
+  it('keeps retryable reconnect notifications nonterminal, then surfaces the final credential error', () => {
+    const h = harness();
+    for (let attempt = 2; attempt <= 5; attempt++) {
+      expect(h.handle({ method: 'error', params: { threadId: 'thread', turnId: 'turn', willRetry: true,
+        error: { message: `Reconnecting... ${attempt}/5`, codexErrorInfo: 'streamDisconnected' } } })).toBeNull();
+    }
+    expect(h.handle({ method: 'error', params: { threadId: 'thread', turnId: 'turn', willRetry: false,
+      error: { message: 'HTTP 401 Unauthorized: authentication required' } } })).toMatchObject({
+      type: 'error', content: 'HTTP 401 Unauthorized: authentication required',
+    });
+  });
+  it('does not infer retryability merely from an error message', () => {
+    const h = harness();
+    expect(h.handle({ method: 'error', params: { threadId: 'thread', turnId: 'turn', error: { message: 'Reconnecting failed' } } }))
+      .toMatchObject({ type: 'error', content: 'Reconnecting failed' });
+  });
   it('denies unowned/stale requests and never lets another turn finish this turn', () => {
     const h = harness();
     h.handle({ id: 7, method: 'item/commandExecution/requestApproval', params: { threadId: 'other', turnId: 'turn' } });
@@ -34,14 +50,14 @@ describe('Codex app-server protocol boundaries and policy', () => {
     expect(h.written).toEqual([{ id: 1, result: { permissions: {}, scope: 'turn' } }]);
   });
   it('preserves question text/options for the existing follow-up UI', () => {
-    const h = harness(); const chunk = h.handle({ id: 2, method: 'item/tool/requestUserInput', params: { questions: [{ id: 'color', header: 'Color', question: 'Which color?', options: [{ label: 'Blue', description: 'Cool' }] }] } });
+    const h = harness(); const chunk = h.handle({ id: 2, method: 'item/tool/requestUserInput', params: { threadId: 'thread', turnId: 'turn', questions: [{ id: 'color', header: 'Color', question: 'Which color?', options: [{ label: 'Blue', description: 'Cool' }] }] } });
     expect(chunk).toMatchObject({ type: 'ask_user_question', askUserQuestion: { questions: [{ question: 'Which color?', options: [{ label: 'Blue' }] }] } });
     expect(h.written[0]).toEqual({ id: 2, result: { answers: {} } });
   });
   it('streams text once and preserves usage and actual context window', () => {
-    const h = harness(); expect(h.handle({ method: 'item/agentMessage/delta', params: { threadId: 'thread', itemId: 'text', delta: 'hello' } })).toEqual({ type: 'text', content: 'hello' });
-    expect(h.handle({ method: 'item/completed', params: { threadId: 'thread', item: { type: 'agentMessage', id: 'text', text: 'hello' } } })).toBeNull();
-    h.handle({ method: 'thread/tokenUsage/updated', params: { threadId: 'thread', tokenUsage: { last: { inputTokens: 100, cachedInputTokens: 50, outputTokens: 20 }, modelContextWindow: 272000 } } });
+    const h = harness(); expect(h.handle({ method: 'item/agentMessage/delta', params: { threadId: 'thread', turnId: 'turn', itemId: 'text', delta: 'hello' } })).toEqual({ type: 'text', content: 'hello' });
+    expect(h.handle({ method: 'item/completed', params: { threadId: 'thread', turnId: 'turn', item: { type: 'agentMessage', id: 'text', text: 'hello' } } })).toBeNull();
+    h.handle({ method: 'thread/tokenUsage/updated', params: { threadId: 'thread', turnId: 'turn', tokenUsage: { last: { inputTokens: 100, cachedInputTokens: 50, outputTokens: 20 }, modelContextWindow: 272000 } } });
     expect(h.state.usage).toEqual({ input_tokens: 100, cache_read_input_tokens: 50, output_tokens: 20 }); expect(h.state.contextWindow).toBe(272000);
   });
   it('reads inherited configuration and disables each external tool source in restricted mode', () => {

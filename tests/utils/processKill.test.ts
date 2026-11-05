@@ -31,7 +31,7 @@ import { EventEmitter } from 'events';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { ChildProcess } from 'child_process';
 import { spawn } from 'child_process';
-import { killProcessTree, isProcessLive } from '../../src/utils/processKill';
+import { killProcessTree, isProcessLive, markOwnedProcessGroup } from '../../src/utils/processKill';
 
 vi.mock('child_process', () => ({
   spawn: vi.fn(),
@@ -226,7 +226,11 @@ describe('killProcessTree', () => {
 
   it('sends to the process group (negative pid) when useProcessGroup is set', async () => {
     const proc = new FakeProc();
-    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    let groupExists = true;
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
+      if (!groupExists) { throw Object.assign(new Error('gone'), { code: 'ESRCH' }); }
+      return true;
+    });
 
     const done = killProcessTree(proc.asChildProcess(), 5000, { useProcessGroup: true });
 
@@ -234,9 +238,35 @@ describe('killProcessTree', () => {
     expect(killSpy).toHaveBeenCalledWith(-proc.pid, 'SIGTERM');
     expect(proc.signals).toEqual([]);
 
+    groupExists = false;
     proc.simulateExit(null, 'SIGTERM');
     await done;
     killSpy.mockRestore();
+  });
+
+  it('keeps escalation for an owned native descendant after its wrapper exits', async () => {
+    const proc = new FakeProc();
+    markOwnedProcessGroup(proc.asChildProcess());
+    const killSpy = vi.spyOn(process, 'kill').mockReturnValue(true);
+    const done = killProcessTree(proc.asChildProcess(), 100);
+    expect(killSpy).toHaveBeenCalledWith(-proc.pid, 'SIGTERM');
+    proc.simulateExit(null, 'SIGTERM');
+    await vi.advanceTimersByTimeAsync(100);
+    await done;
+    expect(killSpy).toHaveBeenCalledWith(-proc.pid, 'SIGKILL');
+    expect(proc.signals).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('reclaims a surviving owned group even when its launcher already exited', async () => {
+    const proc = new FakeProc();
+    markOwnedProcessGroup(proc.asChildProcess());
+    proc.simulateExit(0);
+    const killSpy = vi.spyOn(process, 'kill').mockReturnValue(true);
+    const done = killProcessTree(proc.asChildProcess(), 100, { initialSignal: 'SIGKILL' });
+    expect(killSpy).toHaveBeenCalledWith(-proc.pid, 'SIGKILL');
+    await vi.advanceTimersByTimeAsync(100);
+    await done;
   });
 
   it('uses PROCESS_KILL_GRACE_PERIOD_MS as the default grace period', async () => {

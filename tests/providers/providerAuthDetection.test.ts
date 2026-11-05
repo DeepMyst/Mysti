@@ -33,6 +33,8 @@ const AUTH_ENV_KEYS = [
   'CONTINUE_API_KEY', 'CLINE_API_KEY', 'NOUS_API_KEY', 'GLM_API_KEY', 'OPENCLAW_GATEWAY_TOKEN',
   'COPILOT_HOME', 'CLINE_DATA_DIR', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'HERMES_HOME',
   'CONTINUE_GLOBAL_DIR', 'OPENCLAW_STATE_DIR', 'LITECLAW_STATE_DIR', 'LITECLAW_AGENT_DIR',
+  'OPENCLAW_CONFIG_PATH', 'OPENCLAW_HOME', 'OPENCLAW_AGENT_DIR', 'OPENCLAW_TEST_FAST',
+  'PI_CODING_AGENT_DIR', 'ANTHROPIC_OAUTH_TOKEN', 'CODEX_API_KEY',
   'MOONSHOT_API_KEY', 'KIMI_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'KIMI_HOME',
 ];
 
@@ -123,7 +125,9 @@ describe('provider auth detection (wrong-path false-negative fixes)', () => {
   });
 
   it('openclaw: real auth-profiles.json store authenticates (not the channel credentials/ dir)', async () => {
-    write('.openclaw/agents/main/agent/auth-profiles.json', JSON.stringify({ profiles: { 'anthropic:default': { type: 'oauth' } } }));
+    write('.openclaw/agents/main/agent/auth-profiles.json', JSON.stringify({ profiles: {
+      'anthropic:default': { type: 'oauth', provider: 'anthropic', refresh: 'synthetic-refresh-token' },
+    } }));
     expect((await new TestableOpenClawProvider().getAuthConfig()).isAuthenticated).toBe(true);
   });
 

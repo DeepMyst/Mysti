@@ -8,20 +8,29 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { parse as parseJson5 } from 'json5';
+import JSON5 from 'json5';
+import type { ChildProcess } from 'child_process';
 import { gatewayDeviceSigner } from './OpenClawDeviceIdentity';
 import * as vscode from 'vscode';
 import { allowsUnrestrictedNativeTools } from '../base/NativeApprovalPolicy';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import type { ChildProcess } from 'child_process';
+import { randomUUID } from 'crypto';
+import { StringDecoder } from 'string_decoder';
 import { BaseCliProvider, type PanelSessionState, type ProcessTracker } from '../base/BaseCliProvider';
 import { OpenClawGateway } from './OpenClawGateway';
+import { readOpenClawAgentAuthStore, readOpenClawDiagnosticProfiles } from './OpenClawAuthStore';
+import { resolveOpenClawStoreFormat } from './OpenClawStoreFormat';
+import { openClawBackendRedactor } from './OpenClawBackendDiagnostics';
+import { hasOpenClawLocalCredentials } from './OpenClawLocalAuth';
+import { readOpenClawRunMetadata, type OpenClawRunMetadata } from './OpenClawRunMetadata';
+import { normalizeUsage } from '../../services/TokenAccounting';
 import type {
   CliDiscoveryResult,
   AuthConfig,
   ProviderCapabilities,
+  ProviderInputResolver,
 } from '../base/IProvider';
 import type {
   Settings,
@@ -32,15 +41,37 @@ import type {
   Conversation,
   AgentConfiguration,
   ModelInfo,
+  Attachment,
+  UsageStats,
 } from '../../types';
-import { getEnrichedEnv, readOpenClawToken } from '../../utils/platform';
-import { killProcessTree, isProcessLive } from '../../utils/processKill';
-import { PROCESS_KILL_GRACE_PERIOD_MS } from '../../constants';
+import { getEnrichedEnv, readOpenClawToken, resolveOpenClawPaths } from '../../utils/platform';
+import { killProcessTree, isProcessLive, markOwnedProcessGroup } from '../../utils/processKill';
+import { AUTONOMOUS_PROCESS_TIMEOUT_MS, PROCESS_KILL_GRACE_PERIOD_MS, STREAM_INACTIVITY_TIMEOUT_MS } from '../../constants';
 import { toolKind } from '../../utils/toolNames';
+import { applyStreamText } from '../../utils/streamText';
+
+const ENHANCEMENT_TIMEOUT_MS = 120_000;
+const ENHANCEMENT_MAX_OUTPUT_BYTES = 1024 * 1024;
+
+/** Only a successful text-inference envelope can replace the user's draft. */
+function enhancementText(output: string): string | undefined {
+  try {
+    const value = JSON.parse(output);
+    if (value?.ok !== true || value.capability !== 'model.run' || value.transport !== 'local' || !Array.isArray(value.outputs)) {
+      return undefined;
+    }
+    return value.outputs.map((item: unknown) => {
+      const text = (item as { text?: unknown } | null)?.text;
+      return typeof text === 'string' ? text : '';
+    }).filter((text: string) => text.trim()).join('\n').trim() || undefined;
+  } catch { return undefined; }
+}
 
 export interface OpenClawSessionState extends PanelSessionState {
   activeToolCalls: Map<string, { id: string; name: string; inputJson: string }>;
-  lastUsageStats: { input_tokens: number; output_tokens: number } | null;
+  lastUsageStats: UsageStats | null;
+  lastContextUsageStats?: UsageStats | null;
+  reportedModel?: string;
   /**
    * `meta.agentMeta.contextTokens` — the window OpenClaw resolved for the model
    * it ran (its own configured default: Mysti passes no model), until taken.
@@ -52,7 +83,7 @@ export interface OpenClawSessionState extends PanelSessionState {
  * OpenClaw provider implementation with dual transport
  *
  * Primary: Gateway WebSocket at ws://127.0.0.1:18789 for real-time streaming
- * Fallback: CLI spawn via `openclaw agent --message "..." --json --local`
+ * Fallback: CLI spawn via `openclaw agent --message-file <owned file> --json --local`
  *
  * Install: npm install -g openclaw@latest && openclaw onboard --install-daemon
  * Auth: openclaw onboard
@@ -89,6 +120,8 @@ export class OpenClawProvider extends BaseCliProvider {
   };
 
   readonly capabilities: ProviderCapabilities = {
+    supportsAskPermission: false,
+    supportsReadOnly: false,
     supportsStreaming: true,
     supportsThinking: true,
     supportsToolUse: true,
@@ -101,21 +134,55 @@ export class OpenClawProvider extends BaseCliProvider {
     planMode: 'detected',
     sessionKind: 'cli-resume',      // gateway sessionKey continuity (key is locally generated — Plan 02 Phase 5 caveat)
     emitsToolResults: true,
-    emitsUsage: false,              // done.usage never supplied — footer "n/a", compaction disabled
-    usageConvention: 'none',   // No cache accounting on either the CLI or the Gateway path.
+    emitsUsage: true,               // native agentMeta: run totals and separate latest-call context
+    emitsTextRevisions: true,
+    usageConvention: 'anthropic',   // OpenClaw normalizes all models into disjoint input/cache buckets.
     modelSelection: 'none',         // model configured via openclaw config; dropdown is a no-op (F18)
     supportsChannels: true,         // gateway channel delegation (C4)
   };
 
   private _gateway: OpenClawGateway;
+  private readonly _requestControllers = new Map<string, AbortController>();
+  private readonly _enhancementControllers = new Set<AbortController>();
+  private _disposed = false;
+  /** Exact directories owned by this instance, associated only for panel disposal. */
+  private readonly _messageDirectories = new Map<string, string>();
+  private readonly _backendErrorRedactors = new WeakMap<ChildProcess, (text: string) => string>();
 
   constructor(context: vscode.ExtensionContext) {
     super(context);
     const gatewayUrl = vscode.workspace.getConfiguration('mysti').get<string>(
       'openclawGatewayUrl', 'ws://127.0.0.1:18789'
     );
-    const token = readOpenClawToken();
-    this._gateway = new OpenClawGateway(gatewayUrl, token, gatewayDeviceSigner(context.secrets));
+    this._gateway = new OpenClawGateway(gatewayUrl, undefined, gatewayDeviceSigner(context.secrets), readOpenClawToken,
+      () => this._captureBackendDiagnostics(process.cwd(), process.env));
+  }
+
+  protected _captureBackendDiagnostics(cwd: string, env: NodeJS.ProcessEnv): (text: string) => string {
+    let config: unknown;
+    try { config = JSON5.parse(fs.readFileSync(resolveOpenClawPaths(cwd).configPath, 'utf-8')); } catch { /* Keep environment redaction when config is unavailable. */ }
+    return openClawBackendRedactor(config, env);
+  }
+
+  protected async _captureRequestDiagnostics(cwd: string, env: NodeJS.ProcessEnv): Promise<(text: string) => string> {
+    const issuingEnv = { ...env };
+    const { configPath, agentDir, stateDir } = resolveOpenClawPaths(cwd);
+    let config: unknown;
+    try { config = JSON5.parse(fs.readFileSync(configPath, 'utf-8')); } catch { /* Stored/env credentials can still be protected. */ }
+    const profiles = await readOpenClawDiagnosticProfiles(agentDir, path.join(stateDir, 'agents', 'main', 'agent'));
+    return openClawBackendRedactor(config, issuingEnv, profiles);
+  }
+
+  protected override isAuthenticationError(message: string): boolean {
+    return super.isAuthenticationError(message)
+      || message.split(/\r?\n/).some(line => /^\s*(?:Error:\s*)?FailoverError:\s*401\b/i.test(line)
+        || (/^\s*(?:Error:\s*)?FallbackSummaryError:\s*All models failed \(\d+\):/i.test(line)
+          && /\bProvider \S+ has (auth|auth_permanent) issue \(skipping all models\) \(\1\)(?:$| \| )/i.test(line)));
+  }
+
+  protected override _redactProcessError(text: string, proc?: ChildProcess): string {
+    const redact = proc ? this._backendErrorRedactors.get(proc) : undefined;
+    return super._redactProcessError(redact ? redact(text) : text, proc);
   }
 
   protected _createSession(panelId: string): OpenClawSessionState {
@@ -155,18 +222,21 @@ export class OpenClawProvider extends BaseCliProvider {
    * Dispose the provider and disconnect Gateway
    */
   dispose(): void {
+    this._disposed = true;
+    for (const controller of this._requestControllers.values()) { controller.abort(); }
+    this._requestControllers.clear();
+    for (const controller of this._enhancementControllers) { controller.abort(); }
     this._gateway.disconnect();
-    // Prompt files are the user's text sitting in a shared temp dir; do not
-    // leave them behind when the window closes.
-    for (const panelId of this._panelSessions.keys()) {
-      this._cleanupMessageFile(panelId);
+    for (const directory of this._messageDirectories.keys()) {
+      this._cleanupMessageDirectory(directory);
     }
     super.dispose();
   }
 
-  /** Also clear the prompt file when a panel's session is reset. */
   override disposeSession(panelId: string): void {
-    this._cleanupMessageFile(panelId);
+    for (const [directory, ownerPanel] of this._messageDirectories) {
+      if (ownerPanel === panelId) { this._cleanupMessageDirectory(directory); }
+    }
     super.disposeSession(panelId);
   }
 
@@ -221,43 +291,35 @@ export class OpenClawProvider extends BaseCliProvider {
 
   // --- Authentication ---
 
+  private _getCliCwd(): string {
+    return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || process.cwd();
+  }
+
   async getAuthConfig(): Promise<AuthConfig> {
-    const home = os.homedir();
-    const configPath = path.join(home, '.openclaw', 'openclaw.json');
-    // `openclaw onboard` writes an auth-profile store (auth-profiles.json, legacy
-    // auth.json) into the agent dir, NOT the ~/.openclaw/credentials/ dir the old
-    // code probed (that's channel-pairing creds). Honor the state/agent-dir env
-    // overrides so a relocated install isn't wrongly reported unauthenticated.
-    const stateDir = process.env.OPENCLAW_STATE_DIR?.trim() || process.env.LITECLAW_STATE_DIR?.trim() || path.join(home, '.openclaw');
-    const agentDir = process.env.LITECLAW_AGENT_DIR?.trim() || process.env.PI_CODING_AGENT_DIR?.trim() || path.join(stateDir, 'agents', 'main', 'agent');
-    const storeHasProfiles = (p: string): boolean => {
-      try {
-        if (!fs.existsSync(p)) { return false; }
-        const parsed = JSON.parse(fs.readFileSync(p, 'utf-8'));
-        const profiles = parsed?.profiles ?? parsed;
-        return !!profiles && typeof profiles === 'object' && Object.keys(profiles).length > 0;
-      } catch {
-        return false;
-      }
-    };
-    const hasCredStore = storeHasProfiles(path.join(agentDir, 'auth-profiles.json')) || storeHasProfiles(path.join(agentDir, 'auth.json'));
-    const hasEnvAuth = !!(
-      process.env.OPENCLAW_GATEWAY_TOKEN ||
-      // OpenClaw is a Claude-family agent (default model claude-opus); an
-      // Anthropic key / OAuth token drives its backend directly. Other providers'
-      // keys (OPENAI_API_KEY / GEMINI_API_KEY / GOOGLE_API_KEY) are NOT openclaw
-      // auth — they were wrongly marking openclaw authenticated whenever any
-      // unrelated provider had a key in the environment, and are dropped.
-      process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_OAUTH_TOKEN
+    const useGateway = vscode.workspace.getConfiguration('mysti').get<boolean>('openclawUseGateway', true);
+    const hasGatewayAuth = useGateway && (this._gateway.isConnected() || !!readOpenClawToken());
+    // The gateway client loads config in the extension host. Local execution
+    // resolves relative paths from the same workspace cwd as the spawned CLI.
+    const { configPath, agentDir, stateDir } = resolveOpenClawPaths(hasGatewayAuth ? process.cwd() : this._getCliCwd());
+    // Follow the selected CLI's store format, including inherited main profiles.
+    // A current CLI ignores retired JSON even when no database exists yet.
+    const store = hasGatewayAuth ? { profiles: {}, order: {} } : await readOpenClawAgentAuthStore(
+      agentDir, path.join(stateDir, 'agents', 'main', 'agent'),
+      resolveOpenClawStoreFormat(this.getCliPath(), this.getCachedCliVersion(), this._getCliCwd()),
     );
+    let config: unknown;
+    try { config = JSON5.parse(fs.readFileSync(configPath, 'utf-8')); } catch { /* Generic core readiness remains available. */ }
+    const hasLocalAuth = !hasGatewayAuth && hasOpenClawLocalCredentials(config, store);
 
     return {
       type: 'cli-login',
       // Bare openclaw.json existence is NOT proof of auth: `openclaw onboard`
       // writes the config file before/without login, so an abandoned onboard
-      // wrongly read as authenticated. Real auth = a populated credential store
-      // (auth-profiles.json / auth.json) or a gateway token / Anthropic backend key.
-      isAuthenticated: hasCredStore || hasEnvAuth,
+      // wrongly read as authenticated. This offline readiness hint requires
+      // credential material, a supported secret reference or a complete native
+      // local no-auth configuration, not just account metadata.
+      // Actual gateway/backend authentication is checked by OpenClaw at runtime.
+      isAuthenticated: hasLocalAuth || hasGatewayAuth,
       configPath,
     };
   }
@@ -275,7 +337,7 @@ export class OpenClawProvider extends BaseCliProvider {
     try {
       if (auth.configPath && fs.existsSync(auth.configPath)) {
         const configContent = fs.readFileSync(auth.configPath, 'utf-8');
-        const config = parseJson5(configContent);
+        const config = JSON5.parse(configContent);
         return {
           authenticated: true,
           user: config.email || config.user || 'Authenticated',
@@ -315,49 +377,28 @@ export class OpenClawProvider extends BaseCliProvider {
     ];
   }
 
-  /**
-   * Per-panel temp file holding the turn's prompt.
-   *
-   * Deterministic per panel so buildCliArgs can name it before the prompt
-   * exists — the base builds args, spawns, THEN builds the prompt, so the path
-   * has to be known first.
-   */
-  private _messageFilePath(panelId: string): string {
-    const safe = panelId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64);
-    return path.join(os.tmpdir(), `mysti-openclaw-${safe}.txt`);
-  }
-
-  /**
-   * OpenClaw reads the prompt from the file named in --message-file, not stdin.
-   *
-   * Written 0600: it is the user's prompt, in a world-readable temp directory.
-   */
-  protected override async _deliverPrompt(
-    proc: ChildProcess,
-    fullPrompt: string,
-    session: PanelSessionState
-  ): Promise<void> {
-    const file = this._messageFilePath(session.panelId);
-    await fs.promises.writeFile(file, fullPrompt, { encoding: 'utf8', mode: 0o600 });
-    // Nothing reads stdin, but leaving it open would hold the pipe forever.
-    proc.stdin?.end();
-  }
-
-  /** Test seam: `_deliverPrompt` is protected, and the override is the point. */
-  protected _deliverPromptForTest(
-    proc: ChildProcess,
-    fullPrompt: string,
-    session: PanelSessionState
-  ): Promise<void> {
-    return this._deliverPrompt(proc, fullPrompt, session);
-  }
-
-  /** Best-effort removal of a panel's prompt file. */
-  private _cleanupMessageFile(panelId: string): void {
+  /** Prepare the only CLI prompt carrier before the child can read it. */
+  private _prepareMessageFile(fullPrompt: string, panelId: string): { directory: string; file: string } {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-openclaw-'));
+    this._messageDirectories.set(directory, panelId);
+    const file = path.join(directory, 'message.txt');
     try {
-      fs.unlinkSync(this._messageFilePath(panelId));
+      fs.writeFileSync(file, fullPrompt, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+      return { directory, file };
+    } catch (error) {
+      this._cleanupMessageDirectory(directory);
+      throw error;
+    }
+  }
+
+  /** Only remove this request's private directory, never another turn's file. */
+  private _cleanupMessageDirectory(directory: string): void {
+    if (!this._messageDirectories.has(directory)) { return; }
+    try {
+      fs.rmSync(directory, { recursive: true, force: true });
+      this._messageDirectories.delete(directory);
     } catch {
-      // Already gone, or never written — nothing to do.
+      // Best effort, without replacing the request's original result/error.
     }
   }
 
@@ -366,12 +407,8 @@ export class OpenClawProvider extends BaseCliProvider {
   protected buildCliArgs(settings: Settings, _session: PanelSessionState): string[] {
     const args: string[] = ['agent', '--json'];
 
-    // `openclaw agent` takes the prompt from --message/--message-file and IGNORES
-    // stdin: piping into it answers "Missing message. Use openclaw agent
-    // --message ...". A temp file is used rather than --message so a long prompt
-    // cannot hit ARG_MAX, and it is what OpenClaw's own docs use for multiline
-    // input. _deliverPrompt writes it; _cleanupMessageFile removes it.
-    args.push('--message-file', this._messageFilePath(_session.panelId));
+    // The request adds --message-file after preparing its private prompt file.
+    // Keep prompt text out of argv and avoid a post-spawn file-read race.
 
     // It also requires a session selector — "Pass --to <E.164>, --session-key,
     // --session-id, or --agent to choose a session". The panel id IS Mysti's
@@ -409,6 +446,12 @@ export class OpenClawProvider extends BaseCliProvider {
   // --- Stream Parsing (for CLI fallback) ---
 
   protected parseStreamLine(line: string, session: PanelSessionState): StreamChunk | null {
+    return this._parseCliStreamLine(line, session, session.process ?? undefined);
+  }
+
+  private _parseCliStreamLine(line: string, session: PanelSessionState, issuingProcess?: ChildProcess): StreamChunk | null {
+    // Stop clears session.process while the old stdout can still drain. The
+    // streaming caller retains its issuing handle for diagnostic redaction.
     const openClawSession = session as OpenClawSessionState;
 
     if (!line.trim()) {
@@ -422,7 +465,7 @@ export class OpenClawProvider extends BaseCliProvider {
       if (data.type === 'system' || data.type === 'init') {
         const sessionId = data.session_id || data.sessionId || data.agent_id;
         if (sessionId) {
-          console.log('[Mysti] OpenClaw: Session init:', sessionId);
+          console.log('[Mysti] OpenClaw: Session init:', this._redactProcessError(String(sessionId), issuingProcess));
           return { type: 'session_active', sessionId };
         }
         return null;
@@ -492,18 +535,19 @@ export class OpenClawProvider extends BaseCliProvider {
           };
         }
 
-        if (data.status === 'completed' || data.subtype === 'completed') {
+        if (data.status === 'completed' || data.subtype === 'completed' || data.status === 'failed' || data.subtype === 'failed') {
           const active = openClawSession.activeToolCalls.get(toolId);
           openClawSession.activeToolCalls.delete(toolId);
+          const failed = data.is_error === true || data.success === false || data.status === 'failed' || data.subtype === 'failed';
+          const output = data.output ?? data.result ?? data.error ?? (failed ? 'Failed' : data.success === true ? 'Success' : '');
           return {
             type: 'tool_result',
             toolCall: {
               id: toolId,
               name: active?.name || toolName,
               input: active ? JSON.parse(active.inputJson) : (data.input || {}),
-              output: data.output || data.result ||
-                (data.success !== undefined ? (data.success ? 'Success' : 'Failed') : ''),
-              status: 'completed',
+              output: failed ? this._redactProcessError(typeof output === 'string' ? output : JSON.stringify(output), issuingProcess) : output,
+              status: failed ? 'failed' : 'completed',
             },
           };
         }
@@ -513,14 +557,19 @@ export class OpenClawProvider extends BaseCliProvider {
 
       // Standalone tool result
       if (data.type === 'tool_result') {
+        const toolId = data.tool_use_id || data.tool_id || data.tool_call_id || data.id || '';
+        const active = openClawSession.activeToolCalls.get(toolId);
+        openClawSession.activeToolCalls.delete(toolId);
+        const failed = data.is_error === true || data.success === false || data.status === 'failed';
+        const output = typeof data.content === 'string' ? data.content : JSON.stringify(data.content ?? '');
         return {
           type: 'tool_result',
           toolCall: {
-            id: data.tool_use_id || data.tool_id || '',
-            name: data.tool_name || '',
-            input: {},
-            output: typeof data.content === 'string' ? data.content : JSON.stringify(data.content || ''),
-            status: data.is_error ? 'failed' : 'completed',
+            id: toolId,
+            name: active?.name || data.tool_name || '',
+            input: active ? JSON.parse(active.inputJson) : (data.input || data.arguments || {}),
+            output: failed ? this._redactProcessError(output, issuingProcess) : output,
+            status: failed ? 'failed' : 'completed',
           },
         };
       }
@@ -537,22 +586,20 @@ export class OpenClawProvider extends BaseCliProvider {
       // Usage/metrics events
       if (data.type === 'usage' || data.type === 'metrics' || data.type === 'result') {
         const usage = data.usage || data.stats || data;
-        if (usage.input_tokens || usage.output_tokens) {
-          openClawSession.lastUsageStats = {
+        if ([usage.input_tokens, usage.output_tokens].every(value => value === undefined || (Number.isSafeInteger(value) && value >= 0))
+          && (usage.input_tokens || usage.output_tokens)) {
+          openClawSession.lastUsageStats = normalizeUsage({
             input_tokens: usage.input_tokens || 0,
             output_tokens: usage.output_tokens || 0,
-          };
-          console.log('[Mysti] OpenClaw: Usage stats:', openClawSession.lastUsageStats);
+          }, 'none');
+          openClawSession.lastContextUsageStats = null;
         }
         return null;
       }
 
       // Error events
       if (data.type === 'error') {
-        return {
-          type: 'error',
-          content: data.error || data.message || 'Unknown OpenClaw error',
-        };
+        return this.handleError(data.error || data.message || 'Unknown OpenClaw error', issuingProcess);
       }
 
       // Done/complete events — swallowed: _sendViaCli/_sendViaGateway yield the
@@ -573,49 +620,101 @@ export class OpenClawProvider extends BaseCliProvider {
     }
   }
 
+  private _applyRunMetadata(session: OpenClawSessionState, metadata: OpenClawRunMetadata): void {
+    session.lastUsageStats = metadata.usage ?? null;
+    session.lastContextUsageStats = metadata.contextUsage;
+    session.reportedContextWindow = metadata.contextWindow;
+    session.reportedModel = metadata.reportedModel;
+  }
+
+  /** Native CLI output can contain several payloads and metadata in one envelope. */
+  private _parseNativeResult(data: unknown, session: OpenClawSessionState, issuingProcess?: ChildProcess, streamedText = false): StreamChunk[] | undefined {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) { return undefined; }
+    const result = data as { payloads?: unknown; status?: unknown; meta?: {
+      agentMeta?: { sessionId?: unknown }; error?: unknown; aborted?: unknown;
+    } };
+    const metadata = readOpenClawRunMetadata(data);
+    if (!metadata && !Array.isArray(result.payloads)) { return undefined; }
+    const chunks: StreamChunk[] = [];
+    if (metadata) {
+      this._applyRunMetadata(session, metadata);
+      if (metadata.reportedModel) { chunks.push({ type: 'model_info', reportedModel: metadata.reportedModel }); }
+    }
+    const sessionId = result.meta?.agentMeta?.sessionId;
+    if (typeof sessionId === 'string' && sessionId.trim()) { session.sessionId = sessionId; }
+    const payloads: Array<{ text?: unknown; isError?: unknown } | null> = Array.isArray(result.payloads) ? result.payloads : [];
+    const errorPayload = payloads.find(item => item?.isError === true);
+    if (!streamedText) {
+      for (const item of payloads) {
+        if (item?.isError !== true && typeof item?.text === 'string' && item.text) { chunks.push({ type: 'text', content: item.text }); }
+      }
+    }
+    if (errorPayload || result.meta?.error || result.meta?.aborted === true || result.status === 'error' || result.status === 'timeout') {
+      chunks.push(this.handleError(errorPayload?.text || result.meta?.error || 'OpenClaw request failed or was aborted', issuingProcess));
+    }
+    return chunks;
+  }
+
   /**
    * Override processStream for CLI fallback — uses hybrid streaming:
    * 1. Try line-by-line NDJSON first (like BaseCliProvider) for real-time output
    * 2. Fall back to full-blob JSON parse if no NDJSON lines yielded content
    */
   protected async *processStream(stderrRef: { output: string }, session: PanelSessionState): AsyncGenerator<StreamChunk> {
+    const issuingProcess = session.process ?? undefined;
+    const inactivityMs = session.autonomousMode ? AUTONOMOUS_PROCESS_TIMEOUT_MS : STREAM_INACTIVITY_TIMEOUT_MS;
+    const decoder = new StringDecoder('utf8');
     let buffer = '';
     let fullOutput = '';
     let hasYieldedContent = false;
+    let hasYieldedError = false;
+    let hasYieldedText = false;
+    let parsedNativeResult = false;
+    let stdoutDiagnostic = '';
+    const parse = (line: string): StreamChunk[] => {
+      let data: unknown;
+      try { data = JSON.parse(line); } catch { return []; }
+      const native = this._parseNativeResult(data, session as OpenClawSessionState, issuingProcess, hasYieldedText);
+      if (native) { parsedNativeResult = true; return native; }
+      const chunk = this._parseCliStreamLine(line, session, issuingProcess);
+      return chunk ? [chunk] : [];
+    };
+    const recordChunk = (chunk: StreamChunk) => {
+      hasYieldedContent ||= chunk.type !== 'model_info' && chunk.type !== 'session_active';
+      hasYieldedText ||= chunk.type === 'text';
+      hasYieldedError ||= chunk.type === 'error' || chunk.type === 'auth_error';
+    };
 
-    // Stream line-by-line, accumulating full output for fallback
-    if (session.process?.stdout) {
-      for await (const chunk of session.process.stdout) {
-        const chunkStr = chunk.toString();
-        buffer += chunkStr;
-        fullOutput += chunkStr;
-
-        // Split by newlines, keep incomplete line in buffer
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (!line.trim()) { continue; }
-          // Only process lines that are valid standalone JSON objects —
-          // fragments of a multi-line blob should be left for the full-blob fallback
-          const trimmed = line.trim();
-          try { JSON.parse(trimmed); } catch { continue; }
-          const parsed = this.parseStreamLine(line, session);
-          if (parsed) {
-            hasYieldedContent = true;
-            yield parsed;
-          }
+    // Keep the hybrid parser on the shared stdout/stderr inactivity clock.
+    let timedOut = false;
+    for await (const event of this._readCliStdout(stderrRef, session)) {
+      if (event.type === 'timeout') { timedOut = true; break; }
+      const chunk = event.value;
+      const chunkStr = typeof chunk === 'string' ? chunk : decoder.write(chunk);
+      buffer += chunkStr;
+      fullOutput += chunkStr;
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.trim()) { continue; }
+        // Pretty-printed native JSON is handled by the full-blob fallback.
+        for (const parsed of parse(line)) {
+          recordChunk(parsed);
+          yield parsed;
         }
       }
     }
+
+    const remainingText = decoder.end();
+    buffer += remainingText;
+    fullOutput += remainingText;
 
     // Process remaining buffer (only if it's valid standalone JSON)
     if (buffer.trim()) {
       try {
         JSON.parse(buffer.trim());
-        const parsed = this.parseStreamLine(buffer, session);
-        if (parsed) {
-          hasYieldedContent = true;
+        for (const parsed of parse(buffer)) {
+          recordChunk(parsed);
           yield parsed;
         }
       } catch {
@@ -624,48 +723,39 @@ export class OpenClawProvider extends BaseCliProvider {
     }
 
     // Wait for process exit
-    const exitCode = await this.waitForProcess(session);
-    console.log('[Mysti] OpenClaw: Process exited with code:', exitCode);
+    const exitCode = timedOut ? null : await this.waitForProcess(session);
+    if (!timedOut) { console.log('[Mysti] OpenClaw: Process exited with code:', exitCode); }
+    // A credential may cross stderr chunks or change while the child runs.
+    // Only report the complete diagnostic using the issuing child's snapshot.
+    const stderr = this._redactProcessError(stderrRef.output, issuingProcess);
+    if (stderr.trim()) { console.log('[Mysti] OpenClaw stderr:', stderr); }
 
     // Fallback: if no NDJSON lines yielded content, try full-blob JSON parse
-    if (!hasYieldedContent && fullOutput.trim()) {
+    if (!hasYieldedContent && !parsedNativeResult && fullOutput.trim()) {
       try {
         const data = JSON.parse(fullOutput);
 
-        // Extract text from payloads array
-        if (data.payloads && Array.isArray(data.payloads)) {
-          for (const payload of data.payloads) {
-            if (payload.text) {
-              yield { type: 'text', content: payload.text };
-              hasYieldedContent = true;
-            }
-          }
-        }
-
-        // Extract usage stats from meta
-        if (data.meta?.agentMeta?.usage) {
-          const u = data.meta.agentMeta.usage;
-          (session as OpenClawSessionState).lastUsageStats = {
-            input_tokens: u.input || 0,
-            output_tokens: u.output || 0,
-          };
-          console.log('[Mysti] OpenClaw: Usage stats:', (session as OpenClawSessionState).lastUsageStats);
-        }
-
-        const contextTokens = data.meta?.agentMeta?.contextTokens;
-        if (typeof contextTokens === 'number' && contextTokens > 0) {
-          (session as OpenClawSessionState).reportedContextWindow = contextTokens;
-        }
-
-        // Extract session ID for reuse
-        if (data.meta?.agentMeta?.sessionId) {
-          session.sessionId = data.meta.agentMeta.sessionId;
+        for (const parsed of this._parseNativeResult(data, session as OpenClawSessionState, issuingProcess) ?? []) {
+          recordChunk(parsed);
+          yield parsed;
         }
       } catch {
-        // Not valid JSON — yield as plain text
-        yield { type: 'text', content: fullOutput.trim() };
-        hasYieldedContent = true;
+        if (timedOut || (exitCode !== 0 && exitCode !== null)) {
+          // A failed command's unstructured stdout is a diagnostic, not an
+          // assistant reply. It needs the same credential filtering as stderr.
+          stdoutDiagnostic = fullOutput.trim();
+        } else {
+          yield { type: 'text', content: fullOutput.trim() };
+          hasYieldedContent = true;
+        }
       }
+    }
+
+    if (timedOut) {
+      if (!hasYieldedError) {
+        yield this.handleError(`${this.displayName} produced no output for ${Math.round(inactivityMs / 60000)} minutes — the request timed out.`, issuingProcess);
+      }
+      return;
     }
 
     // Handle errors (same pattern as base class). Plan 18 (2.4 audit): these
@@ -673,21 +763,18 @@ export class OpenClawProvider extends BaseCliProvider {
     // turn) with a silent stderr ended the request with NO error chunk: the
     // spinner stopped and nothing was shown. The base always surfaces it.
     if (exitCode !== 0 && exitCode !== null) {
-      const msg = stderrRef.output || `${this.displayName} exited with code ${exitCode}`;
-      if (this.isAuthenticationError(msg)) {
-        yield { type: 'auth_error', content: msg, authCommand: this.getAuthCommand(), providerName: this.displayName };
-      } else {
-        yield { type: 'error', content: msg };
+      if (!hasYieldedError) {
+        // Native stderr can contain only routine progress when its worker dies.
+        // Keep the actual exit reason visible, with diagnostics on their own
+        // line so native authentication wrappers remain recognizable.
+        const detail = stderr || stdoutDiagnostic;
+        yield this.handleError(`${this.displayName} exited with code ${exitCode}.${detail ? `\n${detail}` : ''}`, issuingProcess);
       }
     } else if (!hasYieldedContent) {
-      const msg = stderrRef.output
-        ? `No response received. stderr: ${stderrRef.output}`
+      const msg = stderr
+        ? `No response received. stderr: ${stderr}`
         : 'No response received from CLI';
-      if (stderrRef.output && this.isAuthenticationError(stderrRef.output)) {
-        yield { type: 'auth_error', content: stderrRef.output, authCommand: this.getAuthCommand(), providerName: this.displayName };
-      } else {
-        yield { type: 'error', content: msg };
-      }
+      yield this.handleError(stderr && this.isAuthenticationError(stderr) ? stderr : msg, issuingProcess);
     }
   }
 
@@ -702,34 +789,56 @@ export class OpenClawProvider extends BaseCliProvider {
     panelId?: string,
     providerManager?: unknown,
     agentConfig?: AgentConfiguration,
+    _attachments?: Attachment[],
+    resolveInput?: ProviderInputResolver,
   ): AsyncGenerator<StreamChunk> {
+    if (resolveInput && !resolveInput()) { return; }
     if (!allowsUnrestrictedNativeTools(settings)) {
       yield { type: 'error', content: 'OpenClaw cannot enforce Mysti approval or read-only modes. Use another provider, or explicitly select Edit Automatically with Full Access to use OpenClaw’s configured tool policy.' };
       yield { type: 'done' };
       return;
     }
-    const useGateway = vscode.workspace.getConfiguration('mysti').get<boolean>('openclawUseGateway', true);
+    if (this._disposed) { return; }
+    const previous = this._getSession(panelId);
+    const key = previous.panelId;
+    if (this._requestControllers.has(key)) { this.cancelCurrentRequest(key); }
+    // Parser state and process ownership belong to this turn. Carry only the
+    // native conversation selector and panel-provided context into its successor.
+    const session = this._createSession(key);
+    session.sessionId = previous.sessionId;
+    session.channelSystemContext = previous.channelSystemContext;
+    session.autonomousMode = previous.autonomousMode;
+    this._panelSessions.set(key, session);
+    const controller = new AbortController();
+    this._requestControllers.set(key, controller);
+    const isCurrent = () => !this._disposed && !controller.signal.aborted && !session.cancelled
+      && this._requestControllers.get(key) === controller && this._panelSessions.get(key) === session;
 
-    // Try Gateway first
-    if (useGateway && this._gateway.isConnected()) {
-      console.log('[Mysti] OpenClaw: Using Gateway');
-      yield* this._sendViaGateway(content, context, settings, persona, panelId, agentConfig);
-      return;
-    }
-
-    // Attempt Gateway reconnection if enabled
-    if (useGateway && !this._gateway.isConnected()) {
-      const reconnected = await this._gateway.connect();
-      if (reconnected) {
-        console.log('[Mysti] OpenClaw: Gateway reconnected, using Gateway');
-        yield* this._sendViaGateway(content, context, settings, persona, panelId, agentConfig);
+    try {
+      const useGateway = vscode.workspace.getConfiguration('mysti').get<boolean>('openclawUseGateway', true);
+      if (useGateway && this._gateway.isConnected()) {
+        console.log('[Mysti] OpenClaw: Using Gateway');
+        yield* this._sendViaGateway(content, context, settings, session, isCurrent, persona, panelId, agentConfig, resolveInput);
         return;
       }
+      if (useGateway) {
+        const reconnected = await this._gateway.connect();
+        if (!isCurrent()) { return; }
+        if (reconnected) {
+          console.log('[Mysti] OpenClaw: Gateway reconnected, using Gateway');
+          yield* this._sendViaGateway(content, context, settings, session, isCurrent, persona, panelId, agentConfig, resolveInput);
+          return;
+        }
+      }
+      if (!isCurrent()) { return; }
+      console.log('[Mysti] OpenClaw: Using CLI fallback');
+      yield* this._sendViaCli(content, context, settings, session, isCurrent, persona, panelId, providerManager, agentConfig, resolveInput);
+    } catch (error) {
+      if (isCurrent()) { throw error; }
+    } finally {
+      controller.abort();
+      if (this._requestControllers.get(key) === controller) { this._requestControllers.delete(key); }
     }
-
-    // Fallback to CLI
-    console.log('[Mysti] OpenClaw: Using CLI fallback');
-    yield* this._sendViaCli(content, context, settings, persona, panelId, providerManager, agentConfig);
   }
 
   /**
@@ -739,42 +848,62 @@ export class OpenClawProvider extends BaseCliProvider {
     content: string,
     context: ContextItem[],
     settings: Settings,
+    session: OpenClawSessionState,
+    isCurrent: () => boolean,
     persona?: import('../base/IProvider').PersonaConfig,
     panelId?: string,
     agentConfig?: AgentConfiguration,
+    resolveInput?: ProviderInputResolver,
   ): AsyncGenerator<StreamChunk> {
-    const session = this._getSession(panelId);
-    const fullPrompt = await this.buildPromptAsync(
+    const render = resolveInput ? await this.preparePromptRenderer(null, settings, persona, agentConfig, undefined, session.channelSystemContext) : undefined;
+    const staticPrompt = render ? undefined : await this.buildPromptAsync(
       content, context, null, settings, persona, agentConfig,
       undefined, session.channelSystemContext,
     );
+
+    if (!isCurrent()) { return; }
 
     // Map settings to Gateway options
     const thinkingMap: Record<string, string> = {
       'none': 'off', 'low': 'low', 'medium': 'medium', 'high': 'high',
     };
 
+    const redactStored = await this._captureRequestDiagnostics(process.cwd(), process.env);
+    if (!isCurrent()) { return; }
+    const redactGateway = this._gateway.captureDiagnosticRedactor();
+    const redact = (value: unknown) => redactStored(redactGateway(value));
     try {
       // Emit session_active so the webview shows the session indicator
       // The Gateway WebSocket doesn't emit system/init events like the CLI does
-      const session = this._getSession(panelId);
       if (!session.sessionId) {
         session.sessionId = `openclaw-gw-${panelId || 'default'}-${Date.now()}`;
       }
-      yield { type: 'session_active' as const, sessionId: session.sessionId };
+      yield { type: 'session_active' as const, sessionId: session.sessionId, textRevisions: true };
 
-      yield* this._gateway.sendAgentMessage(fullPrompt, {
+      if (!isCurrent()) { return; }
+      const input = resolveInput?.();
+      if (resolveInput && !input) { return; }
+      const fullPrompt = render && input ? render(input.content, input.context) : staticPrompt!;
+      if (!isCurrent()) { return; }
+      for await (const chunk of this._gateway.sendAgentMessage(fullPrompt, {
         thinking: thinkingMap[settings.thinkingLevel] || 'medium',
         sessionKey: session.sessionId || `mysti-${panelId || 'default'}`,
-      });
+        onRunMetadata: metadata => { if (isCurrent()) { this._applyRunMetadata(session, metadata); } },
+        diagnosticRedactor: redactStored,
+      })) {
+        if (!isCurrent()) { return; }
+        yield chunk.type === 'error' ? this.handleError(redact(chunk.content)) : chunk;
+        if (!isCurrent()) { return; }
+      }
+      if (!isCurrent()) { return; }
 
       // Yield done with usage stats (and the window OpenClaw reported)
       yield this._doneChunk(panelId);
       console.log('[Mysti] OpenClaw: Gateway stream complete');
     } catch (error) {
-      console.log('[Mysti] OpenClaw: Gateway error, may retry via CLI:', error);
-      yield this.handleError(error);
-      yield { type: 'done' };
+      if (!isCurrent()) { return; }
+      yield this.handleError(redact(error));
+      if (isCurrent()) { yield { type: 'done' }; }
     }
   }
 
@@ -785,86 +914,114 @@ export class OpenClawProvider extends BaseCliProvider {
     content: string,
     context: ContextItem[],
     settings: Settings,
+    session: OpenClawSessionState,
+    isCurrent: () => boolean,
     persona?: import('../base/IProvider').PersonaConfig,
     panelId?: string,
     providerManager?: unknown,
     agentConfig?: AgentConfiguration,
+    resolveInput?: ProviderInputResolver,
   ): AsyncGenerator<StreamChunk> {
-    const session = this._getSession(panelId);
     const cliPath = this.getCliPath();
     const baseArgs = this.buildCliArgs(settings, session);
 
-    const fullPrompt = await this.buildPromptAsync(
+    const render = resolveInput ? await this.preparePromptRenderer(null, settings, persona, agentConfig, undefined, session.channelSystemContext) : undefined;
+    const staticPrompt = render ? undefined : await this.buildPromptAsync(
       content, context, null, settings, persona, agentConfig,
       undefined, session.channelSystemContext,
     );
 
+    if (!isCurrent()) { return; }
+
     // Session identifier — reuse existing session or derive from panelId
     const sessionId = session.sessionId || panelId || `mysti-${Date.now()}`;
-    const args = [...baseArgs, '--session-id', sessionId, '--message', fullPrompt];
+    let proc: ChildProcess | undefined;
+    let messageFile: { directory: string; file: string } | undefined;
 
     // Declare outside try so finally block can access for cleanup
     const stderrRef = { output: '' };
-    const stderrHandler = (data: Buffer) => {
-      const text = data.toString();
-      stderrRef.output += text;
-      console.log('[Mysti] OpenClaw stderr:', text);
+    const stderrHandler = (data: string) => {
+      stderrRef.output += data;
     };
 
     try {
-      const workspaceFolders = vscode.workspace.workspaceFolders;
-      const cwd = workspaceFolders ? workspaceFolders[0].uri.fsPath : process.cwd();
-
-      console.log('[Mysti] OpenClaw: Starting CLI at:', cliPath);
-      console.log('[Mysti] OpenClaw: Working directory:', cwd);
+      const cwd = this._getCliCwd();
 
       const { spawn } = await import('child_process');
-      session.process = spawn(cliPath, args, {
+      if (!isCurrent()) { return; }
+      const env = getEnrichedEnv();
+      const redactBackend = await this._captureRequestDiagnostics(cwd, env);
+      if (!isCurrent()) { return; }
+      const input = resolveInput?.();
+      if (resolveInput && !input) { return; }
+      const fullPrompt = render && input ? render(input.content, input.context) : staticPrompt!;
+      if (!isCurrent()) { return; }
+      messageFile = this._prepareMessageFile(fullPrompt, session.panelId);
+      const args = [...baseArgs, '--session-id', sessionId, '--message-file', messageFile.file];
+      proc = spawn(cliPath, args, {
         cwd,
-        env: getEnrichedEnv(),
+        env,
         stdio: ['ignore', 'pipe', 'pipe'],
       });
+      this._backendErrorRedactors.set(proc, redactBackend);
+      this._captureProcessAuthentication(proc, env);
+      console.log('[Mysti] OpenClaw: Starting CLI at:', this._redactProcessError(cliPath, proc));
+      console.log('[Mysti] OpenClaw: Working directory:', this._redactProcessError(cwd, proc));
+
+      session.process = proc;
 
       // Plan 18 (2.4 audit): early error listener — an async spawn failure
       // otherwise emits an unhandled 'error' event before waitForProcess
       // attaches its own listener.
-      session.process.on('error', (err) => {
-        console.error('[Mysti] OpenClaw: Spawn error:', err);
-        stderrRef.output += `\nspawn error: ${err.message}`;
+      proc.on('error', (err) => {
+        // Raw Node errors also carry spawnargs. Keep diagnostics to the safe
+        // message, without publishing arguments or an issuing credential.
+        const message = this._redactProcessError(err.message, proc);
+        console.error('[Mysti] OpenClaw: Spawn error:', message);
+        stderrRef.output += `\nspawn error: ${message}`;
       });
 
       // Register process for per-panel cancellation
       if (panelId && providerManager && typeof (providerManager as ProcessTracker).registerProcess === 'function') {
-        (providerManager as ProcessTracker).registerProcess(panelId, session.process, this.id);
+        (providerManager as ProcessTracker).registerProcess(panelId, proc, this.id);
       }
 
       // Capture stderr for error reporting
-      if (session.process.stderr) {
-        session.process.stderr.on('data', stderrHandler);
+      if (proc.stderr) {
+        proc.stderr.setEncoding('utf8');
+        proc.stderr.on('data', stderrHandler);
       }
 
       // Process streaming output
-      yield* this.processStream(stderrRef, session);
+      for await (const chunk of this.processStream(stderrRef, session)) {
+        if (!isCurrent()) { return; }
+        yield chunk;
+        if (!isCurrent()) { return; }
+      }
+      if (!isCurrent()) { return; }
 
       // Yield done with usage stats (and the window OpenClaw reported)
       yield this._doneChunk(panelId);
       console.log('[Mysti] OpenClaw: CLI stream complete');
     } catch (error) {
-      yield this.handleError(error);
-      yield { type: 'done' };
+      if (!isCurrent()) { return; }
+      yield this.handleError(error, proc);
+      if (isCurrent()) { yield { type: 'done' }; }
     } finally {
-      // Plan 18 (2.4 audit): liveness-gated tree kill with SIGKILL escalation —
-      // the old `.killed` guard skipped a signalled-but-alive CLI, and a bare
-      // SIGTERM left openclaw's own children running.
-      if (isProcessLive(session.process)) {
-        if (session.process!.stderr) {
-          session.process!.stderr.removeListener('data', stderrHandler);
-        }
-        void killProcessTree(session.process, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
+      if (messageFile) {
+        this._cleanupMessageDirectory(messageFile.directory);
       }
-      session.process = null;
-      if (panelId && providerManager && typeof (providerManager as ProcessTracker).clearProcess === 'function') {
-        (providerManager as ProcessTracker).clearProcess(panelId);
+      proc?.stderr?.removeListener('data', stderrHandler);
+      if (proc && isProcessLive(proc)) {
+        // Stop already requested cleanup; preserve that grace instead of
+        // signalling again, while retaining the existing escalation observer.
+        void killProcessTree(proc, PROCESS_KILL_GRACE_PERIOD_MS, {
+          label: this.displayName, initialSignal: session.cancelled ? null : 'SIGTERM',
+        });
+      }
+      if (session.process === proc) { session.process = null; }
+      if (proc && panelId && providerManager && typeof (providerManager as ProcessTracker).clearProcess === 'function') {
+        (providerManager as ProcessTracker).clearProcess(panelId, proc);
       }
     }
   }
@@ -873,6 +1030,8 @@ export class OpenClawProvider extends BaseCliProvider {
    * Cancel current request (Gateway or CLI)
    */
   cancelCurrentRequest(panelId?: string): void {
+    if (panelId) { this._requestControllers.get(panelId)?.abort(); }
+    else { for (const controller of this._requestControllers.values()) { controller.abort(); } }
     // Cancel Gateway run
     if (panelId) {
       const sessionKey = this._panelSessions.get(panelId)?.sessionId;
@@ -891,7 +1050,16 @@ export class OpenClawProvider extends BaseCliProvider {
     return window;
   }
 
-  getStoredUsage(panelId?: string): { input_tokens: number; output_tokens: number } | null {
+  protected override _doneChunk(panelId?: string): StreamChunk {
+    const session = this._getSession(panelId) as OpenClawSessionState;
+    const contextUsage = session.lastContextUsageStats ?? null;
+    const reportedModel = session.reportedModel;
+    session.lastContextUsageStats = null;
+    session.reportedModel = undefined;
+    return { ...super._doneChunk(panelId), contextUsage, ...(reportedModel ? { reportedModel } : {}) };
+  }
+
+  getStoredUsage(panelId?: string): UsageStats | null {
     const session = this._getSession(panelId) as OpenClawSessionState;
     const usage = session.lastUsageStats;
     session.lastUsageStats = null;
@@ -899,54 +1067,82 @@ export class OpenClawProvider extends BaseCliProvider {
   }
 
   async enhancePrompt(prompt: string): Promise<string> {
-    // Prefer Gateway if connected
-    if (this._gateway.isConnected()) {
-      try {
-        let result = '';
-        const enhanceMsg = `Please enhance the following prompt to be more specific and effective for a coding assistant. Return only the enhanced prompt without any explanation:\n\nOriginal prompt: "${prompt}"\n\nEnhanced prompt:`;
-        for await (const chunk of this._gateway.sendAgentMessage(enhanceMsg, { thinking: 'off', sessionKey: `mysti-enhance-${Date.now()}-${Math.random().toString(36).slice(2)}` })) {
-          if (chunk.type === 'text' && chunk.content) {
-            result += chunk.content;
+    if (this._disposed || !prompt.trim()) { return prompt; }
+    const controller = new AbortController();
+    this._enhancementControllers.add(controller);
+    const deadline = setTimeout(() => controller.abort(), ENHANCEMENT_TIMEOUT_MS);
+    const message = `Please enhance the following prompt to be more specific and effective for a coding assistant. Return only the enhanced prompt without any explanation:\n\nOriginal prompt: "${prompt}"\n\nEnhanced prompt:`;
+    try {
+      const useGateway = vscode.workspace.getConfiguration('mysti').get<boolean>('openclawUseGateway', true);
+      if (useGateway && this._gateway.isConnected()) {
+        const sessionKey = `mysti-enhance-${randomUUID()}`;
+        const cancel = () => { void this._gateway.cancelAgent(sessionKey); };
+        controller.signal.addEventListener('abort', cancel, { once: true });
+        try {
+          let result = '', bytes = 0;
+          for await (const chunk of this._gateway.sendAgentMessage(message, { thinking: 'off', sessionKey, textOnly: true })) {
+            if (controller.signal.aborted) { return prompt; }
+            if (chunk.type === 'error' || chunk.type === 'auth_error' || chunk.type === 'tool_use' || chunk.type === 'tool_result') { return prompt; }
+            if (chunk.type === 'text' && typeof chunk.content === 'string') {
+              bytes += Buffer.byteLength(chunk.content);
+              if (bytes > ENHANCEMENT_MAX_OUTPUT_BYTES) { controller.abort(); return prompt; }
+              result = applyStreamText(result, chunk);
+            }
           }
+          return controller.signal.aborted ? prompt : result.trim() || prompt;
+        } finally {
+          controller.signal.removeEventListener('abort', cancel);
         }
-        return result.trim() || prompt;
-      } catch {
-        // Fall through to CLI
       }
+      return await this._enhanceViaCli(prompt, message, controller.signal);
+    } catch {
+      // Unsupported text-only options, failed auth or interrupted output must
+      // leave the draft intact. Never retry through a tool-enabled agent run.
+      return prompt;
+    } finally {
+      clearTimeout(deadline);
+      this._enhancementControllers.delete(controller);
     }
+  }
 
-    // CLI fallback
+  private async _enhanceViaCli(prompt: string, message: string, signal: AbortSignal): Promise<string> {
     const { spawn } = await import('child_process');
-    const cliPath = this.getCliPath();
-    const enhanceMsg = `Please enhance the following prompt to be more specific and effective for a coding assistant. Return only the enhanced prompt without any explanation:\n\nOriginal prompt: "${prompt}"\n\nEnhanced prompt:`;
-
+    if (signal.aborted || this._disposed) { return prompt; }
     return new Promise((resolve) => {
-      const proc = spawn(cliPath, ['agent', '--message', enhanceMsg, '--json', '--local'], {
+      // This command calls OpenClaw's simple-completion transport without an
+      // agent session or tools. Its CLI accepts prompt text only via --prompt.
+      const proc = spawn(this.getCliPath(), ['infer', 'model', 'run', '--prompt', message, '--json', '--local', '--thinking', 'off'], {
+        cwd: this._getCliCwd(),
         env: getEnrichedEnv(),
         stdio: ['ignore', 'pipe', 'pipe'],
+        detached: process.platform !== 'win32',
       });
-
-      let output = '';
-      proc.stdout?.on('data', (data: Buffer) => {
-        try {
-          const parsed = JSON.parse(data.toString().trim());
-          if (parsed.content || parsed.text) {
-            output += parsed.content || parsed.text;
-          }
-        } catch {
-          output += data.toString();
-        }
-      });
-
+      markOwnedProcessGroup(proc);
+      let output = '', bytes = 0, failed = false, stopping = false;
+      const stop = () => {
+        failed = true;
+        if (stopping) { return; }
+        stopping = true;
+        void killProcessTree(proc, PROCESS_KILL_GRACE_PERIOD_MS, { label: 'OpenClaw prompt enhancement' });
+      };
+      signal.addEventListener('abort', stop, { once: true });
       proc.on('close', (code: number | null) => {
-        if (code === 0 && output.trim()) {
-          resolve(output.trim());
-        } else {
-          resolve(prompt);
-        }
+        signal.removeEventListener('abort', stop);
+        resolve(code === 0 && !failed && !signal.aborted ? enhancementText(output) || prompt : prompt);
       });
-
-      proc.on('error', () => resolve(prompt));
+      proc.on('error', () => { failed = true; });
+      // Decode across byte boundaries, then parse only after successful exit.
+      proc.stdout?.setEncoding('utf8');
+      proc.stdout?.on('data', (data: string) => {
+        if (failed) { return; }
+        bytes += Buffer.byteLength(data);
+        if (bytes > ENHANCEMENT_MAX_OUTPUT_BYTES) { stop(); return; }
+        output += data;
+      });
+      proc.stdout?.on('error', stop);
+      proc.stderr?.on('error', stop);
+      proc.stderr?.resume();
+      if (signal.aborted) { stop(); }
     });
   }
 

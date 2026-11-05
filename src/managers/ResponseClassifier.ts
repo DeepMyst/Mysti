@@ -12,10 +12,14 @@
  */
 
 import * as vscode from 'vscode';
-import { spawn, ChildProcess } from 'child_process';
+import { ChildProcess } from 'child_process';
+import { StringDecoder } from 'string_decoder';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { killProcessTree, markOwnedProcessGroup } from '../utils/processKill';
+import { PROCESS_KILL_GRACE_PERIOD_MS } from '../constants';
+import { spawnTextOnlyClaudeWorker } from '../utils/textOnlyClaudeWorker';
 import type {
   ResponseClassification,
   ClarifyingQuestion,
@@ -26,6 +30,25 @@ import type {
 const PLAN_COLORS: SuggestionColor[] = ['blue', 'green', 'purple', 'orange', 'indigo', 'teal'];
 const PLAN_ICONS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣'];
 
+/** Selection handles belong to the UI. A repeated model ID must never make
+ * choosing one displayed plan or question address a different entry. */
+function uniqueChoiceIds<T extends { id: string }>(choices: T[], prefix: string): T[] {
+  const validId = (id: unknown): id is string => typeof id === 'string' && id.trim().length > 0;
+  const reserved = new Set(choices.map(choice => choice.id).filter(validId));
+  const used = new Set<string>();
+  return choices.map((choice, index) => {
+    let id = validId(choice.id) ? choice.id : '';
+    if (!id || used.has(id)) {
+      const base = `${prefix}${index + 1}`;
+      id = base;
+      let suffix = 1;
+      while (used.has(id) || reserved.has(id)) { id = `${base}-${suffix++}`; }
+    }
+    used.add(id);
+    return { ...choice, id };
+  });
+}
+
 /**
  * ResponseClassifier - AI-powered classification of assistant responses
  * Uses Claude Haiku to distinguish between clarifying questions and implementation plans
@@ -33,64 +56,20 @@ const PLAN_ICONS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️
 export class ResponseClassifier {
   private _claudePath: string;
   private _currentProcess: ChildProcess | null = null;
-  private _warmProcessPool: ChildProcess[] = [];
-  private readonly _poolSize = 2;
-  private _isSpawning: boolean = false;
+  private _disposed = false;
+  private readonly _ownedProcesses = new Set<ChildProcess>();
+  private readonly _activeOperations = new Map<ChildProcess, () => void>();
 
   constructor() {
     this._claudePath = this._findClaudeCliPath();
-    this._spawnWarmProcess();
     console.log('[Mysti] ResponseClassifier initialized with CLI path:', this._claudePath);
-  }
-
-  /**
-   * Pre-spawn a Claude CLI process ready for classification
-   */
-  private _spawnWarmProcess(): void {
-    if (this._isSpawning || this._warmProcessPool.length >= this._poolSize) {
-      return;
-    }
-
-    this._isSpawning = true;
-
-    try {
-      while (this._warmProcessPool.length < this._poolSize) {
-        const proc = spawn(this._claudePath, [
-          '--print',
-          '--output-format', 'text',
-          '--model', 'claude-haiku-4-5-20251001'
-        ], { stdio: ['pipe', 'pipe', 'pipe'] });
-
-        const index = this._warmProcessPool.length;
-
-        proc.on('error', (err) => {
-          console.error('[Mysti] Classifier warm process error:', err);
-          this._warmProcessPool = this._warmProcessPool.filter(p => p !== proc);
-        });
-
-        proc.on('close', (code) => {
-          if (code !== 0 && code !== null) {
-            console.log('[Mysti] Classifier warm process closed with code:', code);
-          }
-          this._warmProcessPool = this._warmProcessPool.filter(p => p !== proc);
-        });
-
-        this._warmProcessPool.push(proc);
-        console.log(`[Mysti] Classifier warm process ${index + 1}/${this._poolSize} spawned`);
-      }
-
-      this._isSpawning = false;
-      console.log(`[Mysti] Classifier warm pool ready (${this._warmProcessPool.length}/${this._poolSize})`);
-    } catch (error) {
-      console.error('[Mysti] Failed to spawn classifier warm process:', error);
-      this._isSpawning = false;
-    }
   }
 
   /**
    * Classify an AI response to identify questions and plan options
    */
   async classify(content: string): Promise<ResponseClassification> {
+    if (this._disposed) { return { questions: [], planOptions: [], context: content }; }
     console.log('[Mysti] ResponseClassifier: Content length:', content.length);
 
     // Quick check: if content is very short, skip classification
@@ -201,76 +180,61 @@ Classification Rules:
 
 Return ONLY the JSON object, nothing else.`;
 
-    return new Promise((resolve) => {
-      let proc: ChildProcess | null = null;
-
-      if (this._warmProcessPool.length > 0) {
-        proc = this._warmProcessPool.shift()!;
-        console.log(`[Mysti] Using warm process for classification (${this._warmProcessPool.length} remaining)`);
-      } else {
-        console.log('[Mysti] No warm process, spawning new one for classification');
-        proc = spawn(this._claudePath, [
-          '--print',
-          '--output-format', 'text',
-          '--model', 'claude-haiku-4-5-20251001'
-        ], { stdio: ['pipe', 'pipe', 'pipe'] });
-      }
-
-      this._currentProcess = proc;
-
+    // Keep the CLI startup stdin deadline inside the active operation.
+    const proc = this._createProcess();
+    this._currentProcess = proc;
+    return new Promise(resolve => {
       let output = '';
-      let stderr = '';
-
-      proc.stdin?.write(prompt);
-      proc.stdin?.end();
-
-      proc.stdout?.on('data', (data) => {
-        output += data.toString();
-      });
-
-      proc.stderr?.on('data', (data) => {
-        stderr += data.toString();
-      });
-
-      // Timeout after 20 seconds
-      const timeout = setTimeout(() => {
-        console.warn('[Mysti] Classification timed out after 20s');
-        proc?.kill('SIGTERM');
-        resolve({ questions: [], planOptions: [], context: content });
-      }, 20000);
-
-      proc.on('close', (code) => {
+      const decoder = new StringDecoder('utf8');
+      let settled = false;
+      const fallback = (): ResponseClassification => ({ questions: [], planOptions: [], context: content });
+      const onData = (data: Buffer) => { output += decoder.write(data); };
+      const finish = (result: ResponseClassification) => {
+        if (settled) { return; }
+        settled = true;
         clearTimeout(timeout);
-        this._currentProcess = null;
-        this._spawnWarmProcess();
-
+        this._activeOperations.delete(proc);
+        if (this._currentProcess === proc) { this._currentProcess = null; }
+        proc.stdout?.removeListener('data', onData);
+        proc.removeListener('close', onClose);
+        proc.removeListener('error', onError);
+        resolve(result);
+      };
+      const onClose = () => {
+        output += decoder.end();
+        let result = fallback();
         if (output.trim()) {
-          try {
-            const parsed = this._parseResponse(output, content);
-            console.log('[Mysti] Classification result:', {
-              questions: parsed.questions.length,
-              planOptions: parsed.planOptions.length
-            });
-            resolve(parsed);
-            return;
-          } catch (e) {
-            console.error('[Mysti] Failed to parse classification:', e);
-          }
-        } else {
-          console.error('[Mysti] Classification failed - code:', code, 'stderr:', stderr.substring(0, 200));
+          try { result = this._parseResponse(output, content); } catch { /* Optional classification failed. */ }
         }
-
-        resolve({ questions: [], planOptions: [], context: content });
-      });
-
-      proc.on('error', (err) => {
-        clearTimeout(timeout);
-        this._currentProcess = null;
-        this._spawnWarmProcess();
-        console.error('[Mysti] Spawn error:', err);
-        resolve({ questions: [], planOptions: [], context: content });
-      });
+        finish(result);
+      };
+      const onError = () => { finish(fallback()); this._terminateProcess(proc); };
+      this._activeOperations.set(proc, () => finish(fallback()));
+      proc.stdout?.on('data', onData);
+      proc.on('close', onClose);
+      proc.on('error', onError);
+      const timeout = setTimeout(() => { finish(fallback()); this._terminateProcess(proc); }, 20000);
+      try { proc.stdin?.write(prompt); proc.stdin?.end(); } catch { onError(); }
     });
+  }
+
+  private _createProcess(): ChildProcess {
+    const proc = spawnTextOnlyClaudeWorker(this._claudePath);
+    markOwnedProcessGroup(proc);
+    this._ownedProcesses.add(proc);
+    proc.stderr?.resume();
+    proc.on('error', () => {});
+    proc.stdin?.on('error', () => {
+      this._activeOperations.get(proc)?.();
+      this._terminateProcess(proc);
+    });
+    proc.once('exit', () => this._terminateProcess(proc));
+    proc.once('close', () => { this._ownedProcesses.delete(proc); });
+    return proc;
+  }
+
+  private _terminateProcess(proc: ChildProcess): void {
+    void killProcessTree(proc, PROCESS_KILL_GRACE_PERIOD_MS, { initialSignal: 'SIGKILL', label: 'classification worker' });
   }
 
   /**
@@ -288,16 +252,16 @@ Return ONLY the JSON object, nothing else.`;
     // Validate and normalize questions
     const questions: ClarifyingQuestion[] = (parsed.questions || [])
       .filter((q: Record<string, unknown>) => q.question && (((q.options as unknown[] | undefined)?.length ?? 0) > 0 || q.inputType === 'text'))
-      .map((q: Record<string, unknown>, i: number) => ({
-        id: (q.id as string) || `q${i + 1}`,
+      .map((q: Record<string, unknown>) => ({
+        id: q.id as string,
         question: String(q.question),
         inputType: ['select', 'radio', 'checkbox', 'text'].includes(q.inputType as string) ? q.inputType as string : 'radio',
-        options: ((q.options as Record<string, unknown>[] | undefined) || []).map((opt: Record<string, unknown>, j: number) => ({
-          id: (opt.id as string) || `opt${j}`,
+        options: uniqueChoiceIds(((q.options as Record<string, unknown>[] | undefined) || []).map((opt: Record<string, unknown>) => ({
+          id: opt.id as string,
           label: String(opt.label || ''),
           description: opt.description as string | undefined,
           value: String(opt.value || opt.label || '')
-        })),
+        })), 'opt'),
         placeholder: q.placeholder as string | undefined,
         required: q.required !== false,
         questionType: ['clarifying', 'meta'].includes(q.questionType as string) ? q.questionType as string : 'clarifying'
@@ -307,7 +271,7 @@ Return ONLY the JSON object, nothing else.`;
     const planOptions: PlanOption[] = (parsed.planOptions || [])
       .filter((p: Record<string, unknown>) => p.title && p.approach)
       .map((p: Record<string, unknown>, i: number) => ({
-        id: p.id || `plan${i + 1}`,
+        id: p.id as string,
         title: String(p.title).substring(0, 60),
         summary: String(p.summary || '').substring(0, 200),
         approach: String(p.approach),
@@ -319,8 +283,8 @@ Return ONLY the JSON object, nothing else.`;
       }));
 
     return {
-      questions,
-      planOptions,
+      questions: uniqueChoiceIds(questions, 'q'),
+      planOptions: uniqueChoiceIds(planOptions, 'plan'),
       context: String(parsed.context || '').substring(0, 500)
     };
   }
@@ -329,9 +293,11 @@ Return ONLY the JSON object, nothing else.`;
    * Cancel any ongoing classification
    */
   cancel(): void {
-    if (this._currentProcess) {
-      this._currentProcess.kill('SIGTERM');
-      this._currentProcess = null;
+    const proc = this._currentProcess;
+    if (proc) {
+      this._activeOperations.get(proc)?.();
+      this._terminateProcess(proc);
+      if (this._currentProcess === proc) { this._currentProcess = null; }
     }
   }
 
@@ -339,11 +305,11 @@ Return ONLY the JSON object, nothing else.`;
    * Dispose resources
    */
   dispose(): void {
-    this.cancel();
-    for (const proc of this._warmProcessPool) {
-      proc.kill('SIGTERM');
-    }
-    this._warmProcessPool = [];
+    if (this._disposed) { return; }
+    this._disposed = true;
+    for (const settle of [...this._activeOperations.values()]) { settle(); }
+    for (const proc of this._ownedProcesses) { this._terminateProcess(proc); }
+    this._currentProcess = null;
   }
 
   /**

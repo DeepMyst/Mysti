@@ -113,7 +113,8 @@ describe('sub-agent cards own each attempt and its rendering', () => {
     h.cards.toolResult({ agentId: 'agent', toolCall: { id: 'failed', status: 'failed' } });
     h.cards.complete({ agentId: 'agent', hasError });
     const tools = h.card().querySelectorAll('.subagent-tool-call');
-    expect(tools[0].classList.contains(hasError ? 'failed' : 'completed')).toBe(true);
+    expect(tools[0].classList.contains(hasError ? 'failed' : 'unconfirmed')).toBe(true);
+    if (!hasError) { expect(tools[0].textContent).toContain('result unavailable'); }
     expect(tools[1].classList.contains('completed')).toBe(true);
     expect(tools[2].classList.contains('failed')).toBe(true);
     expect(h.card().querySelector('.subagent-tool-call.running, .subagent-tool-spinner')).toBeNull();

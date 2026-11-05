@@ -40,6 +40,7 @@ vi.mock('../../src/managers/PlanOptionManager', () => ({
 }));
 
 import { ChatViewProvider } from '../../src/providers/ChatViewProvider';
+import { ContextManager } from '../../src/managers/ContextManager';
 import { PermissionManager } from '../../src/managers/PermissionManager';
 import type { NativeApprovalHandler, NativeApprovalHost, NativeApprovalRequest } from '../../src/providers/base/IProvider';
 import { clearMockConfig, setMockConfig, Uri, window as mockWindow, workspace as mockWorkspace } from '../helpers/mockVscode';
@@ -130,6 +131,8 @@ function createHarness(options: { wizardAnyReady?: boolean } = {}): Harness {
     getModelContextWindow: () => 200000,
     setChannelSystemContext: (_panelId: string, context: string) => { systemContexts.push(context); },
     cancelRequest: (panelId: string) => { cancelled.push(panelId); },
+    clearSession: () => undefined,
+    getAllProviderIds: () => [],
     suspendRequest: () => { suspendCallCount++; return suspendResult; },
     // Reached only now that _sendInitialState no longer returns early (D-1).
     getProviders: () => [],
@@ -204,20 +207,16 @@ function createHarness(options: { wizardAnyReady?: boolean } = {}): Harness {
     getThreshold: () => 75,
   } as any;
 
-  const clearPanelContext = vi.fn();
+  const contextManager = new ContextManager(extensionContext);
+  const clearPanelContext = vi.spyOn(contextManager, 'clearPanelContext');
   const provider = new ChatViewProvider({
     extensionUri,
     extensionContext,
-    contextManager: {
-      getContext: () => [],
-      setAutoContext: () => undefined,
-      clearPanelContext,
-      restorePanelContext: async () => [],
-    } as any,
+    contextManager,
     conversationManager,
     providerManager,
     suggestionManager: { generateSuggestions: async () => [] } as any,
-    brainstormManager: {} as any,
+    brainstormManager: { cancelSession: () => undefined, clearSession: () => undefined } as any,
     permissionManager,
     setupManager,
     telemetryManager: {} as any,
@@ -489,7 +488,8 @@ describe('D-6: permission gate fails closed when the process cannot be paused', 
     const provider = h.provider as any;
     provider.requestPermissionInline = () => { opened(); return gate; };
     const resume = vi.spyOn(provider._providerManager, 'resumeRequest');
-    provider._conversationManager.getConversation = () => ({ id: 'replacement', messages: [] });
+    const replacement = { id: 'replacement', messages: [] };
+    provider._conversationManager.getConversation = () => replacement;
     h.setStream([WRITE_CHUNK, { type: 'done' }]);
     const sending = send(h, GATED);
     await gateOpened;

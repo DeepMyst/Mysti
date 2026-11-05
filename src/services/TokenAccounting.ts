@@ -18,7 +18,7 @@
  * both of the two conventions the 15 backends actually speak, in OPPOSITE
  * directions:
  *
- *   - `anthropic` (Claude Code, and Cline when it fronts an Anthropic model):
+ *   - `anthropic` (Claude Code and legacy Cline with an Anthropic model):
  *     `input_tokens`, `cache_creation_input_tokens` and `cache_read_input_tokens`
  *     are DISJOINT. The prompt is the SUM of all three. Dropping cache-creation
  *     UNDER-counts, and it under-counts worst exactly when it matters most: on
@@ -55,7 +55,8 @@ export type UsageConvention =
   | 'none'
   /**
    * The backend FRONTS other vendors' models, so the convention is a property of
-   * the selected model rather than of the backend (Cline, OpenRouter, LocalAI).
+   * the selected model rather than of the backend (legacy Cline, OpenRouter,
+   * LocalAI). Modern Cline normalizes its inclusive input at the adapter.
    * Resolved per-turn by `resolveUsageConvention` from the model id.
    */
   | 'auto';

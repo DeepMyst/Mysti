@@ -95,6 +95,38 @@ const LOCAL_SERVER_PROVIDER_IDS: ReadonlySet<string> = new Set(['ollama', 'local
  */
 const REFRESH_ALL_STAGGER_MS = 400;
 
+/** Connection changes alter discovery; selecting a model or effort does not. */
+const DISCOVERY_SETTINGS: Record<string, readonly string[]> = {
+  'claude-code': ['claudeCodePath'], 'openai-codex': ['codexPath'],
+  'google-gemini': ['geminiPath'], 'github-copilot': ['copilotPath'],
+  cursor: ['cursorPath', 'cursorApiKey'], openclaw: ['openclawPath'],
+  'qwen-code': ['qwenCodePath'],
+  opencode: ['opencodePath', 'opencodeEndpoint', 'opencodeRemoteDirectory', 'opencodeRemoteUsername'],
+  ollama: ['ollamaEndpoint'], localai: ['localaiEndpoint', 'localaiApiKey'],
+  openrouter: ['openrouter.apiKey'],
+};
+
+/** External catalogs and persisted caches are runtime input, despite their TS type. */
+function validModels(value: unknown): ModelInfo[] {
+  if (!Array.isArray(value)) { return []; }
+  const models = new Map<string, ModelInfo>();
+  for (const row of value) {
+    if (!row || typeof row !== 'object' || typeof row.id !== 'string') { continue; }
+    const id = row.id.trim();
+    if (!validateModelName(id).valid) { continue; }
+    if (!models.has(id) && models.size >= MODEL_DISCOVERY_MAX_PER_PROVIDER) { continue; }
+    const model: ModelInfo = { id, name: typeof row.name === 'string' && row.name.trim() ? row.name.slice(0, 512) : id };
+    if (typeof row.contextWindow === 'number' && Number.isFinite(row.contextWindow) && row.contextWindow > 0) {
+      model.contextWindow = row.contextWindow;
+    }
+    if (typeof row.description === 'string') { model.description = row.description.slice(0, 2048); }
+    if (typeof row.deprecated === 'boolean') { model.deprecated = row.deprecated; }
+    if (typeof row.releasedAt === 'string') { model.releasedAt = row.releasedAt.slice(0, 64); }
+    models.set(id, model);
+  }
+  return Array.from(models.values());
+}
+
 /**
  * ModelRegistryService — single authority for "what models does provider X
  * have, and what are their context windows" (Plan 01).
@@ -121,7 +153,12 @@ export class ModelRegistryService {
   private readonly _memoryCache: Map<string, CachedProviderModels> = new Map();
 
   /** Per-provider in-flight refresh dedup (R4): concurrent triggers share one promise. */
-  private readonly _inFlight: Map<string, Promise<void>> = new Map();
+  private readonly _inFlight = new Map<string, { promise: Promise<void>; generation: number; controller: AbortController }>();
+  private readonly _generations = new Map<string, number>();
+  private readonly _configurationListener: vscode.Disposable;
+  private _disposed = false;
+  private _customEdits: Promise<void> = Promise.resolve();
+  private _cacheWrites: Promise<void> = Promise.resolve();
 
   private readonly _onDidUpdateModels = new vscode.EventEmitter<{ providerId: string }>();
   /** Fires when a provider's merged model list may have changed (cache/custom update). */
@@ -130,6 +167,11 @@ export class ModelRegistryService {
   constructor(context: vscode.ExtensionContext) {
     this._context = context;
     this._loadCacheFromGlobalState();
+    this._configurationListener = vscode.workspace.onDidChangeConfiguration(event => {
+      for (const [providerId, keys] of Object.entries(DISCOVERY_SETTINGS)) {
+        if (keys.some(key => event.affectsConfiguration(`mysti.${key}`))) { this._invalidateProvider(providerId); }
+      }
+    });
   }
 
   /**
@@ -137,7 +179,12 @@ export class ModelRegistryService {
    * ProviderManager is built — avoids a construction-order/import cycle).
    */
   public setProviderSource(source: ModelRegistryProviderSource): void {
+    if (this._disposed) { return; }
+    const replacing = this._source && this._source !== source;
     this._source = source;
+    if (replacing) {
+      for (const id of new Set([...this._memoryCache.keys(), ...this._inFlight.keys()])) { this._invalidateProvider(id); }
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -170,7 +217,7 @@ export class ModelRegistryService {
 
     if (opts?.revalidate !== false && this._isStale(providerId, cached)) {
       // Fire-and-forget; deduped by refresh()'s in-flight map. Never awaited.
-      void this.refresh(providerId);
+      void this.refresh(providerId).catch(() => undefined);
     }
 
     // Merge by id, low → high precedence so later sources override earlier.
@@ -246,6 +293,10 @@ export class ModelRegistryService {
    * present, or the per-provider cap is reached.
    */
   public async addCustomModel(providerId: string, modelId: string): Promise<void> {
+    return this._queueCustomEdit(() => this._addCustomModel(providerId, modelId));
+  }
+
+  private async _addCustomModel(providerId: string, modelId: string): Promise<void> {
     const trimmed = (modelId ?? '').trim();
     const validation = validateModelName(trimmed);
     if (!validation.valid) {
@@ -273,6 +324,10 @@ export class ModelRegistryService {
    * only when something was actually removed.
    */
   public async removeCustomModel(providerId: string, modelId: string): Promise<void> {
+    return this._queueCustomEdit(() => this._removeCustomModel(providerId, modelId));
+  }
+
+  private async _removeCustomModel(providerId: string, modelId: string): Promise<void> {
     const all = this._readCustomModelsSetting();
     const existing = all[providerId] ?? [];
     if (!existing.includes(modelId)) {
@@ -309,17 +364,25 @@ export class ModelRegistryService {
    *
    * Never throws to the caller (failures fall back to the cached/curated list).
    */
-  public async refresh(providerId: string, _opts?: { force?: boolean }): Promise<void> {
+  public async refresh(providerId: string, opts?: { force?: boolean }): Promise<void> {
+    if (this._disposed) { return; }
+    const generation = this._generations.get(providerId) ?? 0;
     const pending = this._inFlight.get(providerId);
     if (pending) {
-      return pending;
+      if (pending.generation !== generation) {
+        await pending.promise;
+        return this.refresh(providerId, opts);
+      }
+      return pending.promise;
     }
-    const promise = this._doRefresh(providerId);
-    this._inFlight.set(providerId, promise);
+    const controller = new AbortController();
+    const promise = this._doRefresh(providerId, controller.signal);
+    const run = { promise, generation, controller };
+    this._inFlight.set(providerId, run);
     try {
       await promise;
     } finally {
-      this._inFlight.delete(providerId);
+      if (this._inFlight.get(providerId) === run) { this._inFlight.delete(providerId); }
     }
   }
 
@@ -328,7 +391,7 @@ export class ModelRegistryService {
    * in-flight dedup wrapper stays trivial. Catches everything: discoverModels is
    * contractually non-throwing, but the registry defends regardless.
    */
-  private async _doRefresh(providerId: string): Promise<void> {
+  private async _doRefresh(providerId: string, signal: AbortSignal): Promise<void> {
     const instance = this._source?.getProviderInstance?.(providerId);
     if (!instance || typeof instance.discoverModels !== 'function') {
       // Curated-only provider (or no instance access in this build/test) — nothing
@@ -340,7 +403,8 @@ export class ModelRegistryService {
     try {
       discovered = await this._raceTimeout(
         instance.discoverModels(MODEL_DISCOVERY_TIMEOUT_MS),
-        MODEL_DISCOVERY_TIMEOUT_MS
+        MODEL_DISCOVERY_TIMEOUT_MS,
+        signal,
       );
     } catch (err) {
       // discoverModels should never throw, but if it does (or the timeout
@@ -349,8 +413,10 @@ export class ModelRegistryService {
       return;
     }
 
-    // null / empty array → "no models discovered" → keep stale cache, no event.
-    if (!Array.isArray(discovered) || discovered.length === 0) {
+    if (this._disposed || signal.aborted) { return; }
+    // A malformed/empty result cannot replace the last usable catalog.
+    const bounded = validModels(discovered);
+    if (bounded.length === 0) {
       return;
     }
 
@@ -359,12 +425,10 @@ export class ModelRegistryService {
     // — a provider fronting a very large catalog (OpenRouter, an OpenAI-compatible
     // endpoint) must not grow the cache we re-read on every activation without
     // limit.
-    const bounded = discovered.length > MODEL_DISCOVERY_MAX_PER_PROVIDER
-      ? discovered.slice(0, MODEL_DISCOVERY_MAX_PER_PROVIDER)
-      : discovered;
     this._memoryCache.set(providerId, { models: bounded, fetchedAt: Date.now() });
-    await this._persistCache();
-    this._onDidUpdateModels.fire({ providerId });
+    try { await this._persistCache(); }
+    catch { console.warn(`[Mysti] ModelRegistry: could not persist catalog for ${providerId}; using this session's result.`); }
+    if (!this._disposed && !signal.aborted) { this._onDidUpdateModels.fire({ providerId }); }
   }
 
   /**
@@ -376,15 +440,23 @@ export class ModelRegistryService {
    */
   private _raceTimeout(
     probe: Promise<ModelInfo[] | null>,
-    timeoutMs: number
+    timeoutMs: number,
+    signal: AbortSignal,
   ): Promise<ModelInfo[] | null> {
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort!: () => void;
+    const cancelled = new Promise<null>(resolve => {
+      onAbort = () => resolve(null);
+      signal.addEventListener('abort', onAbort, { once: true });
+      if (signal.aborted) { onAbort(); }
+    });
     const timeout = new Promise<null>((resolve) => {
       timer = setTimeout(() => resolve(null), timeoutMs);
     });
     // Swallow a late rejection from the probe once the timeout has already won.
     probe.catch(() => undefined);
-    return Promise.race([probe, timeout]).finally(() => {
+    return Promise.race([probe, timeout, cancelled]).finally(() => {
+      signal.removeEventListener('abort', onAbort);
       if (timer) {
         clearTimeout(timer);
       }
@@ -406,6 +478,7 @@ export class ModelRegistryService {
    * backs the explicit "refresh models" action.
    */
   public async refreshAll(opts?: { force?: boolean }): Promise<void> {
+    if (this._disposed) { return; }
     const ids = this._source?.getAllProviderIds() ?? [];
     const targets = ids.filter(id =>
       opts?.force
@@ -419,6 +492,7 @@ export class ModelRegistryService {
       if (i > 0) {
         await this._delay(REFRESH_ALL_STAGGER_MS);
       }
+      if (this._disposed) { return; }
       // Don't await the individual refresh inside the stagger loop — let probes
       // run concurrently-but-offset so one slow CLI doesn't stall the rest.
       void this.refresh(id, opts).catch(() => undefined);
@@ -467,6 +541,7 @@ export class ModelRegistryService {
    * decides whether to warm the cache in the background.
    */
   private _isStale(providerId: string, cached: CachedProviderModels | undefined): boolean {
+    if (this._disposed) { return false; }
     if (!this._providerSupportsDiscovery(providerId)) {
       return false;
     }
@@ -506,7 +581,26 @@ export class ModelRegistryService {
     const config = vscode.workspace.getConfiguration('mysti');
     const value = config.get<Record<string, string[]>>(CUSTOM_MODELS_SETTING, {});
     // Defensive clone so callers can mutate without aliasing the cached config.
-    return value ? JSON.parse(JSON.stringify(value)) : {};
+    if (!value || typeof value !== 'object' || Array.isArray(value)) { return {}; }
+    return Object.fromEntries(Object.entries(value).filter(([, models]) => Array.isArray(models)).map(([id, models]) => [id, [...models]]));
+  }
+
+  private _queueCustomEdit(edit: () => Promise<void>): Promise<void> {
+    const next = this._customEdits.then(() => this._disposed ? undefined : edit());
+    this._customEdits = next.catch(() => undefined);
+    return next;
+  }
+
+  private _invalidateProvider(providerId: string): void {
+    this._generations.set(providerId, (this._generations.get(providerId) ?? 0) + 1);
+    this._inFlight.get(providerId)?.controller.abort();
+    // Models from another endpoint/account are not fallback choices for this one.
+    if (this._memoryCache.delete(providerId)) {
+      void this._persistCache().catch(() => {
+        console.warn(`[Mysti] ModelRegistry: could not persist catalog invalidation for ${providerId}.`);
+      });
+      this._onDidUpdateModels.fire({ providerId });
+    }
   }
 
   private async _writeCustomModelsSetting(value: Record<string, string[]>): Promise<void> {
@@ -520,8 +614,9 @@ export class ModelRegistryService {
       return;
     }
     for (const [providerId, entry] of Object.entries(cache)) {
-      if (entry && Array.isArray(entry.models) && typeof entry.fetchedAt === 'number') {
-        this._memoryCache.set(providerId, { models: entry.models, fetchedAt: entry.fetchedAt });
+      if (entry && typeof entry.fetchedAt === 'number' && Number.isFinite(entry.fetchedAt)) {
+        const models = validModels(entry.models);
+        if (models.length) { this._memoryCache.set(providerId, { models, fetchedAt: entry.fetchedAt }); }
       }
     }
   }
@@ -530,12 +625,17 @@ export class ModelRegistryService {
    * Persist the in-memory discovery cache to globalState. Phase 3 calls this
    * after a successful refresh; exposed now so the round-trip is testable.
    */
-  private async _persistCache(): Promise<void> {
-    const cache: ModelRegistryCache = {};
-    for (const [providerId, entry] of this._memoryCache.entries()) {
-      cache[providerId] = entry;
-    }
-    await this._context.globalState.update(MODEL_REGISTRY_CACHE_KEY, cache);
+  private _persistCache(): Promise<void> {
+    // Every provider shares one memento key. Order the writes and snapshot at
+    // execution time so an older delayed write cannot erase a newer catalog.
+    const write = this._cacheWrites.then(async () => {
+      if (this._disposed) { return; }
+      const cache: ModelRegistryCache = {};
+      for (const [providerId, entry] of this._memoryCache.entries()) { cache[providerId] = entry; }
+      await this._context.globalState.update(MODEL_REGISTRY_CACHE_KEY, cache);
+    });
+    this._cacheWrites = write.catch(() => undefined);
+    return write;
   }
 
   /**
@@ -544,12 +644,16 @@ export class ModelRegistryService {
    * event so the merged view round-trips.
    */
   public async _setDiscoveredModels(providerId: string, models: ModelInfo[]): Promise<void> {
-    this._memoryCache.set(providerId, { models, fetchedAt: Date.now() });
+    if (this._disposed) { return; }
+    this._memoryCache.set(providerId, { models: validModels(models), fetchedAt: Date.now() });
     await this._persistCache();
     this._onDidUpdateModels.fire({ providerId });
   }
 
   public dispose(): void {
+    this._disposed = true;
+    this._configurationListener.dispose();
+    for (const run of this._inFlight.values()) { run.controller.abort(); }
     this._onDidUpdateModels.dispose();
     this._inFlight.clear();
     this._memoryCache.clear();

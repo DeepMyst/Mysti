@@ -34,6 +34,38 @@ describe('MiniMax API provider', () => {
     expect((await provider.configureAuthentication()).authenticated).toBe(true);
     expect(await secrets.get('mysti.minimax.apiKey')).toBe('new-key');
   });
+  it('does not open a credential prompt for setup already cancelled by its owner', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const prompt = vi.spyOn(window, 'showInputBox').mockResolvedValue('late-key');
+    const store = vi.spyOn(secrets, 'store');
+    expect((await provider.configureAuthentication(controller.signal)).authenticated).toBe(false);
+    expect(prompt).not.toHaveBeenCalled();
+    expect(store).not.toHaveBeenCalled();
+  });
+  it('does not overwrite an existing key when a dismissed setup prompt returns late', async () => {
+    await secrets.store('mysti.minimax.apiKey', 'keep-existing-key');
+    const controller = new AbortController();
+    let finishPrompt!: (value: string) => void;
+    const prompt = vi.spyOn(window, 'showInputBox').mockReturnValue(new Promise(resolve => { finishPrompt = resolve; }));
+    const store = vi.spyOn(secrets, 'store');
+    const check = vi.spyOn(provider, 'checkAuthentication');
+    const pending = provider.configureAuthentication(controller.signal);
+    const token = (prompt.mock.calls[0] as unknown as [unknown, vscode.CancellationToken])[1];
+    const closePrompt = vi.fn();
+    const subscription = token.onCancellationRequested(closePrompt);
+    // The owning setup attempt is dismissed/disposed while its prompt is open.
+    controller.abort();
+    expect(token.isCancellationRequested).toBe(true);
+    expect(closePrompt).toHaveBeenCalledOnce();
+    // Even a queued prompt result that ignores cancellation must be harmless.
+    finishPrompt('late-secret-must-not-persist');
+    expect((await pending).authenticated).toBe(false);
+    expect(store).not.toHaveBeenCalled();
+    expect(check).not.toHaveBeenCalled();
+    expect(await secrets.get('mysti.minimax.apiKey')).toBe('keep-existing-key');
+    subscription.dispose();
+  });
   it('honors the selected and routed models and rejects redirect credential forwarding', async () => {
     await secrets.store('mysti.minimax.apiKey', 'key');
     await collect(provider.sendMessage('hello', [], { ...settings(), model: 'MiniMax-M2.7-highspeed' }, null));

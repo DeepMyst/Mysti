@@ -6,7 +6,7 @@ import type { Settings } from '../../../src/types';
 
 function defaultSettings(overrides?: Partial<Settings>): Settings {
   return {
-    mode: 'default', thinkingLevel: 'none', accessLevel: 'ask-permission',
+    mode: 'default', thinkingLevel: 'none', accessLevel: 'full-access',
     contextMode: 'auto', model: '', provider: 'cursor', ...overrides,
   };
 }
@@ -24,7 +24,9 @@ describe('CursorProvider.buildCliArgs', () => {
     expect(args).toContain('--output-format');
     expect(args).toContain('stream-json');
     expect(args).toContain('--print');
-    expect(args).toContain('--stream-partial-output');
+    // Individual partials and their summaries have no reliable distinguishing
+    // tag. Consume the CLI's complete stream-json blocks instead.
+    expect(args).not.toContain('--stream-partial-output');
   });
 
   it('should not include --force for read-only', () => {
@@ -44,8 +46,7 @@ describe('CursorProvider.buildCliArgs', () => {
     expect(args).toContain('--force');
   });
 
-  it('should include --force for default ask-permission (bypassing CLI permissions)', () => {
-    const args = provider.buildCliArgs(defaultSettings({ accessLevel: 'ask-permission' }), createCursorSession());
-    expect(args).toContain('--force');
+  it('rejects Ask without a native approval channel', () => {
+    expect(() => provider.buildCliArgs(defaultSettings({ accessLevel: 'ask-permission' }), createCursorSession())).toThrow(/native approvals/);
   });
 });

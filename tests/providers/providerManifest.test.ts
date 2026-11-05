@@ -52,7 +52,7 @@ function createMockContext(): vscode.ExtensionContext {
 
 const ALL_PROVIDER_IDS = [
   'claude-code', 'openai-codex', 'google-gemini', 'cline', 'github-copilot',
-  'cursor', 'openclaw', 'opencode', 'ollama', 'localai', 'qwen-code', 'hermes', 'continue', 'openrouter', 'kimi-code'
+  'cursor', 'openclaw', 'opencode', 'ollama', 'localai', 'qwen-code', 'hermes', 'continue', 'openrouter', 'minimax', 'kimi-code'
 ];
 
 describe('buildProviderManifest', () => {
@@ -66,7 +66,7 @@ describe('buildProviderManifest', () => {
     byId = new Map(manifest.map((e) => [e.id, e]));
   });
 
-  it('contains one entry per registered provider (all 14)', () => {
+  it('contains one entry per registered provider (all 16)', () => {
     expect(manifest.length).toBe(registry.getIds().length);
     for (const id of ALL_PROVIDER_IDS) {
       expect(byId.has(id), `missing manifest entry for ${id}`).toBe(true);
@@ -145,9 +145,9 @@ describe('buildProviderManifest', () => {
 
     const cline = byId.get('cline')!.capabilities;
     expect(cline.thinkingStyle).toBe('complete-blocks');
-    expect(cline.thinkingLevelEffective).toBe(true);
+    expect(cline.thinkingLevelEffective).toBe(false);
     expect(cline.sessionKind).toBe('prompt-history');
-    expect(cline.modelSelection).toBe('none');
+    expect(cline.modelSelection).toBe('custom-only');
 
     // Copilot CLI 1.0 added `--output-format json`, whose
     // tool.execution_start / tool.execution_complete events are what Mysti's
@@ -169,7 +169,8 @@ describe('buildProviderManifest', () => {
     expect(cursor.sessionKind).toBe('none');
 
     const openclaw = byId.get('openclaw')!.capabilities;
-    expect(openclaw.emitsUsage).toBe(false);
+    expect(openclaw.emitsUsage).toBe(true);
+    expect(openclaw.usageConvention).toBe('anthropic');
     expect(openclaw.modelSelection).toBe('none');
     expect(openclaw.supportsChannels).toBe(true);
 

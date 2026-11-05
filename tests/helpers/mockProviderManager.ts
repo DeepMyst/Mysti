@@ -73,7 +73,7 @@ export class MockProviderManager {
   public cancelledPanelIds: string[] = [];
 
   /** Record every sendMessageToProvider dispatch for assertions */
-  public sendCalls: { providerId: string; content: string; settings: Settings; panelId?: string }[] = [];
+  public sendCalls: { providerId: string; content: string; settings: Settings; panelId?: string; conversation: Conversation | null }[] = [];
 
   /** Track disposePersistentProcessForProvider calls for assertions */
   public disposedChildren: { providerId: string; panelId: string }[] = [];
@@ -112,7 +112,7 @@ export class MockProviderManager {
     persona?: PersonaConfig,
     panelId?: string
   ): AsyncGenerator<StreamChunk> {
-    this.sendCalls.push({ providerId, content, settings, panelId });
+    this.sendCalls.push({ providerId, content, settings, panelId, conversation });
     const factory = this.streamFactories.get(providerId) || this.defaultStreamFactory;
     if (!factory) {
       throw new Error(`No stream factory configured for provider: ${providerId}`);

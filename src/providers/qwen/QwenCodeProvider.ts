@@ -16,6 +16,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { BaseCliProvider, type PanelSessionState } from '../base/BaseCliProvider';
+import { allowsUnrestrictedNativeTools } from '../base/NativeApprovalPolicy';
 import type {
   CliDiscoveryResult,
   AuthConfig,
@@ -95,6 +96,8 @@ export class QwenCodeProvider extends BaseCliProvider {
   };
 
   readonly capabilities: ProviderCapabilities = {
+    supportsAskPermission: false,
+    supportsReadOnly: false,
     supportsStreaming: true,
     supportsThinking: true,
     supportsToolUse: true,
@@ -109,7 +112,7 @@ export class QwenCodeProvider extends BaseCliProvider {
     // Plan 02 Phase 1 capability matrix
     thinkingStyle: 'complete-blocks',
     thinkingLevelEffective: false,
-    planMode: 'detected',
+    planMode: 'none',
     // F8 caveat: `--continue` resumes the globally-latest session (cross-panel
     // bleed) — value stays 'cli-resume' until Plan 00 Batch 1.3 fixes it.
     sessionKind: 'cli-resume',
@@ -292,14 +295,18 @@ export class QwenCodeProvider extends BaseCliProvider {
 
   // --- CLI Args ---
 
+  override async *sendMessage(...args: Parameters<BaseCliProvider['sendMessage']>): AsyncGenerator<StreamChunk> {
+    this._assertCliPermissionSupport(args[2]);
+    yield* super.sendMessage(...args);
+  }
+
   protected buildCliArgs(settings: Settings, session: PanelSessionState): string[] {
+    this._assertCliPermissionSupport(settings);
     const args: string[] = [
       '--output-format', 'stream-json',
       '--include-partial-messages',
+      '--approval-mode', 'yolo',
     ];
-
-    // Map Mysti modes to Qwen approval modes
-    this._addApprovalMode(args, settings);
 
     // Prompt is sent via stdin by BaseCliProvider.sendMessage()
     // No -p flag needed — Qwen reads from stdin by default
@@ -336,25 +343,12 @@ export class QwenCodeProvider extends BaseCliProvider {
     return tokenMap[thinkingLevel];
   }
 
-  private _addApprovalMode(args: string[], settings: Settings): void {
-    const { mode, accessLevel } = settings;
-
-    if (mode === 'quick-plan' || mode === 'detailed-plan' || accessLevel === 'read-only') {
-      args.push('--approval-mode', 'plan');
-      console.log(`[Mysti] Qwen: Using plan approval mode [mode=${mode}, access=${accessLevel}]`);
-      return;
+  private _assertCliPermissionSupport(settings: Settings): void {
+    // Saved/session allows and discovered tools can bypass native Plan. This
+    // CLI stream has no final policy check before every tool and hook executes.
+    if (!allowsUnrestrictedNativeTools(settings)) {
+      throw new Error('Qwen Code CLI cannot enforce Plan, Read Only, or approval-based modes safely. Use another agent with native approvals, or explicitly select Edit Automatically with Full Access.');
     }
-
-    // For full-access + edit-automatically, use yolo mode
-    if (accessLevel === 'full-access' && mode === 'edit-automatically') {
-      args.push('--approval-mode', 'yolo');
-      console.log('[Mysti] Qwen: Using yolo approval mode');
-      return;
-    }
-
-    // Default: auto-edit (auto-approve edits, ask for commands)
-    args.push('--approval-mode', 'auto-edit');
-    console.log(`[Mysti] Qwen: Using auto-edit approval mode [mode=${mode}, access=${accessLevel}]`);
   }
 
   protected _getEffectiveModel(settings: Settings): string | undefined {
@@ -513,20 +507,27 @@ export class QwenCodeProvider extends BaseCliProvider {
         return null;
       }
 
-      // Handle system events (session init)
+      // Model reports belong to the root request, including resumed init events
+      // and native fallback notifications. Never attribute a subagent's model
+      // to the parent answer or turn arbitrary stderr into display metadata.
       if (data.type === 'system') {
+        const isRoot = ['parent_tool_use_id', 'parentToolCallId', 'agent_id', 'agentId'].every(key =>
+          data[key] == null && data.data?.[key] == null);
+        if (!isRoot) { return null; }
+        const candidate = data.subtype === 'init' ? data.model
+          : data.subtype === 'model_fallback' ? data.data?.toModel : undefined;
+        const reportedModel = typeof candidate === 'string' && validateModelName(candidate).valid
+          ? candidate.trim() : undefined;
+        if (reportedModel) { (session as QwenSessionState).reportedModel = reportedModel; }
         if (data.subtype === 'init') {
-          if (typeof data.model === 'string' && data.model) {
-            (session as QwenSessionState).reportedModel = data.model;
-          }
           const sessionId = data.session_id || data.sessionId;
           if (sessionId && !session.sessionId) {
             session.sessionId = sessionId;
             console.log('[Mysti] Qwen: Session ID extracted:', sessionId);
-            return { type: 'session_active', sessionId };
+            return { type: 'session_active', sessionId, ...(reportedModel ? { reportedModel } : {}) };
           }
         }
-        return null;
+        return reportedModel ? { type: 'model_info', reportedModel } : null;
       }
 
       // Assistant complete-message events are intentionally NOT re-emitted as
@@ -588,6 +589,28 @@ export class QwenCodeProvider extends BaseCliProvider {
   }
 
   // --- Usage Stats ---
+
+  protected override async *processStream(
+    stderrRef: { output: string }, session: PanelSessionState, drainOnReturn = false,
+  ): AsyncGenerator<StreamChunk> {
+    const issuingProcess = session.process;
+    let reportedModel: string | undefined;
+    // All lifecycle/tool/usage fields still address the original panel. Only
+    // model accounting is local to this reader: an old buffered line must not
+    // overwrite a replacement, and a turn without init must not reuse its model.
+    const readerSession = new Proxy(session, {
+      get: (target, key, receiver) => key === 'reportedModel' ? reportedModel : Reflect.get(target, key, receiver),
+      set: (target, key, value, receiver) => {
+        if (key === 'reportedModel') { reportedModel = value; return true; }
+        return Reflect.set(target, key, value, receiver);
+      },
+    });
+    try {
+      yield* super.processStream(stderrRef, readerSession, drainOnReturn);
+    } finally {
+      if (session.process === issuingProcess) { (session as QwenSessionState).reportedModel = reportedModel; }
+    }
+  }
 
   protected override takeReportedContextWindow(panelId?: string): number | undefined {
     return this._catalogWindow((this._getSession(panelId) as QwenSessionState).reportedModel);

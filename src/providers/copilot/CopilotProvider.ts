@@ -15,14 +15,16 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { spawn } from 'child_process';
+import JSON5 from 'json5';
+import { spawn, type ChildProcess } from 'child_process';
 import { BaseCliProvider, type PanelSessionState, type ProcessTracker } from '../base/BaseCliProvider';
-import { allowsUnrestrictedNativeTools } from '../base/NativeApprovalPolicy';
+import { allowsUnrestrictedNativeTools, assertNonInteractivePermissionSupport } from '../base/NativeApprovalPolicy';
 import type {
   CliDiscoveryResult,
   AuthConfig,
   ProviderCapabilities,
-  PersonaConfig
+  PersonaConfig,
+  ProviderInputResolver
 } from '../base/IProvider';
 import type {
   Settings,
@@ -32,13 +34,14 @@ import type {
   ContextItem,
   Conversation,
   AgentConfiguration,
+  Attachment,
   ModelInfo
 } from '../../types';
 import { validateModelName } from '../../utils/validation';
 import { getEnrichedEnv } from '../../utils/platform';
 import { toolKind } from '../../utils/toolNames';
 import { PROCESS_KILL_GRACE_PERIOD_MS } from '../../constants';
-import { killProcessTree, isProcessLive } from '../../utils/processKill';
+import { killProcessTree, markOwnedProcessGroup } from '../../utils/processKill';
 import { clampEffort } from '../../utils/effort';
 import type { EffortLevel } from '../../types';
 
@@ -59,6 +62,8 @@ export interface CopilotSessionState extends PanelSessionState {
 export class CopilotProvider extends BaseCliProvider {
   readonly id = 'github-copilot';
   readonly displayName = 'GitHub Copilot';
+  private readonly _renderedMessages = new WeakMap<PanelSessionState, Map<string, 'streamed' | 'full'>>();
+  private readonly _toolFailureDiagnostics = new WeakSet<StreamChunk>();
 
   readonly config: ProviderConfig = {
     name: 'github-copilot',
@@ -69,6 +74,11 @@ export class CopilotProvider extends BaseCliProvider {
     // 1M+ API figures. Copilot's own `tokenLimit` (session.usage_info /
     // session.truncation) is reported each turn and wins over these.
     models: [
+      {
+        id: 'auto',
+        name: 'Auto',
+        description: 'Let Copilot choose an available model for your plan and task',
+      },
       {
         id: 'gpt-6-astra',
         name: 'GPT-6 Astra',
@@ -145,10 +155,11 @@ export class CopilotProvider extends BaseCliProvider {
         contextWindow: 128000
       }
     ],
-    defaultModel: 'claude-sonnet-5'
+    defaultModel: 'auto'
   };
 
   readonly capabilities: ProviderCapabilities = {
+    supportsAskPermission: false,
     supportsStreaming: true,
     supportsThinking: false,
     // Flag/reality alignment (Plan 02 Phase 1): the Copilot CLI emits plain
@@ -165,9 +176,10 @@ export class CopilotProvider extends BaseCliProvider {
     thinkingStyle: 'none',
     thinkingLevelEffective: false,
     effortLevels: COPILOT_EFFORT_LEVELS,  // --effort (low→xhigh)
+    effortLevelsByModel: { auto: [] },
     effortDefault: 'medium',
     planMode: 'detected',
-    sessionKind: 'prompt-history',  // fabricated --resume IDs (F4/B5) — honest value until Plan 00 Batch 2.4 lands
+    sessionKind: 'prompt-history',  // Each CLI request receives Mysti's conversation history; local IDs are not native sessions.
     emitsToolResults: true,         // 1.0 JSONL: tool.execution_complete carries the result
     // Copilot reports no honest token count on EITHER path: 1.0's JSONL carries
     // `session.usage_checkpoint`, which bills in nano AIU rather than tokens
@@ -204,15 +216,16 @@ export class CopilotProvider extends BaseCliProvider {
 
   /**
    * Live model discovery (Plan 01 Phase 3). The Copilot CLI has no `list models`
-   * subcommand, but `--model` is a CLOSED enum and its choices are printed in
+   * subcommand. Older versions print a closed `--model` enum in
    * `copilot --help`:
    *
    *   --model <model>   Set the AI model to use (choices:
    *                     "claude-sonnet-4.5", "claude-haiku-4.5", ..., "gpt-4.1")
    *
-   * So the installed CLI is itself the authority on what it will accept — which
-   * is the whole point of refreshing automatically: GitHub rotates this set, and
-   * a bundled list goes stale the moment they do.
+   * Current versions accept account-specific ids and advertise `auto` instead
+   * of listing them. In that case keep the curated/custom choices, with Auto as
+   * the default so a newly retired or unavailable pinned model cannot block a
+   * fresh conversation.
    *
    * The help text hard-wraps, so the output is whitespace-collapsed before
    * matching and only the quoted ids inside the choices parenthesis are taken.
@@ -223,8 +236,11 @@ export class CopilotProvider extends BaseCliProvider {
     const raw = await this._runCliForDiscovery(['--help'], timeoutMs);
     if (!raw) { return null; }
 
-    // Collapse the hard-wrapped help block onto one line before matching.
-    const flat = raw.replace(/\s+/g, ' ');
+    // Stop at the next option: a free-form --model followed by another flag's
+    // enum must not discover reasoning levels or permission modes as models.
+    const modelBlock = /(?:^|\n)[ \t]*--model\b[\s\S]*?(?=\n[ \t]*(?:-\w,\s*)?--[\w-]+|$)/.exec(raw)?.[0];
+    if (!modelBlock) { return null; }
+    const flat = modelBlock.replace(/\s+/g, ' ');
     const choices = /--model\b[^(]*\(choices:([^)]*)\)/.exec(flat);
     if (!choices) { return null; }
 
@@ -256,31 +272,42 @@ export class CopilotProvider extends BaseCliProvider {
   /**
    * Persisted login identity for the `@github/copilot` CLI. The token lives in
    * the OS keychain; `/login` writes the signed-in identity into
-   * ~/.copilot/config.json (`logged_in_users` / `last_logged_in_user`). The old
+   * ~/.copilot/config.json (current camelCase or legacy snake_case fields). The old
    * check looked at ~/.config/github-copilot — the OLD editor-plugin path, which
    * is absent for the agentic CLI, so a signed-in user was wrongly blocked.
    * Reads a non-empty identity marker (not mere file existence, which is created
    * pre-login with only banner/theme keys → would false-positive).
    */
-  private _copilotLoginState(): { loggedIn: boolean; login?: string } {
+  private _copilotLoginState(): { loggedIn: boolean; login?: string; error?: string } {
     const home = this._copilotHome();
+    let unreadable = false;
+    const identity = (value: unknown): string | undefined => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) { return undefined; }
+      const login = (value as Record<string, unknown>).login;
+      return typeof login === 'string' && login.trim() ? login.trim() : undefined;
+    };
     for (const name of ['config.json', 'settings.json']) {
       const file = path.join(home, name);
       if (!fs.existsSync(file)) { continue; }
       try {
-        const d = JSON.parse(fs.readFileSync(file, 'utf-8')) as {
-          logged_in_users?: Array<{ host?: string; login?: string }>;
-          last_logged_in_user?: { host?: string; login?: string };
-        };
-        const users = Array.isArray(d.logged_in_users) ? d.logged_in_users : [];
-        if (users.length > 0 || d.last_logged_in_user?.login) {
-          return { loggedIn: true, login: d.last_logged_in_user?.login || users[0]?.login };
-        }
+        // Current CLI config includes comments and may include trailing commas.
+        // Parse the format rather than stripping comments from quoted strings.
+        const parsed: unknown = JSON5.parse(fs.readFileSync(file, 'utf-8'));
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) { continue; }
+        const d = parsed as Record<string, unknown>;
+        const users = [d.loggedInUsers, d.logged_in_users].flatMap(value => Array.isArray(value) ? value : []);
+        const login = identity(d.lastLoggedInUser) || identity(d.last_logged_in_user)
+          || users.map(identity).find((value): value is string => !!value);
+        if (login) { return { loggedIn: true, login }; }
       } catch {
-        return { loggedIn: true }; // present but unreadable → lean authenticated (avoid false-negative)
+        // File presence or a parse failure is not evidence of a signed-in user.
+        // A second supported config file may still contain a usable identity.
+        unreadable = true;
       }
     }
-    return { loggedIn: false };
+    return { loggedIn: false, ...(unreadable ? {
+      error: 'Could not read Copilot login state. Check the Copilot config files or use GH_TOKEN/GITHUB_TOKEN.'
+    } : {}) };
   }
 
   async getAuthConfig(): Promise<AuthConfig> {
@@ -312,7 +339,7 @@ export class CopilotProvider extends BaseCliProvider {
       };
     }
 
-    // Signed-in via `copilot /login` (identity in ~/.copilot/config.json).
+    // Signed-in via `copilot /login` (identity in the configured Copilot home).
     const login = this._copilotLoginState();
     if (login.loggedIn) {
       return {
@@ -323,7 +350,7 @@ export class CopilotProvider extends BaseCliProvider {
 
     return {
       authenticated: false,
-      error: 'Not authenticated. Run "copilot" and use the /login command, or set GH_TOKEN/GITHUB_TOKEN environment variable.'
+      error: login.error || 'Not authenticated. Run "copilot" and use the /login command, or set GH_TOKEN/GITHUB_TOKEN environment variable.'
     };
   }
 
@@ -347,9 +374,19 @@ export class CopilotProvider extends BaseCliProvider {
     persona?: PersonaConfig,
     panelId?: string,
     providerManager?: unknown,
-    agentConfig?: AgentConfiguration
+    agentConfig?: AgentConfiguration,
+    _attachments?: Attachment[],
+    resolveInput?: ProviderInputResolver
   ): AsyncGenerator<StreamChunk> {
-    const session = this._getSession(panelId) as CopilotSessionState;
+    if (resolveInput) {
+      const input = resolveInput();
+      if (!input) { return; }
+      ({ content, context } = input);
+    }
+    const previous = this._getSession(panelId) as CopilotSessionState;
+    let session = previous;
+    let ownsSession = false;
+    const isCurrent = () => !ownsSession || (!session.cancelled && this._panelSessions.get(session.panelId) === session);
     const startTime = Date.now();
 
     // Plan 18 (2.4 audit): the entire setup — prompt build and spawn — runs
@@ -358,45 +395,75 @@ export class CopilotProvider extends BaseCliProvider {
     // handleError, no finally, and no cleanup: the provider was hard-broken
     // for every default npm Windows install.
     const stderrRef = { output: '' };
+    let ownedProcess: ChildProcess | undefined;
     // Declared outside the try — the finally detaches it during cleanup.
     const stderrHandler = (data: Buffer) => {
       const text = data.toString();
       stderrRef.output += text;
-      console.log(`[Mysti] Copilot stderr:`, text);
+      // A credential can span chunks. The shared reader logs the complete,
+      // process-bound redacted diagnostic after the stream finishes.
     };
     try {
       const cliPath = this.getCliPath();
+      // Validate authority before replacing a live request. Isolate parser and
+      // process state so a late predecessor cannot alter the successor.
+      const args = this.buildCliArgs(settings, previous);
+      this.cancelCurrentRequest(previous.panelId);
+      session = this._createSession(previous.panelId);
+      session.channelSystemContext = previous.channelSystemContext;
+      session.sessionId = previous.sessionId;
+      session.autonomousMode = settings.autonomousMode === true;
+      this._panelSessions.set(session.panelId, session);
+      ownsSession = true;
 
       // Get workspace folder for CWD
       const workspaceFolders = vscode.workspace.workspaceFolders;
       const cwd = workspaceFolders ? workspaceFolders[0].uri.fsPath : process.cwd();
 
       // Build prompt first (needed for -p flag)
-      const fullPrompt = await this.buildPromptAsync(
+      const render = resolveInput ? await this.preparePromptRenderer(
+        conversation, settings, persona, agentConfig, undefined, session.channelSystemContext,
+      ) : undefined;
+      let fullPrompt = render ? '' : await this.buildPromptAsync(
         content, context, conversation, settings, persona, agentConfig,
         undefined, session.channelSystemContext,
       );
+      if (!isCurrent()) { return; }
+      if (resolveInput && render) {
+        const input = resolveInput();
+        if (!input) { session.cancelled = true; return; }
+        fullPrompt = render(input.content, input.context);
+      }
+      if (!isCurrent()) { return; }
       const promptTime = Date.now() - startTime;
       console.log(`[Mysti] Copilot: Prompt built in ${promptTime}ms`);
 
       // Build args with prompt using -p flag
-      const args = this.buildCliArgs(settings, session);
       args.push('-p', fullPrompt);
 
       console.log(`[Mysti] Copilot: Spawning CLI with -p flag...`);
 
-      session.process = spawn(cliPath, args, {
+      const env = getEnrichedEnv();
+      ownedProcess = spawn(cliPath, args, {
         cwd,
-        env: getEnrichedEnv(),
+        env,
+        // npm-loader.js launches a native child. Own its group so Stop and
+        // permission pauses reach both processes; Windows already uses taskkill /T.
+        detached: process.platform !== 'win32',
         stdio: ['pipe', 'pipe', 'pipe']
       });
+      markOwnedProcessGroup(ownedProcess);
+      this._captureProcessAuthentication(ownedProcess, env);
+      session.process = ownedProcess;
 
       // Plan 18 (2.4 audit): early error listener — an async spawn failure
       // (ENOENT on a stale path) otherwise emits an unhandled 'error' event
       // in the window before waitForProcess attaches its own listener.
       session.process.on('error', (err) => {
-        console.error(`[Mysti] Copilot: Spawn error:`, err);
-        stderrRef.output += `\nspawn error: ${err.message}`;
+        // Node's Error also carries spawnargs, including the full -p prompt.
+        const message = this._redactProcessError(err.message, ownedProcess);
+        console.error(`[Mysti] Copilot: Spawn error:`, message);
+        stderrRef.output += `\nspawn error: ${message}`;
       });
 
       const spawnTime = Date.now() - startTime;
@@ -416,22 +483,55 @@ export class CopilotProvider extends BaseCliProvider {
       console.log(`  - Total setup: ${spawnTime}ms`);
       console.log(`  - Waiting for first response...`);
 
-      // Emit session_active so the webview shows the session indicator
-      // Copilot CLI outputs plain text so its JSON init handler never fires
+      // Local lifecycle identity for the webview. The prompt-history adapter
+      // does not establish a resumable native session from this identifier.
       if (!session.sessionId) {
         session.sessionId = `copilot-${panelId || 'default'}-${Date.now()}`;
       }
       yield { type: 'session_active' as const, sessionId: session.sessionId };
+      if (!isCurrent()) { return; }
 
       // Process stream output (stderrRef is mutable, so processStream sees full stderr)
-      yield* this.processStream(stderrRef, session);
+      // Give each reader its own parsing identity while forwarding all lifecycle,
+      // tool and usage fields to the panel session. A late old reader must not
+      // populate the replacement request's completed-message suppression set.
+      const streamSession = new Proxy(session, {});
+      let reportedStreamError = false;
+      let reportedAuthError = false;
+      for await (const chunk of this.processStream(stderrRef, streamSession)) {
+        if (!isCurrent()) { return; }
+        // JSON mode reports terminal session errors on stdout. The shared
+        // reader also reports a nonzero exit; its bare exit-code fallback adds
+        // nothing after that diagnostic. Keep distinct stderr/auth/timeout errors.
+        if (reportedStreamError && chunk.type === 'error'
+          && chunk.content === `${this.displayName} exited with code ${ownedProcess.exitCode}`) {
+          continue;
+        }
+        if (chunk.type === 'error' || chunk.type === 'auth_error') { reportedStreamError = true; }
+        if (chunk.type === 'auth_error') { reportedAuthError = true; }
+        // Recovered diagnostics remain tool results. Redact against this
+        // request's child while preserving pre-existing result.content output.
+        if (this._toolFailureDiagnostics.delete(chunk) && chunk.type === 'tool_result' && chunk.toolCall
+          && typeof chunk.toolCall.output === 'string') {
+          yield { ...chunk, toolCall: { ...chunk.toolCall,
+            output: this._redactProcessError(chunk.toolCall.output, ownedProcess) } };
+        } else {
+          yield chunk;
+        }
+        if (!isCurrent()) { return; }
+      }
+      if (!isCurrent()) { return; }
 
-      // Additional auth error check after stream processing
-      if (stderrRef.output && this.isAuthenticationError(stderrRef.output)) {
-        console.log(`[Mysti] Copilot: Auth error detected in stderr:`, stderrRef.output);
+      if (reportedAuthError) { return; }
+
+      // A CLI can exit zero after partial content while reporting auth failure
+      // on stderr. Preserve that case without repeating an error already yielded.
+      const safeStderr = this._redactProcessError(stderrRef.output, ownedProcess);
+      if (safeStderr && this.isAuthenticationError(safeStderr)) {
+        console.log('[Mysti] Copilot: Auth error detected in stderr');
         yield {
           type: 'auth_error',
-          content: stderrRef.output,
+          content: safeStderr,
           authCommand: this.getAuthCommand(),
           providerName: this.displayName
         };
@@ -444,28 +544,26 @@ export class CopilotProvider extends BaseCliProvider {
 
       yield this._doneChunk(panelId);
     } catch (error) {
-      yield this.handleError(error);
+      if (isCurrent()) { yield this.handleError(error); }
     } finally {
       // Clean up process — liveness-gated (not `.killed`): a SIGTERM'd-but-alive
       // CLI must still be escalated to SIGKILL, which the old `!killed` guard skipped.
-      if (isProcessLive(session.process)) {
+      if (ownedProcess) {
         try {
           // Remove only our stderr handler — don't strip waitForProcess listeners
-          if (session.process!.stderr) {
-            session.process!.stderr.removeListener('data', stderrHandler);
-          }
+          ownedProcess.stderr?.removeListener('data', stderrHandler);
           // SIGTERM with reliable SIGKILL escalation (timer cleared on exit).
-          void killProcessTree(session.process, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
+          void killProcessTree(ownedProcess, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
         } catch (e) {
           console.error(`[Mysti] Copilot: Error cleaning up process:`, e);
         }
       }
 
-      session.process = null;
+      if (session.process === ownedProcess) { session.process = null; }
 
       // Clear process tracking
-      if (panelId && providerManager && typeof (providerManager as ProcessTracker).clearProcess === 'function') {
-        (providerManager as ProcessTracker).clearProcess(panelId);
+      if (ownedProcess && panelId && providerManager && typeof (providerManager as ProcessTracker).clearProcess === 'function') {
+        (providerManager as ProcessTracker).clearProcess(panelId, ownedProcess);
       }
     }
   }
@@ -483,13 +581,13 @@ export class CopilotProvider extends BaseCliProvider {
     return major === null || major >= 1;
   }
 
-  protected buildCliArgs(settings: Settings, session: PanelSessionState): string[] {
+  protected buildCliArgs(settings: Settings, _session: PanelSessionState): string[] {
     // Note: Copilot CLI uses -p flag for prompt (set in sendMessage override).
     //
     // Copilot CLI 1.0 added `--output-format json` (JSONL, one object per line)
     // — the 0.0.x line had none, which is why this provider used to scrape
     // plain text. The structured stream is what finally gives Mysti tool
-    // events, and therefore a working permission gate; see _addPermissionFlags.
+    // events for display. They do not hold execution for permission.
     const args: string[] = [];
     if (this._supportsJsonOutput()) {
       args.push('--output-format', 'json');
@@ -503,18 +601,18 @@ export class CopilotProvider extends BaseCliProvider {
 
     // Reasoning effort → --effort (Copilot tops out at xhigh; max clamps down).
     const effort = clampEffort(settings.effortLevel, COPILOT_EFFORT_LEVELS);
-    if (effort) {
+    if (effort && effectiveModel !== 'auto') {
       args.push('--effort', effort);
     }
 
     // Map Mysti modes/access levels to Copilot CLI flags
     this._addPermissionFlags(args, settings);
 
-    // Session handling - Copilot supports --resume
-    if (session.sessionId) {
-      args.push('--resume', session.sessionId);
-      console.log('[Mysti] Copilot: Resuming session:', session.sessionId);
-    }
+    // This adapter declares prompt-history continuity and sendMessage passes
+    // the supplied conversation into buildPromptAsync on every turn. Its local
+    // session_active identifier (including restored legacy IDs) is not a CLI
+    // session: passing it to --resume makes the next request fail before work.
+    // Native resume needs a separately proven session contract, not an ID cast.
 
     console.log('[Mysti] Copilot: Built CLI args:', args.join(' '));
     return args;
@@ -536,7 +634,7 @@ export class CopilotProvider extends BaseCliProvider {
       }
       console.warn(`[Mysti] Copilot: Invalid custom model "${customModel}": ${validation.error}`);
     }
-    return settings.model || undefined;
+    return settings.model || this.config.defaultModel;
   }
 
   /**
@@ -555,6 +653,7 @@ export class CopilotProvider extends BaseCliProvider {
    * - --deny-tool 'write': denies file modification tools
    */
   private _addPermissionFlags(args: string[], settings: Settings): void {
+    assertNonInteractivePermissionSupport(this.displayName, settings);
     const { mode, accessLevel } = settings;
 
     // Plan modes or read-only → deny shell and write tools
@@ -575,24 +674,8 @@ export class CopilotProvider extends BaseCliProvider {
       return;
     }
 
-    // Ask-tier combinations (ask-before-edit mode, or ask-permission access).
-    //
-    // Copilot 1.0+ retains the stream-event pause path. These notifications
-    // carry no blocking native permission response; a pause cannot guarantee
-    // that the tool has not already executed. Native approval needs an ACP
-    // request/response bridge before this path can provide that guarantee.
-    if (this._supportsJsonOutput()) {
-      args.push('--allow-all-tools');
-      console.log(`[Mysti] Copilot: Ask-tier gated by Mysti's stream gate [mode=${mode}, access=${accessLevel}]`);
-      return;
-    }
-
-    // Copilot 0.0.x emits plain text with no tool events, so there is nothing
-    // to gate on and no way to prompt. Fail closed rather than silently running
-    // shell commands and file writes under --allow-all-tools.
-    args.push('--deny-tool', 'shell');
-    args.push('--deny-tool', 'write');
-    console.log(`[Mysti] Copilot: Ask-tier permissions cannot be prompted on this CLI (plain-text output) — denying shell/write tools (fail closed) [mode=${mode}, access=${accessLevel}]`);
+    // The preflight above rejects every remaining combination on both the
+    // legacy text and modern notification-only JSON transports.
   }
 
   /**
@@ -613,11 +696,43 @@ export class CopilotProvider extends BaseCliProvider {
     const payload = (data.data ?? {}) as Record<string, unknown>;
 
     switch (type) {
-      // The delta. `assistant.message` repeats the whole answer afterwards, so
-      // rendering both would print it twice.
-      case 'assistant.message_delta': {
-        const delta = payload.deltaContent;
-        return typeof delta === 'string' && delta ? { type: 'text', content: delta } : null;
+      case 'session.error': {
+        // Copilot 1.0.94 retries model_call failures and lets the parent handle
+        // subagent failures. Only root terminal errors fail the current turn.
+        if (payload.errorType === 'model_call'
+          || [data.agentId, payload.agentId, payload.parentToolCallId]
+            .some(id => typeof id === 'string' && id.length > 0)) {
+          return null;
+        }
+        return {
+          type: payload.errorType === 'authentication' ? 'auth_error' : 'error',
+          content: typeof payload.message === 'string' && payload.message
+            ? payload.message : `${this.displayName} session error`,
+        };
+      }
+
+      // With native streaming disabled, only assistant.message carries text.
+      // Otherwise it repeats the already-rendered deltas for that message.
+      case 'assistant.message_delta':
+      case 'assistant.message': {
+        const isDelta = type === 'assistant.message_delta';
+        const content = isDelta ? payload.deltaContent : payload.content;
+        if (typeof content !== 'string' || !content) { return null; }
+        if (typeof payload.messageId === 'string') {
+          const agentId = [data.agentId, payload.agentId]
+            .find(id => typeof id === 'string' && id.length > 0);
+          const scope = agentId ? ['agent', agentId]
+            : typeof payload.parentToolCallId === 'string' && payload.parentToolCallId
+              ? ['parent-tool', payload.parentToolCallId] : ['root'];
+          const key = JSON.stringify([...scope, payload.messageId]);
+          let rendered = this._renderedMessages.get(session);
+          if (!rendered) { rendered = new Map(); this._renderedMessages.set(session, rendered); }
+          // Like the native renderer, ignore late deltas after a full-message
+          // fallback while allowing further chunks of a streamed message.
+          if (rendered.get(key) === 'full' || (!isDelta && rendered.has(key))) { return null; }
+          rendered.set(key, isDelta ? 'streamed' : 'full');
+        }
+        return { type: 'text', content };
       }
 
       case 'tool.execution_start': {
@@ -625,8 +740,7 @@ export class CopilotProvider extends BaseCliProvider {
         const name = String(payload.toolName ?? 'tool');
         const input = (payload.arguments ?? {}) as Record<string, unknown>;
         session.activeToolCalls.set(id, { id, name, input });
-        // This is what Mysti's permission gate intercepts. Copilot had no such
-        // event before 1.0, which is why the gate could never fire for it.
+        // A display notification, not a blocking approval request.
         return { type: 'tool_use', toolCall: { id, name, input, status: 'running' } };
       }
 
@@ -635,8 +749,12 @@ export class CopilotProvider extends BaseCliProvider {
         const active = session.activeToolCalls.get(id);
         session.activeToolCalls.delete(id);
         const result = (payload.result ?? {}) as Record<string, unknown>;
-        const content = typeof result.content === 'string' ? result.content : JSON.stringify(result.content ?? '');
-        return {
+        const failure = (payload.error ?? {}) as Record<string, unknown>;
+        const isDiagnostic = result.content == null && payload.success === false
+          && typeof failure.message === 'string';
+        const resultContent = isDiagnostic ? failure.message : result.content;
+        const content = typeof resultContent === 'string' ? resultContent : JSON.stringify(resultContent ?? '');
+        const chunk: StreamChunk = {
           type: 'tool_result',
           toolCall: {
             id,
@@ -646,6 +764,8 @@ export class CopilotProvider extends BaseCliProvider {
             status: payload.success === false ? 'failed' : 'completed',
           },
         };
+        if (isDiagnostic) { this._toolFailureDiagnostics.add(chunk); }
+        return chunk;
       }
 
       // The limit Copilot actually truncates and compacts at — the model's
@@ -667,7 +787,6 @@ export class CopilotProvider extends BaseCliProvider {
       // tool.execution_start — the partial JSON fragments are not renderable.
       case 'assistant.tool_call_delta':
       case 'tool.execution_partial_result':
-      case 'assistant.message':
       case 'assistant.message_start':
       case 'assistant.turn_start':
       case 'assistant.turn_end':

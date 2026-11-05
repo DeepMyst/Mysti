@@ -39,7 +39,7 @@ beforeEach(async () => {
     res.setHeader('Content-Type', 'application/json');
     if (status !== 200) { res.writeHead(status); res.end('{}'); return; }
     if (url.pathname === '/global/health') { res.end(JSON.stringify({ healthy: true, version: 'fixture' })); }
-    else if (url.pathname === '/provider') { res.end(JSON.stringify({ connected: ['vendor'], all: [{ id: 'vendor', models: { model: { name: 'Model', limit: { context: 12345 } } } }] })); }
+    else if (url.pathname === '/config/providers') { res.end(JSON.stringify({ providers: [{ id: 'vendor', models: { model: { name: 'Model', limit: { context: 12345 } } } }], default: { vendor: 'model' } })); }
     else if (url.pathname === '/session' && req.method === 'POST') { res.end(JSON.stringify({ id: 'owned', ...(acknowledge ? { permission: body.permission } : {}) })); }
     else if (url.pathname === '/event') { res.setHeader('Content-Type', 'text/event-stream'); stream = res; res.write(': ready\n\n'); }
     else if (url.pathname === '/session/owned/message') { promptCount++; message = res; expect(body.model).toEqual({ providerID: 'vendor', modelID: 'model' }); }
@@ -80,6 +80,31 @@ describe('OpenCode HTTP transport', () => {
     await new Promise(resolve => setTimeout(resolve, 10)); finish();
     const chunks = await result;
     expect(chunks.find(c => c.type === 'tool_result')?.toolCall).toMatchObject({ id: 'call', status: 'completed', output: 'File contents' });
+  });
+
+  it.each(['completed', 'error'])('reconciles a final %s tool when its terminal event is missing', async status => {
+    const result = collect(); await ready();
+    const part = { sessionID: 'owned', id: 'tool-part', type: 'tool', callID: 'call', tool: 'bash',
+      state: { status, input: { command: 'owned-command' }, ...(status === 'error' ? { error: 'The user rejected permission.' } : { output: 'Finished' }) } };
+    event('message.part.updated', { part: { ...part, state: { ...part.state, status: 'running' } } });
+    message!.end(JSON.stringify({ parts: [part] }));
+    const chunks = await result;
+    expect(chunks.filter(c => c.type === 'tool_result')).toHaveLength(1);
+    expect(chunks.find(c => c.type === 'tool_result')?.toolCall).toMatchObject({ id: 'call', name: 'Bash',
+      status: status === 'error' ? 'failed' : 'completed', output: status === 'error' ? 'The user rejected permission.' : 'Finished' });
+    expect(chunks.filter(c => c.type === 'error')).toEqual([]);
+    expect(chunks.at(-1)?.type).toBe('done'); expect(deleted).toBe(1);
+  });
+  it('does not duplicate a terminal tool from both the event stream and final reply', async () => {
+    const result = collect(); await ready();
+    const part = { sessionID: 'owned', id: 'tool-part', type: 'tool', callID: 'call', tool: 'bash',
+      state: { status: 'completed', input: {}, output: 'Finished' } };
+    event('message.part.updated', { part });
+    await new Promise(resolve => setTimeout(resolve, 10));
+    message!.end(JSON.stringify({ parts: [part, { id: 'answer', type: 'text', text: 'Done' }] }));
+    const chunks = await result;
+    expect(chunks.filter(c => c.type === 'tool_result')).toHaveLength(1);
+    expect(chunks.at(-1)?.type).toBe('done');
   });
 
   it('waits for host approval before replying to the server', async () => {

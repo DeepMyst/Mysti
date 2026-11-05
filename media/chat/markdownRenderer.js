@@ -29,8 +29,16 @@
     let loadingScript = null;
     let rejectLoading = null;
     const nextId = kind => kind + '-' + instanceId + '-' + (++sequence);
+    const presentationClasses = new Set([
+      'mermaid-diagram', 'mermaid-pending', 'file-edit-card', 'file-edit-header',
+      'file-edit-icon', 'file-edit-filename', 'file-edit-path', 'file-edit-stats',
+      'file-edit-additions', 'file-edit-deletions', 'file-edit-diff',
+      'file-edit-diff-content', 'file-edit-line', 'file-edit-line-num',
+      'file-edit-line-content', 'file-edit-proposal-more', 'addition', 'deletion', 'context',
+    ]);
 
     let parser = null;
+    let userParser = null;
     if (ports.marked) {
       const renderer = new ports.marked.Renderer();
       renderer.code = function(token, language) {
@@ -39,7 +47,7 @@
         if (lang === 'mermaid') {
           return '<div class="mermaid-diagram mermaid-pending">' + escapeHtmlForMarked(code) + '</div>';
         }
-        if (lang === 'diff' || lang === 'patch' || isDiffContentMarked(code)) {
+        if (lang === 'diff' || lang === 'patch' || (!lang && isDiffContentMarked(code))) {
           return formatDiffContentMarked(code);
         }
         const langClass = lang ? 'language-' + escapeHtmlForMarked(lang) : '';
@@ -47,6 +55,14 @@
       };
       // A private parser avoids changing Marked's global configuration.
       parser = new ports.marked.Marked({ gfm: true, breaks: true, renderer });
+      // User messages can discuss literal tags or placeholders such as
+      // <value>. Escape HTML tokens only, preserving code and link parsing.
+      const userRenderer = new ports.marked.Renderer();
+      userRenderer.code = renderer.code;
+      userRenderer.html = function(token) {
+        return escapeHtmlForMarked(typeof token === 'object' ? token.text : token);
+      };
+      userParser = new ports.marked.Marked({ gfm: true, breaks: true, renderer: userRenderer });
     }
 
     function plainText(value) {
@@ -55,8 +71,9 @@
       return element.innerHTML;
     }
 
-    function renderMarkdown(value) {
-      if (disposed || !parser || typeof ports.sanitize !== 'function') {
+    function renderMarkdown(value, options) {
+      const activeParser = options && options.literalHtml === true ? userParser : parser;
+      if (disposed || !activeParser || typeof ports.sanitize !== 'function') {
         if (!disposed) { logger.warn('[Mysti] Markdown libraries unavailable — displaying plain text'); }
         return plainText(value);
       }
@@ -64,11 +81,40 @@
         // Model/tool content can imitate permission controls without executing
         // scripts. Keep those controls out even when the CSP already blocks
         // their network and script behavior; data attributes support code cards.
-        return ports.sanitize(parser.parse(String(value ?? '')), {
-          ADD_ATTR: ['target', 'class', 'data-lang'],
+        const clean = ports.sanitize(activeParser.parse(String(value ?? '')), {
+          ADD_ATTR: ['target', 'class', 'data-lang', 'data-file-path', 'data-full-diff'],
+          ALLOW_DATA_ATTR: false,
           FORBID_TAGS: ['form', 'input', 'button', 'select', 'textarea', 'iframe', 'object', 'embed', 'base', 'link', 'meta', 'style'],
-          FORBID_ATTR: ['formaction', 'action', 'srcdoc', 'ping'],
+          FORBID_ATTR: ['formaction', 'action', 'srcdoc', 'ping', 'id', 'name', 'style', 'tabindex'],
         });
+        // Add our own copy affordance only after untrusted buttons have been
+        // removed. Copy reads this code element's text, never model-supplied
+        // attributes or an executable command.
+        const output = document.createElement('div');
+        output.innerHTML = clean;
+        // Delegated chat actions also recognize spans/anchors by class or
+        // data attribute. Model HTML must not impersonate those actions even
+        // when it contains no scripts or buttons. Retain renderer presentation
+        // classes and language hooks, never interactive application classes.
+        for (const element of output.querySelectorAll('[class]')) {
+          const classes = Array.from(element.classList).filter(name => presentationClasses.has(name)
+            || (element.tagName === 'CODE' && /^language-[a-zA-Z0-9_+.-]+$/.test(name)));
+          if (classes.length) element.setAttribute('class', classes.join(' '));
+          else element.removeAttribute('class');
+        }
+        for (const code of output.querySelectorAll('pre > code')) {
+          const pre = code.parentElement;
+          const wrapper = document.createElement('div');
+          wrapper.className = 'message-code-block';
+          const copy = document.createElement('button');
+          copy.type = 'button';
+          copy.className = 'message-code-copy';
+          copy.textContent = 'Copy code';
+          copy.setAttribute('aria-label', 'Copy code');
+          pre.replaceWith(wrapper);
+          wrapper.append(copy, pre);
+        }
+        return output.innerHTML;
       } catch (error) {
         logger.warn('[Mysti] Markdown rendering failed — displaying plain text', error);
         return plainText(value);
@@ -125,10 +171,20 @@
         pending.set(block, request);
         const current = () => !disposed && block.isConnected && pending.get(block) === request && block.textContent === source;
         request.task = (async () => {
+          let renderContainer = null;
+          let rendering = false;
           try {
             const mermaid = await loadMermaid();
             if (!current()) { return; }
-            const result = await mermaid.render(nextId('mermaid'), source);
+            // Mermaid leaves diagnostic SVGs in its render container when
+            // parsing fails. Own that temporary DOM so failed, superseded and
+            // detached renders cannot leak global error graphics.
+            renderContainer = document.createElement('div');
+            renderContainer.setAttribute('data-mysti-diagram-work', '');
+            renderContainer.style.cssText = 'position:fixed;left:-10000px;top:0;pointer-events:none';
+            document.body.appendChild(renderContainer);
+            rendering = true;
+            const result = await mermaid.render(nextId('mermaid'), source, renderContainer);
             if (!current()) { return; }
             block.innerHTML = result.svg;
             block.classList.remove('mermaid-pending', 'mermaid-error');
@@ -136,9 +192,14 @@
           } catch (error) {
             if (current()) {
               block.classList.add('mermaid-error');
+              // A syntax failure is terminal for this source. A changed code
+              // fence creates a fresh pending block; only library-load failures
+              // should retry when another message is rendered.
+              if (rendering) block.classList.remove('mermaid-pending');
               logger.error('[Mysti] Mermaid render failed', error);
             }
           } finally {
+            if (renderContainer) renderContainer.remove();
             if (pending.get(block) === request) { pending.delete(block); }
           }
         })();
@@ -266,8 +327,13 @@
       // Encode full diff data for expansion
       var fullDiffData = encodeURIComponent(JSON.stringify(diffLines));
 
-      // Chevron SVG
-      var chevronSvg = '<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M4 6l4 4 4-4"/></svg>';
+      var remainingHtml = '';
+      for (var k = previewLines.length; k < diffLines.length; k++) {
+        var remaining = diffLines[k];
+        remainingHtml += '<div class="' + remaining.cls + '">' +
+          '<span class="file-edit-line-num">' + (remaining.num !== '' ? remaining.num : '') + '</span>' +
+          '<span class="file-edit-line-content">' + escapeHtmlForMarked(remaining.content) + '</span></div>';
+      }
 
       var html = '<div class="file-edit-card" id="' + diffId + '" data-file-path="' + escapeHtmlForMarked(filePath) + '" data-full-diff="' + fullDiffData + '">' +
         '<div class="file-edit-header">' +
@@ -278,15 +344,11 @@
             (additions > 0 ? '<span class="file-edit-additions">+' + additions + '</span>' : '') +
             (deletions > 0 ? '<span class="file-edit-deletions">-' + deletions + '</span>' : '') +
           '</div>' +
-          '<button class="file-edit-collapse-btn" title="Toggle">' + chevronSvg + '</button>' +
         '</div>' +
         '<div class="file-edit-diff">' +
           '<div class="file-edit-diff-content">' + previewHtml + '</div>' +
-          (hasMore ? '<button class="file-edit-show-more">Show more... (' + remainingCount + ' lines)</button>' : '') +
-        '</div>' +
-        '<div class="file-edit-actions">' +
-          '<button class="file-edit-btn file-edit-revert">Revert</button>' +
-          '<button class="file-edit-btn file-edit-review">Review</button>' +
+          (hasMore ? '<details class="file-edit-proposal-more"><summary>Show more (' + remainingCount + ' lines)</summary>' +
+            '<div class="file-edit-diff-content">' + remainingHtml + '</div></details>' : '') +
         '</div>' +
       '</div>';
 

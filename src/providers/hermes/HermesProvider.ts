@@ -23,9 +23,10 @@
  *
  * Hermes has no stream-JSON one-shot mode (`-z`/`chat -q` print plain
  * final text and take the prompt via argv, which the single-shot path
- * cannot supply without bypassing base hardening), so the single-shot
- * fallback runs `hermes acp --check` and surfaces its diagnostics as an
- * actionable error instead of hanging or silently re-sending.
+ * cannot supply without bypassing base hardening). Requests require ACP:
+ * startup failures retain their cause, and exit before the prompt response
+ * is incomplete even with code 0. Diagnostic `acp --check` output is never
+ * substituted for a failed request or used to replay its prompt.
  */
 
 import * as vscode from 'vscode';
@@ -138,6 +139,7 @@ export class HermesProvider extends BaseCliProvider {
     supportsThinking: false,     // hermes acp does not emit thought chunks today; handled if it starts to
     supportsToolUse: true,
     supportsNativeApproval: true,
+    supportsAskPermission: true,
     supportsSessions: true,
     supportsPersistentProcess: true,
     // Plan 27 Phase 5: attachments are written to a temp file and referenced
@@ -241,6 +243,10 @@ export class HermesProvider extends BaseCliProvider {
     return process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
   }
 
+  protected override getAuthenticationEnvironmentKeys(): readonly string[] {
+    return [...HermesProvider.ENV_KEYS, 'HERMES_HOME'];
+  }
+
   private _hermesEnvKey(): string | undefined {
     return HermesProvider.ENV_KEYS.find(k => (process.env[k] || '').trim().length > 0);
   }
@@ -322,6 +328,8 @@ export class HermesProvider extends BaseCliProvider {
   // ==========================================================================
   // Persistent mode — the primary transport (`hermes acp`, JSON-RPC/stdio)
   // ==========================================================================
+
+  protected override requiresPersistentTransport(): boolean { return true; }
 
   protected buildPersistentCliArgs(settings: Settings, session: PanelSessionState): string[] | null {
     const hermes = session as HermesSessionState;
@@ -408,38 +416,53 @@ export class HermesProvider extends BaseCliProvider {
   }
 
   /**
-   * The turn ends when the session/prompt JSON-RPC *response* arrives —
-   * uniquely identified by `result.stopReason` (initialize and
-   * session/new results carry no stopReason). Error responses to any of
-   * our requests also end the turn (parseStreamLine reports them).
+   * A reply to the outstanding prompt ends the turn; the parser validates
+   * its stop reason before accepting it. Malformed session creation also
+   * ends the turn with an error instead of leaving the request waiting.
+   * Errors to outstanding handshake or prompt requests also end the turn.
+   * Stale/unknown IDs must not end a newer turn before its parser runs.
    * Server→client *requests* (they carry `method`) never end the turn.
    */
-  protected _isResponseBoundary(line: string): boolean {
+  protected _isResponseBoundary(line: string, session?: PanelSessionState): boolean {
+    if (!session) { return false; }
+    const hermes = session as HermesSessionState;
     try {
       const data = JSON.parse(line.trim());
       if (data.method !== undefined || data.id === undefined || data.id === null) {
         return false;
       }
-      if (data.error !== undefined) {
-        return true;
+      const matches = (id: number | null) => id !== null && data.id === id;
+      if (data.error) {
+        return matches(hermes.initializeId) || matches(hermes.sessionNewId) || matches(hermes.promptId);
       }
-      return typeof data.result?.stopReason === 'string'
-        || typeof data.result?.stop_reason === 'string';
+      if (matches(hermes.promptId)) { return true; }
+      return matches(hermes.sessionNewId)
+        && !this._nonEmptyRpcString(data.result?.sessionId ?? data.result?.session_id);
     } catch {
       return false;
     }
   }
 
+  private _nonEmptyRpcString(value: unknown): string | undefined {
+    return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
+  }
+
+  private _malformedRpcResponse(hermes: HermesSessionState, field: string): StreamChunk {
+    // The invalid reply consumed an outstanding request, so this process can
+    // no longer provide a usable session/turn. Evict only this captured child;
+    // the next explicit request will start a fresh ACP handshake.
+    this._interruptPersistentProcess(hermes);
+    return { type: 'error', content: `Hermes ACP returned a missing or invalid ${field}. The connection was reset; retry the request.` };
+  }
+
   /**
    * Cancel by DROPPING the ACP process, not by sending session/cancel.
    *
-   * A graceful session/cancel leaves the prompt request outstanding until
-   * Hermes finishes aborting, and the base immediately frees the read loop
-   * (session.process = null); the next turn then reuses the same live
-   * process and its stale `{stopReason:"cancelled"}` response terminates the
-   * NEW turn (or is misattributed to the new promptId). The base's default
-   * raw Ctrl+C byte is worse still — it corrupts the JSON-RPC line stream.
-   * Killing the process removes the whole race class: the next turn spawns a
+   * A graceful session/cancel leaves prompt output outstanding until Hermes
+   * finishes aborting, while the base immediately frees the read loop. Even
+   * with correlated response IDs, late session/update notifications could
+   * enter a later turn on that same connection. A raw Ctrl+C byte also corrupts
+   * the JSON-RPC line stream. Dropping the connection makes the next turn spawn a
    * fresh `hermes acp`, re-runs buildPersistentCliArgs (clean protocol state),
    * and re-sends conversation history.
    */
@@ -453,7 +476,7 @@ export class HermesProvider extends BaseCliProvider {
   }
 
   // ==========================================================================
-  // Single-shot fallback — diagnostics only (see file header)
+  // Diagnostic argument/parser support — never a request fallback
   // ==========================================================================
 
   protected buildCliArgs(_settings: Settings, session: PanelSessionState): string[] {
@@ -546,9 +569,9 @@ export class HermesProvider extends BaseCliProvider {
           providerName: 'Hermes'
         };
       }
-      const sessionId = String((result.sessionId ?? result.session_id) || '');
+      const sessionId = this._nonEmptyRpcString(result.sessionId ?? result.session_id);
       if (!sessionId) {
-        return { type: 'error', content: 'Hermes ACP returned no session id.' };
+        return this._malformedRpcResponse(hermes, 'session ID');
       }
       hermes.acpSessionId = sessionId;
       hermes.sessionId = sessionId;
@@ -557,10 +580,9 @@ export class HermesProvider extends BaseCliProvider {
       if (hermes.persistentProcess?.stdin?.writable) {
         hermes.persistentProcess.stdin.write(this._promptRequest(hermes, prompt));
       }
-      // Deliberately emit NO chunk here. usedPersistent must flip only once
-      // the prompt is actually answered (the boundary session_active below),
-      // so a process death DURING the first prompt yields zero chunks and
-      // surfaces the diagnostic fallback instead of a silent empty reply.
+      // Session creation is not a completed response. Wait for the prompt's
+      // correlated terminal; the required transport reports an earlier exit
+      // as incomplete, including an empty response or a clean process exit.
       return null;
     }
 
@@ -569,19 +591,19 @@ export class HermesProvider extends BaseCliProvider {
       if (error) {
         return { type: 'error', content: `Hermes: ${error.message || 'prompt failed'}` };
       }
+      const stopReason = this._nonEmptyRpcString(result.stopReason ?? result.stop_reason);
+      if (!stopReason) { return this._malformedRpcResponse(hermes, 'stop reason'); }
       const usage = (result.usage ?? {}) as Record<string, unknown>;
       const input = Number(usage.inputTokens ?? usage.input_tokens ?? 0);
       const output = Number(usage.outputTokens ?? usage.output_tokens ?? 0);
       if (input > 0 || output > 0) {
         hermes.lastUsageStats = { input_tokens: input, output_tokens: output };
       }
-      const stopReason = String(result.stopReason ?? result.stop_reason ?? 'end_turn');
       if (stopReason === 'refusal') {
         return { type: 'error', content: 'Hermes declined to complete this request (stopReason: refusal).' };
       }
-      // Guarantee ≥1 chunk per turn so the base never mistakes an empty
-      // response for a dead persistent process (which would trigger the
-      // single-shot fallback and re-run diagnostics over the user's turn).
+      // A valid prompt terminal may complete without generated text. Preserve
+      // its session activation without inventing an assistant message.
       return { type: 'session_active', sessionId: hermes.acpSessionId || undefined };
     }
 

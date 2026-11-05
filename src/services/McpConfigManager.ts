@@ -213,8 +213,8 @@ export class McpConfigManager {
         existing[adapter.rootKey] = root;
       }
 
-      // If nothing changed and the file didn't exist, don't create an empty file.
-      if (!changed && !fs.existsSync(configPath)) {
+      // A cleanup no-op must preserve existing bytes and avoid unnecessary writes.
+      if (!changed) {
         return { ...base, ok: true, action: 'skipped' };
       }
 

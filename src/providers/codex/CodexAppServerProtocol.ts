@@ -23,6 +23,14 @@ export interface CodexAppServerState {
   requests: Map<number, string>;
   items: Map<string, Record<string, unknown>>;
   streamed: Set<string>;
+  /** Distinct native assistant messages need a boundary in the flattened reply. */
+  assistantTextItem?: { id: string; trailingLineBreaks: string; needsBoundary: boolean };
+  /** Notifications can precede the authoritative turn/start RPC response. */
+  pendingNotifications?: Record<string, unknown>[];
+  pendingNotificationBytes?: number;
+  pendingChunks?: StreamChunk[];
+  /** A malformed transport must be replaced before accepting another turn. */
+  protocolFailed?: boolean;
   usage?: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number };
   contextWindow?: number;
 }
@@ -56,9 +64,68 @@ function policy(state: CodexAppServerState): Record<string, unknown> {
 function turn(state: CodexAppServerState, prompt: string): string {
   state.turnId = undefined;
   state.items.clear(); state.streamed.clear(); state.usage = undefined;
+  state.assistantTextItem = undefined;
+  state.pendingNotifications = []; state.pendingNotificationBytes = 0; state.pendingChunks = [];
   return request(state, 'turn/start', {
     threadId: state.threadId, input: [{ type: 'text', text: prompt, text_elements: [] }], effort: state.effort,
   });
+}
+
+const scopedMethods = new Set(['turn/started', 'turn/completed', 'item/agentMessage/delta',
+  'item/reasoning/summaryTextDelta', 'item/reasoning/textDelta', 'thread/tokenUsage/updated',
+  'item/started', 'item/completed', 'error', 'item/commandExecution/requestApproval',
+  'item/fileChange/requestApproval', 'item/tool/requestUserInput']);
+const nonblank = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
+function assistantText(state: CodexAppServerState, itemId: unknown, content: string): StreamChunk {
+  if (!content || !nonblank(itemId)) { return { type: 'text', content }; }
+  const previous = state.assistantTextItem;
+  let needsBoundary = !!previous && (previous.id !== itemId || previous.needsBoundary);
+  let separator = '';
+  // Leading newlines may arrive as separate deltas. Wait for text before
+  // filling the boundary so already formatted items do not gain blank lines.
+  if (needsBoundary && !/^[\r\n]+$/.test(content)) {
+    const leading = content.match(/^[\r\n]*/)?.[0] || '';
+    const boundaryNewlines = ((previous?.trailingLineBreaks || '') + leading).split('\n').length - 1;
+    separator = '\n'.repeat(Math.max(0, 2 - boundaryNewlines));
+    needsBoundary = false;
+  }
+  const text = separator + content;
+  // Four trailing bytes retain two CRLFs even when a CR and its LF arrive
+  // separately. No assistant content beyond those line breaks is retained.
+  const trailingLineBreaks = ((previous?.trailingLineBreaks || '') + text).match(/[\r\n]*$/)?.[0].slice(-4) || '';
+  state.assistantTextItem = { id: itemId, needsBoundary, trailingLineBreaks };
+  return { type: 'text', content: text };
+}
+function matchesTurn(data: Record<string, unknown>, state: CodexAppServerState, turnId = state.turnId): boolean {
+  const params = isRecord(data.params) ? data.params : {};
+  const id = data.method === 'turn/started' || data.method === 'turn/completed'
+    ? (isRecord(params.turn) ? params.turn.id : undefined) : params.turnId;
+  return nonblank(turnId) && params.threadId === state.threadId && id === turnId;
+}
+function waitingForTurn(state: CodexAppServerState): boolean {
+  return !state.turnId && [...state.requests.values()].includes('turn/start');
+}
+function shouldBuffer(data: Record<string, unknown>, state: CodexAppServerState): boolean {
+  return typeof data.method === 'string' && scopedMethods.has(data.method) && waitingForTurn(state)
+    && isRecord(data.params) && data.params.threadId === state.threadId;
+}
+function bufferWouldOverflow(data: Record<string, unknown>, state: CodexAppServerState): boolean {
+  // A broken backend must not accumulate an unbounded pre-acknowledgement
+  // stream. Fail visibly instead of dropping potentially valid output.
+  return (state.pendingNotifications?.length || 0) >= 1024
+    || (state.pendingNotificationBytes || 0) + JSON.stringify(data).length > 1024 * 1024;
+}
+function invalidRpcResult(method: string, data: Record<string, unknown>): boolean {
+  if (!isRecord(data.result)) { return true; }
+  const result = data.result;
+  if (method === 'config/read') {
+    if (!isRecord(result.config)) { return true; }
+    return ['mcp_servers', 'apps'].some(key => result.config && isRecord(result.config)
+      && result.config[key] !== undefined && result.config[key] !== null && !isRecord(result.config[key]));
+  }
+  if (method === 'thread/start' || method === 'thread/resume') { return !isRecord(result.thread) || !nonblank(result.thread.id); }
+  if (method === 'turn/start') { return !isRecord(result.turn) || !nonblank(result.turn.id); }
+  return false;
 }
 
 export function codexAppServerInput(state: CodexAppServerState, prompt: string): string {
@@ -68,13 +135,19 @@ export function codexAppServerInput(state: CodexAppServerState, prompt: string):
 }
 
 export function isCodexAppServerBoundary(data: Record<string, unknown>, state?: CodexAppServerState): boolean {
-  const params = isRecord(data.params) ? data.params : {};
-  const completed = isRecord(params.turn) ? params.turn : {};
+  if (state && shouldBuffer(data, state) && bufferWouldOverflow(data, state)) { return true; }
   if (data.method === 'turn/completed') {
-    return !state || (params.threadId === state.threadId && (!state.turnId || completed.id === state.turnId));
+    return !state || matchesTurn(data, state);
   }
-  return data.method === undefined && typeof data.id === 'number' && isRecord(data.error)
-    && (!state || state.requests.has(data.id));
+  if (data.method !== undefined || typeof data.id !== 'number') { return false; }
+  if (!state) { return isRecord(data.error); }
+  const pending = state.requests.get(data.id);
+  if (!pending) { return false; }
+  if (isRecord(data.error) || invalidRpcResult(pending, data)) { return true; }
+  const result = data.result as Record<string, unknown>;
+  const resultTurnId = isRecord(result.turn) ? result.turn.id : undefined;
+  return pending === 'turn/start' && typeof resultTurnId === 'string'
+    && !!state.pendingNotifications?.some(value => value.method === 'turn/completed' && matchesTurn(value, state, resultTurnId));
 }
 
 /** App-server v2 stdio; all decisions target the captured issuing process. */
@@ -92,7 +165,14 @@ export function handleCodexAppServer(
     if (!pending) { return null; }
     if (isRecord(data.error)) {
       state.pendingPrompt = undefined;
+      state.pendingNotifications = []; state.pendingNotificationBytes = 0;
       return { type: 'error', content: `Codex ${pending} failed: ${String(data.error.message || 'Unknown app-server error')}` };
+    }
+    if (invalidRpcResult(pending, data)) {
+      state.pendingPrompt = undefined;
+      state.protocolFailed = true;
+      state.pendingNotifications = []; state.pendingNotificationBytes = 0;
+      return { type: 'error', content: `Codex returned an invalid ${pending} response. Update the CLI and retry.` };
     }
     const result = isRecord(data.result) ? data.result : {};
     if (pending === 'initialize') {
@@ -111,19 +191,35 @@ export function handleCodexAppServer(
       }));
     } else if (pending === 'thread/start' || pending === 'thread/resume') {
       const thread = isRecord(result.thread) ? result.thread : {};
-      if (typeof thread.id !== 'string') {
-        // Terminate the process so the base cannot wait forever for a turn that
-        // was never created, or replay an ambiguously submitted prompt.
-        proc?.kill();
-        return { type: 'error', content: 'Codex returned no thread ID. Update the CLI and retry.' };
-      }
-      state.threadId = thread.id; state.initialized = true;
+      state.threadId = thread.id as string; state.initialized = true;
       const prompt = state.pendingPrompt; state.pendingPrompt = undefined;
       if (prompt !== undefined) { send(turn(state, prompt)); }
       return { type: 'session_active', sessionId: state.threadId };
     } else if (pending === 'turn/start' && isRecord(result.turn) && typeof result.turn.id === 'string') {
       state.turnId = result.turn.id;
+      const queued = state.pendingNotifications || [];
+      state.pendingNotifications = []; state.pendingNotificationBytes = 0;
+      const chunks: StreamChunk[] = [];
+      for (const notification of queued) {
+        const chunk = handleCodexAppServer(notification, state, proc, approvals);
+        if (chunk) { chunks.push(chunk); }
+        if (notification.method === 'turn/completed' && matchesTurn(notification, state)) { break; }
+      }
+      const first = chunks.shift() || null;
+      (state.pendingChunks ||= []).push(...chunks);
+      return first;
     }
+    return null;
+  }
+
+  if (shouldBuffer(data, state)) {
+    if (bufferWouldOverflow(data, state)) {
+      state.pendingNotifications = []; state.pendingNotificationBytes = 0;
+      state.protocolFailed = true;
+      return { type: 'error', content: 'Codex sent too much output before acknowledging the turn. Update the CLI and retry.' };
+    }
+    (state.pendingNotifications ||= []).push(data);
+    state.pendingNotificationBytes = (state.pendingNotificationBytes || 0) + JSON.stringify(data).length;
     return null;
   }
 
@@ -131,6 +227,7 @@ export function handleCodexAppServer(
   if (typeof id === 'string' || typeof id === 'number') {
     const respond = (result: Record<string, unknown>, target = proc) => send(json({ id, result }), target);
     if (method === 'item/commandExecution/requestApproval' || method === 'item/fileChange/requestApproval') {
+      if (!matchesTurn(data, state) || !approvals) { respond({ decision: 'cancel' }); return null; }
       const itemId = typeof params.itemId === 'string' ? params.itemId : String(id);
       const item = state.items.get(itemId) || {};
       const isFile = method === 'item/fileChange/requestApproval';
@@ -143,8 +240,6 @@ export function handleCodexAppServer(
       const input = isFile ? { changes: item.changes || [], reason: params.reason, grantRoot: params.grantRoot }
         : { command: params.command ?? item.command ?? '', cwd: params.cwd ?? state.cwd,
           reason: params.reason, network: params.networkApprovalContext };
-      const matching = params.threadId === state.threadId && (!state.turnId || params.turnId === state.turnId);
-      if (!matching || !approvals) { respond({ decision: 'cancel' }); return null; }
       approvals.request(id, { id: itemId, name, input, status: 'running', kind: toolKind(name) },
         nativeToolDecision(state.settings, name), (decision, target) => respond({
           decision: decision === 'allow' ? 'accept' : decision === 'deny' ? 'decline' : 'cancel',
@@ -156,6 +251,7 @@ export function handleCodexAppServer(
       respond({ action: 'decline', content: null });
     } else if (method === 'item/tool/requestUserInput') {
       respond({ answers: {} });
+      if (!matchesTurn(data, state)) { return null; }
       return { type: 'ask_user_question', askUserQuestion: {
         toolCallId: `codex-question-${state.threadId}-${state.turnId}-${id}`,
         questions: (Array.isArray(params.questions) ? params.questions : []).filter(isRecord).map(question => ({
@@ -170,13 +266,15 @@ export function handleCodexAppServer(
     }
     return null;
   }
-  if (params.threadId && params.threadId !== state.threadId) { return null; }
+  if (scopedMethods.has(method) && !matchesTurn(data, state)) { return null; }
   if (method === 'turn/started' && isRecord(params.turn) && typeof params.turn.id === 'string') {
     state.turnId = params.turn.id; return null;
   }
   if (method === 'item/agentMessage/delta' || method === 'item/reasoning/summaryTextDelta' || method === 'item/reasoning/textDelta') {
     if (typeof params.itemId === 'string') { state.streamed.add(params.itemId); }
-    return typeof params.delta === 'string' ? { type: method === 'item/agentMessage/delta' ? 'text' : 'thinking', content: params.delta } : null;
+    if (typeof params.delta !== 'string') { return null; }
+    return method === 'item/agentMessage/delta'
+      ? assistantText(state, params.itemId, params.delta) : { type: 'thinking', content: params.delta };
   }
   if (method === 'thread/tokenUsage/updated' && isRecord(params.tokenUsage)) {
     const usage = params.tokenUsage;
@@ -200,7 +298,7 @@ export function handleCodexAppServer(
     state.items.set(itemId, item);
     const completed = method === 'item/completed';
     if (item.type === 'agentMessage' || item.type === 'plan') {
-      return completed && !state.streamed.has(itemId) && typeof item.text === 'string' ? { type: 'text', content: item.text } : null;
+      return completed && !state.streamed.has(itemId) && typeof item.text === 'string' ? assistantText(state, itemId, item.text) : null;
     }
     if (item.type === 'reasoning') {
       return completed && !state.streamed.has(itemId) && Array.isArray(item.summary)
@@ -218,6 +316,11 @@ export function handleCodexAppServer(
     } };
   }
   if (method === 'error' && isRecord(params.error)) {
+    // The app-server reports reconnect attempts as error notifications with
+    // willRetry=true. They are progress, not a failed Mysti turn: forwarding
+    // them as terminal errors stops collaboration before the final auth or
+    // transport result and can needlessly replay the whole prompt.
+    if (params.willRetry === true) { return null; }
     return { type: 'error', content: String(params.error.message || 'Codex app-server error') };
   }
   return null;

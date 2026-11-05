@@ -12,18 +12,25 @@
  */
 
 import * as vscode from 'vscode';
-import { spawn, ChildProcess } from 'child_process';
+import { ChildProcess } from 'child_process';
+import { StringDecoder } from 'string_decoder';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import type { QuickActionSuggestion, SuggestionColor, Conversation, Message } from '../types';
+import { killProcessTree, markOwnedProcessGroup } from '../utils/processKill';
+import { PROCESS_KILL_GRACE_PERIOD_MS } from '../constants';
+import { spawnTextOnlyClaudeWorker } from '../utils/textOnlyClaudeWorker';
 
 const COLORS: SuggestionColor[] = ['blue', 'green', 'purple', 'orange', 'indigo', 'teal'];
 const ICONS = ['💡', '🔧', '📝', '🚀', '✨', '🎯'];
+// CLI startup and inference can exceed five seconds even for a short title.
+// Titles run asynchronously; retain the same bounded budget as suggestions.
+const TITLE_TIMEOUT_MS = 20_000;
 
 /**
  * SuggestionManager - Generates AI-powered quick action suggestions using Claude Haiku 4.5
- * Uses pre-spawned CLI processes to eliminate spawn latency
+ * Starts a text-only CLI worker when each prompt is ready
  * No API key needed - uses existing Claude Code authentication
  *
  * Provider-ID contract (Plan 02 Phase 2, W8): any provider-scoped suggestion
@@ -37,72 +44,23 @@ const ICONS = ['💡', '🔧', '📝', '🚀', '✨', '🎯'];
 export class SuggestionManager {
   private _extensionContext: vscode.ExtensionContext;
   private _currentProcess: ChildProcess | null = null;
-  private _warmProcessPool: ChildProcess[] = [];
-  private readonly _poolSize = 2;
   private _claudePath: string;
-  private _isSpawning: boolean = false;
+  private _disposed = false;
+  private readonly _ownedProcesses = new Set<ChildProcess>();
+  private readonly _activeOperations = new Map<ChildProcess, () => void>();
 
   constructor(context: vscode.ExtensionContext) {
     this._extensionContext = context;
     this._claudePath = this._findClaudeCliPath();
 
-    // Pre-spawn a warm process immediately
-    this._spawnWarmProcess();
-
-    console.log('[Mysti] SuggestionManager initialized with pre-spawn CLI');
-  }
-
-  /**
-   * Pre-spawn a Claude CLI process that's ready and waiting for stdin
-   * This eliminates the ~500ms spawn overhead from the critical path
-   */
-  private _spawnWarmProcess(): void {
-    if (this._isSpawning || this._warmProcessPool.length >= this._poolSize) {
-      return;
-    }
-
-    this._isSpawning = true;
-
-    try {
-      while (this._warmProcessPool.length < this._poolSize) {
-        const proc = spawn(this._claudePath, [
-          '--print',
-          '--output-format', 'text',
-          '--model', 'claude-haiku-4-5-20251001'
-        ], {
-          stdio: ['pipe', 'pipe', 'pipe']
-        });
-
-        const index = this._warmProcessPool.length;
-
-        proc.on('error', (err) => {
-          console.error('[Mysti] Suggestion warm process error:', err);
-          this._warmProcessPool = this._warmProcessPool.filter(p => p !== proc);
-        });
-
-        proc.on('close', (code) => {
-          if (code !== 0 && code !== null) {
-            console.log('[Mysti] Suggestion warm process closed with code:', code);
-          }
-          this._warmProcessPool = this._warmProcessPool.filter(p => p !== proc);
-        });
-
-        this._warmProcessPool.push(proc);
-        console.log(`[Mysti] Suggestion warm process ${index + 1}/${this._poolSize} spawned`);
-      }
-
-      this._isSpawning = false;
-      console.log(`[Mysti] Suggestion warm pool ready (${this._warmProcessPool.length}/${this._poolSize})`);
-    } catch (error) {
-      console.error('[Mysti] Failed to spawn suggestion warm process:', error);
-      this._isSpawning = false;
-    }
+    console.log('[Mysti] SuggestionManager initialized');
   }
 
   public async generateSuggestions(
     _conversation: Conversation,
     lastMessage: Message
   ): Promise<QuickActionSuggestion[]> {
+    if (this._disposed) { return []; }
     this.cancelGeneration();
 
     // Let errors propagate - caller will handle by showing loading state or clearing
@@ -120,6 +78,7 @@ export class SuggestionManager {
    * Uses Claude Haiku 4.5 for fast, intelligent title generation
    */
   public async generateTitle(userMessage: string): Promise<string> {
+    if (this._disposed) { return this._fallbackTitle(userMessage); }
     try {
       const title = await this._generateTitleWithClaude(userMessage);
       return title || this._fallbackTitle(userMessage);
@@ -136,58 +95,24 @@ User message: "${userMessage.substring(0, 500)}"
 
 Title:`;
 
-    return new Promise((resolve) => {
-      let proc: ChildProcess | null = null;
-
-      if (this._warmProcessPool.length > 0) {
-        proc = this._warmProcessPool.shift()!;
-        console.log(`[Mysti] Using warm process for title generation (${this._warmProcessPool.length} remaining)`);
-      } else {
-        console.log('[Mysti] Spawning new process for title generation');
-        proc = spawn(this._claudePath, [
-          '--print',
-          '--output-format', 'text',
-          '--model', 'claude-haiku-4-5-20251001'
-        ], { stdio: ['pipe', 'pipe', 'pipe'] });
-      }
-
-      let output = '';
-      proc.stdin?.write(prompt);
-      proc.stdin?.end();
-
-      proc.stdout?.on('data', (data) => {
-        output += data.toString();
-      });
-
-      const timeout = setTimeout(() => {
-        proc?.kill('SIGTERM');
-        resolve(null);
-      }, 5000);
-
-      proc.on('close', (code) => {
-        clearTimeout(timeout);
-        this._spawnWarmProcess();
-
-        if (code === 0 && output.trim()) {
-          const title = output.trim().substring(0, 50);
-          console.log('[Mysti] Generated title:', title);
-          resolve(title);
-        } else {
-          resolve(null);
-        }
-      });
-
-      proc.on('error', () => {
-        clearTimeout(timeout);
-        this._spawnWarmProcess();
-        resolve(null);
-      });
-    });
+    const result = await this._runWorker(prompt, TITLE_TIMEOUT_MS, false);
+    return result.code === 0 && result.output.trim() ? this._truncateTitle(result.output.trim()) : null;
   }
 
   private _fallbackTitle(content: string): string {
-    const title = content.trim().substring(0, 50);
-    return title.length < content.length ? `${title}...` : title;
+    const trimmed = content.trim();
+    const title = this._truncateTitle(trimmed);
+    return title.length < trimmed.length ? `${title}...` : title;
+  }
+
+  private _truncateTitle(content: string): string {
+    // Keep the existing length bound without cutting an astral character in half.
+    let title = '';
+    for (const character of content) {
+      if (title.length + character.length > 50) { break; }
+      title += character;
+    }
+    return title;
   }
 
   private async _callClaude(responseContent: string): Promise<QuickActionSuggestion[]> {
@@ -203,117 +128,91 @@ Rules:
 
 Return ONLY JSON array, no other text.`;
 
+    const result = await this._runWorker(prompt, 20000, true);
+    const jsonMatch = result.output.match(/\[[\s\S]*\]/);
+    if (jsonMatch) {
+      try {
+        const parsed = JSON.parse(jsonMatch[0]);
+        const suggestions = parsed.map((item: Record<string, unknown>, i: number) => ({
+          id: `suggestion-${Date.now()}-${i}`,
+          title: String(item.title || 'Suggestion'),
+          description: String(item.description || ''),
+          message: String(item.prompt || item.title || ''),
+          icon: ICONS[i % ICONS.length],
+          color: COLORS[i % COLORS.length]
+        })).slice(0, 6);
+        if (suggestions.length) { return suggestions; }
+      } catch { /* Invalid/partial JSON is a failed optional suggestion. */ }
+    }
+    throw new Error(result.timedOut ? 'Timeout' : `Failed to parse (code: ${result.code})`);
+  }
+
+  private _createProcess(): ChildProcess {
+    const proc = spawnTextOnlyClaudeWorker(this._claudePath);
+    markOwnedProcessGroup(proc);
+    this._ownedProcesses.add(proc);
+    // Diagnostics are optional here; consume the pipe so a verbose worker
+    // cannot block waiting for its stderr buffer while producing a result.
+    proc.stderr?.resume();
+    // Keep an error listener even after an operation has settled. Spawn/stdin
+    // errors and a late close belong only to this captured worker.
+    proc.on('error', () => {});
+    proc.stdin?.on('error', () => {
+      this._activeOperations.get(proc)?.();
+      this._terminateProcess(proc);
+    });
+    proc.once('exit', () => this._terminateProcess(proc));
+    proc.once('close', () => { this._ownedProcesses.delete(proc); });
+    return proc;
+  }
+
+  private _terminateProcess(proc: ChildProcess): void {
+    // These are disposable one-shot helpers; shutdown must not depend on a
+    // grace timer surviving extension-host exit.
+    void killProcessTree(proc, PROCESS_KILL_GRACE_PERIOD_MS, { initialSignal: 'SIGKILL', label: 'suggestion worker' });
+  }
+
+  private _runWorker(prompt: string, timeoutMs: number, suggestion: boolean): Promise<{ output: string; code: number | null; timedOut?: boolean }> {
+    if (this._disposed) { return Promise.reject(new Error('Suggestion manager disposed')); }
+    // Claude --print has a startup stdin deadline; create the worker only
+    // once this operation owns a complete prompt and can write it immediately.
+    const proc = this._createProcess();
+    if (suggestion) { this._currentProcess = proc; }
     return new Promise((resolve, reject) => {
-      // Use warm process if available
-      let proc: ChildProcess | null = null;
-
-      if (this._warmProcessPool.length > 0) {
-        proc = this._warmProcessPool.shift()!;
-        console.log(`[Mysti] Using warm process for suggestions (${this._warmProcessPool.length} remaining)`);
-      } else {
-        // Fall back to spawning a new process
-        console.log('[Mysti] No warm process, spawning new one for suggestions');
-        proc = spawn(this._claudePath, [
-          '--print',
-          '--output-format', 'text',
-          '--model', 'claude-haiku-4-5-20251001'
-        ], { stdio: ['pipe', 'pipe', 'pipe'] });
-      }
-
-      this._currentProcess = proc;
-
       let output = '';
-      let stderr = '';
+      const decoder = new StringDecoder('utf8');
       let settled = false;
-
-      proc.stdin?.write(prompt);
-      proc.stdin?.end();
-
-      proc.stdout?.on('data', (data) => {
-        output += data.toString();
-      });
-
-      proc.stderr?.on('data', (data) => {
-        stderr += data.toString();
-      });
-
-      const tryParseSuggestions = (): QuickActionSuggestion[] | null => {
-        try {
-          const jsonMatch = output.match(/\[[\s\S]*\]/);
-          if (jsonMatch) {
-            const parsed = JSON.parse(jsonMatch[0]);
-            return parsed.map((item: Record<string, unknown>, i: number) => ({
-              id: `suggestion-${Date.now()}-${i}`,
-              title: String(item.title || 'Suggestion'),
-              description: String(item.description || ''),
-              message: String(item.prompt || item.title || ''),
-              icon: ICONS[i % ICONS.length],
-              color: COLORS[i % COLORS.length]
-            })).slice(0, 6);
-          }
-        } catch { /* partial JSON, not parseable */ }
-        return null;
-      };
-
-      // Timeout after 20 seconds
-      const timeout = setTimeout(() => {
-        console.warn('[Mysti] Suggestion generation timed out after 20s');
-        settled = true;
-        // Try to use partial output before giving up
-        if (output.trim()) {
-          const suggestions = tryParseSuggestions();
-          if (suggestions && suggestions.length > 0) {
-            console.log('[Mysti] Recovered suggestions from partial output');
-            resolve(suggestions);
-            proc?.kill('SIGTERM');
-            return;
-          }
-        }
-        proc?.kill('SIGTERM');
-        reject(new Error('Timeout'));
-      }, 20000);
-
-      proc.on('close', (code) => {
-        clearTimeout(timeout);
-        this._currentProcess = null;
-        this._spawnWarmProcess();
-
-        if (settled) { return; } // Already handled by timeout
-
-        console.log('[Mysti] Claude exited with code:', code);
-        if (stderr) {
-          console.error('[Mysti] Claude stderr:', stderr);
-        }
-
-        if (output.trim()) {
-          const suggestions = tryParseSuggestions();
-          if (suggestions && suggestions.length > 0) {
-            console.log('[Mysti] Generated suggestions:', suggestions.map(s => s.title));
-            resolve(suggestions);
-            return;
-          }
-          console.error('[Mysti] No valid JSON array in output:', output.substring(0, 200));
-        } else {
-          console.error('[Mysti] Claude failed - code:', code, 'no output');
-        }
-        reject(new Error(`Failed to parse (code: ${code})`));
-      });
-
-      proc.on('error', (err) => {
-        clearTimeout(timeout);
-        this._currentProcess = null;
-        this._spawnWarmProcess();
+      const onData = (data: Buffer) => { output += decoder.write(data); };
+      const finish = (code: number | null, error?: Error, timedOut = false) => {
         if (settled) { return; }
-        console.error('[Mysti] Spawn error:', err);
-        reject(err);
-      });
+        settled = true;
+        output += decoder.end();
+        clearTimeout(timeout);
+        this._activeOperations.delete(proc);
+        if (this._currentProcess === proc) { this._currentProcess = null; }
+        proc.stdout?.removeListener('data', onData);
+        proc.removeListener('close', onClose);
+        proc.removeListener('error', onError);
+        if (error) { reject(error); } else { resolve({ output, code, timedOut }); }
+      };
+      const onClose = (code: number | null) => finish(code);
+      const onError = (error: Error) => { finish(null, error); this._terminateProcess(proc); };
+      this._activeOperations.set(proc, () => finish(null, new Error('Generation cancelled')));
+      proc.stdout?.on('data', onData);
+      proc.on('close', onClose);
+      proc.on('error', onError);
+      const timeout = setTimeout(() => { finish(null, undefined, true); this._terminateProcess(proc); }, timeoutMs);
+      try { proc.stdin?.write(prompt); proc.stdin?.end(); }
+      catch (error) { onError(error instanceof Error ? error : new Error(String(error))); }
     });
   }
 
   public cancelGeneration(): void {
-    if (this._currentProcess) {
-      this._currentProcess.kill('SIGTERM');
-      this._currentProcess = null;
+    const proc = this._currentProcess;
+    if (proc) {
+      this._activeOperations.get(proc)?.();
+      this._terminateProcess(proc);
+      if (this._currentProcess === proc) { this._currentProcess = null; }
     }
   }
 
@@ -325,11 +224,11 @@ Return ONLY JSON array, no other text.`;
    * Dispose the manager - kill processes
    */
   public dispose(): void {
-    this.cancelGeneration();
-    for (const proc of this._warmProcessPool) {
-      proc.kill('SIGTERM');
-    }
-    this._warmProcessPool = [];
+    if (this._disposed) { return; }
+    this._disposed = true;
+    for (const settle of [...this._activeOperations.values()]) { settle(); }
+    for (const proc of this._ownedProcesses) { this._terminateProcess(proc); }
+    this._currentProcess = null;
   }
 
   private _findClaudeCliPath(): string {

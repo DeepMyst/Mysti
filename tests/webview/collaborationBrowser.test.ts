@@ -87,6 +87,10 @@ describe('agent assignment cards in the shipped chat', () => {
     expect(await page.locator('.message.assistant .message-model-info').last().textContent()).toContain('assigned responses');
     expect(await page.locator('.message.assistant').last().textContent()).toContain('Claude final');
     expect(await page.locator('.collaboration-card[open]').count()).toBe(0);
+    const completedCard = page.locator('.collaboration-card').nth(0);
+    await completedCard.locator('summary').click();
+    expect(await completedCard.locator('.collaboration-output').isVisible()).toBe(true);
+    expect(await completedCard.locator('.collaboration-output').innerText()).toBe('Claude final');
     await fire('collaborationStarted', { runId: 'two' });
     await fire('collaborator', { runId: 'two', collaboratorId: 'c', agentId: 'claude-code', label: 'Claude · Reviewer', type: 'collab_started' });
     await fire('requestCancelled', {});

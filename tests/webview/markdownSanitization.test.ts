@@ -36,8 +36,8 @@ describe('structural: every render site is sanitized', () => {
     expect(chatJs).not.toContain('marked.parse(');
     expect(chatJs).not.toContain('DOMPurify.sanitize(');
     expect(chatJs).toContain('window.MystiMarkdownRenderer.create(');
-    expect(chatJs).toContain('markdownRenderer.renderMarkdown(value)');
-    expect(chatJs).toContain('renderMarkdownSafe(content)');
+    expect(chatJs).toContain('markdownRenderer.renderMarkdown(value, options)');
+    expect(chatJs).toContain('renderMarkdownSafe(content, options)');
     expect(chatJs).toContain('renderMarkdown: renderMarkdownSafe');
     expect(indexHtml.indexOf('{{markdownRendererJsUri}}')).toBeLessThan(indexHtml.indexOf('{{chatJsUri}}'));
   });

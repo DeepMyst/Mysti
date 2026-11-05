@@ -15,10 +15,10 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { spawn, exec } from 'child_process';
-import { promisify } from 'util';
+import { spawn } from 'child_process';
 import type { ProviderManager } from './ProviderManager';
 import type { ICliProvider } from '../providers/base/IProvider';
+import { showAuthenticationInput } from '../providers/base/authenticationInput';
 import type { CliDiscoveryService, CliStatus } from '../services/CliDiscoveryService';
 import type {
   ProviderSetupStatus,
@@ -42,9 +42,15 @@ import {
 } from '../constants';
 import { killProcessTree } from '../utils/processKill';
 import { quoteSetupExecutable } from '../utils/installerShell';
-import { getPlatformInfo, canWriteNpmGlobalDir, getNpmPrefix, resetPlatformInfoCache } from '../utils/platform';
+import { getPlatformInfo, canWriteNpmGlobalDir, resetPlatformInfoCache, probeCliOutput, resolveCommandOnPath } from '../utils/platform';
 
-const execAsync = promisify(exec);
+/** Cancellation stops subsequent setup stages; completed installs/writes are not rolled back. */
+function throwIfSetupCancelled(signal?: AbortSignal): void {
+  if (!signal?.aborted) { return; }
+  const error = new Error('Setup cancelled.');
+  error.name = 'AbortError';
+  throw error;
+}
 
 /**
  * Wizard status for all providers (returned by getWizardStatus and
@@ -83,13 +89,18 @@ export class SetupManager {
   private _providerManager: ProviderManager;
   private _npmAvailable: boolean | null = null;
   private _npmPath: string | null = null;
+  private _npmUsesLoginShell = false;
   private _npmCacheExpiry: number = 0;
   /** Plan 03 Phase 3a: cached CLI discovery — single prober for wizard status. */
   private _discoveryService: CliDiscoveryService | undefined;
   /** Last node --version result (reused by getWizardStatusCached's zero-exec path). */
   private _lastNodeVersion: string | undefined;
   private readonly _installWatchers = new Map<string, () => void>();
-  private readonly _installRuns = new Map<string, Promise<InstallResult>>();
+  private readonly _installRuns = new Map<string, {
+    promise: Promise<InstallResult>;
+    controller: AbortController;
+    callers: Set<AbortSignal | undefined>;
+  }>();
 
   /** Single-flight guard for the background wizard status refresh. */
   private _backgroundWizardRefresh: Promise<void> | null = null;
@@ -115,7 +126,9 @@ export class SetupManager {
     // An install or sign-in that flips a CLI's state reaches every panel now,
     // on the same event the background refresh uses — the agent menu used to
     // keep "Not Installed" until some unrelated read refreshed it.
-    discoveryService?.onDidChange(() => this._onWizardStatusUpdatedEmitter.fire(this.getWizardStatusCached()));
+    // Publishing one provider's new facts must not start probes for siblings.
+    // The explicit cached-first read still owns the startup background refresh.
+    discoveryService?.onDidChange(() => this._onWizardStatusUpdatedEmitter.fire(this._buildCachedWizardStatus()));
   }
 
   // ============================================================================
@@ -174,36 +187,25 @@ export class SetupManager {
   }
 
   private async _checkNpmDirect(): Promise<boolean> {
-    try {
-      await execAsync('npm --version');
-      return true;
-    } catch {
-      return false;
-    }
+    const output = await probeCliOutput(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['--version'], 5000, process.env);
+    const found = /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/m.test(output?.trim() ?? '');
+    if (found) { this._npmUsesLoginShell = false; }
+    return found;
   }
 
   private async _checkNpmInNvmPaths(): Promise<string | null> {
     const homeDir = os.homedir();
     const nvmDir = process.env.NVM_DIR || path.join(homeDir, '.nvm');
+    const npmName = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    const deadline = Date.now() + 10_000;
 
     const pathsToCheck = [
-      path.join(nvmDir, 'current', 'bin', 'npm'),
-      path.join(homeDir, '.npm-global', 'bin', 'npm'),
-      path.join(homeDir, '.local', 'bin', 'npm'),
+      path.join(nvmDir, 'current', 'bin', npmName),
+      path.join(homeDir, '.npm-global', 'bin', npmName),
+      path.join(homeDir, '.local', 'bin', npmName),
       '/usr/local/bin/npm',
       '/opt/homebrew/bin/npm',
     ];
-
-    for (const npmPath of pathsToCheck) {
-      try {
-        fs.accessSync(npmPath, fs.constants.X_OK);
-        await execAsync(`"${npmPath}" --version`);
-        console.log(`[Mysti] SetupManager: Found npm at ${npmPath}`);
-        return npmPath;
-      } catch {
-        // Continue to next path
-      }
-    }
 
     // Check NVM versions directory for installed Node versions
     const versionsDir = path.join(nvmDir, 'versions', 'node');
@@ -211,23 +213,30 @@ export class SetupManager {
       try {
         const versions = fs.readdirSync(versionsDir)
           .filter(v => v.startsWith('v'))
-          .sort()
-          .reverse();
+          .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
 
         for (const version of versions) {
-          const npmPath = path.join(versionsDir, version, 'bin', 'npm');
-          try {
-            fs.accessSync(npmPath, fs.constants.X_OK);
-            await execAsync(`"${npmPath}" --version`);
-            console.log(`[Mysti] SetupManager: Found npm in NVM version ${version}`);
-            return npmPath;
-          } catch {
-            // Continue to next version
-          }
+          pathsToCheck.push(path.join(versionsDir, version, 'bin', npmName));
         }
       } catch {
         // Ignore directory read errors
       }
+    }
+
+    for (const npmPath of pathsToCheck) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) { break; }
+      try {
+        fs.accessSync(npmPath, fs.constants.X_OK);
+        const env = { ...process.env };
+        const pathKey = Object.keys(env).find(key => key.toLowerCase() === 'path') || 'PATH';
+        env[pathKey] = path.dirname(npmPath) + path.delimiter + (env[pathKey] || '');
+        const output = await probeCliOutput(npmPath, ['--version'], Math.min(5000, remaining), env);
+        if (!/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/m.test(output?.trim() ?? '')) { continue; }
+        this._npmUsesLoginShell = false;
+        console.log(`[Mysti] SetupManager: Found npm at ${npmPath}`);
+        return npmPath;
+      } catch { /* Continue to the next candidate within the shared deadline. */ }
     }
 
     return null;
@@ -238,14 +247,10 @@ export class SetupManager {
       return false;
     }
 
-    try {
-      const shell = process.env.SHELL || '/bin/bash';
-      const command = `${shell} -l -c "npm --version"`;
-      await execAsync(command, { timeout: 10000 });
-      return true;
-    } catch {
-      return false;
-    }
+    const shell = process.env.SHELL || '/bin/bash';
+    const output = await probeCliOutput(shell, ['-l', '-c', 'npm --version'], 10_000, process.env);
+    this._npmUsesLoginShell = /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/m.test(output?.trim() ?? '');
+    return this._npmUsesLoginShell;
   }
 
   // ============================================================================
@@ -297,10 +302,19 @@ export class SetupManager {
    */
   private async _checkNodeVersion(): Promise<{ meets: boolean; version?: string; error?: string }> {
     try {
-      const { stdout } = await execAsync('node --version');
-      const version = stdout.trim();
+      // The prerequisite runtime must be the one npm will resolve during install.
+      if (this._npmPath === null) { await this.checkNpmAvailable(); }
+      const env = { ...process.env };
+      if (this._npmPath && path.isAbsolute(this._npmPath)) {
+        const pathKey = Object.keys(env).find(key => key.toLowerCase() === 'path') || 'PATH';
+        env[pathKey] = path.dirname(this._npmPath) + path.delimiter + (env[pathKey] || '');
+      }
+      const output = this._npmUsesLoginShell && process.platform !== 'win32'
+        ? await probeCliOutput(process.env.SHELL || '/bin/bash', ['-l', '-c', 'node --version'], 5000, env)
+        : await probeCliOutput('node', ['--version'], 5000, env);
+      const version = output?.trim() ?? '';
       // Parse major version from "v18.17.0" format
-      const match = version.match(/^v?(\d+)/);
+      const match = version.match(/^v?(\d+)\.\d+\.\d+(?:-[\w.-]+)?$/);
       if (match) {
         const major = parseInt(match[1], 10);
         if (major < MIN_NODE_VERSION) {
@@ -312,7 +326,7 @@ export class SetupManager {
         }
         return { meets: true, version };
       }
-      return { meets: true, version };
+      return { meets: false, error: vscode.l10n.t('Unable to determine the Node.js version. Check the selected npm runtime and retry.') };
     } catch {
       return { meets: false, error: vscode.l10n.t('Node.js is not installed') };
     }
@@ -326,12 +340,17 @@ export class SetupManager {
    * Check if npm registry is reachable
    */
   async checkNetworkConnectivity(): Promise<boolean> {
-    try {
-      await execAsync('npm ping', { timeout: NETWORK_CHECK_TIMEOUT_MS });
-      return true;
-    } catch {
-      return false;
+    const env = { ...process.env };
+    if (this._npmPath && path.isAbsolute(this._npmPath)) {
+      const pathKey = Object.keys(env).find(key => key.toLowerCase() === 'path') || 'PATH';
+      env[pathKey] = path.dirname(this._npmPath) + path.delimiter + (env[pathKey] || '');
     }
+    const npm = this._npmPath && path.isAbsolute(this._npmPath)
+      ? this._npmPath : process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    const output = this._npmUsesLoginShell && process.platform !== 'win32'
+      ? await probeCliOutput(process.env.SHELL || '/bin/bash', ['-l', '-c', 'npm ping'], NETWORK_CHECK_TIMEOUT_MS, env)
+      : await probeCliOutput(npm, ['ping'], NETWORK_CHECK_TIMEOUT_MS, env);
+    return output !== undefined;
   }
 
   // ============================================================================
@@ -345,10 +364,13 @@ export class SetupManager {
   private async _retryableInstall(
     command: string,
     useLoginShell: boolean,
-    onProgress?: (step: string, message: string, progress?: number) => void
+    onProgress?: (step: string, message: string, progress?: number) => void,
+    signal?: AbortSignal
   ): Promise<InstallResult> {
     for (let attempt = 1; attempt <= INSTALL_MAX_RETRIES; attempt++) {
+      throwIfSetupCancelled(signal);
       const result = await this._runCommand(command, INSTALL_TIMEOUT_MS, useLoginShell);
+      throwIfSetupCancelled(signal);
 
       if (result.success) {
         return { success: true, attemptNumber: attempt };
@@ -401,26 +423,19 @@ export class SetupManager {
    * Get setup status for all providers
    */
   async getSetupStatus(): Promise<ProviderSetupStatus[]> {
-    const statuses: ProviderSetupStatus[] = [];
-
-    for (const provider of this._providerManager.getAllProviders()) {
-      const discovery = await provider.discoverCli();
-      let authenticated = false;
-
-      if (discovery.found) {
-        const authStatus = await provider.checkAuthentication();
-        authenticated = authStatus.authenticated;
-      }
-
-      statuses.push({
-        providerId: provider.id,
-        displayName: provider.displayName,
-        installed: discovery.found,
-        authenticated
-      });
-    }
-
-    return statuses;
+    // Recovery must retain healthy siblings when another provider's login
+    // probe fails or stalls. Reuse diagnostics' bounded, isolated live reads;
+    // stale cached authentication cannot establish that recovery succeeded.
+    return Promise.all(this._providerManager.getAllProviders().map(async provider => {
+      const status = await this._diagnoseProvider(provider);
+      return {
+        providerId: status.id,
+        displayName: status.displayName,
+        installed: status.installed,
+        authenticated: status.authenticated,
+        ...(status.error ? { error: status.error } : {}),
+      };
+    }));
   }
 
   // ============================================================================
@@ -434,8 +449,10 @@ export class SetupManager {
    */
   async setupProvider(
     providerId: string,
-    onProgress?: (step: string, message: string, progress?: number) => void
+    onProgress?: (step: string, message: string, progress?: number) => void,
+    signal?: AbortSignal
   ): Promise<SetupResult> {
+    throwIfSetupCancelled(signal);
     const provider = this._providerManager.getProviderInstance(providerId);
     if (!provider) {
       return {
@@ -449,6 +466,7 @@ export class SetupManager {
     // Check installation before requiring any npm prerequisites.
     onProgress?.('checking', 'Checking CLI installation...', 10);
     const discovery = await provider.discoverCli();
+    throwIfSetupCancelled(signal);
 
     if (!discovery.found) {
       // Native CLIs and HTTP providers do not require Node merely to connect.
@@ -456,6 +474,7 @@ export class SetupManager {
         // Check the npm runtime before a new installation.
         onProgress?.('checking', 'Checking system requirements...', 15);
         const nodeCheck = await this._checkNodeVersion();
+        throwIfSetupCancelled(signal);
         if (!nodeCheck.meets) {
           const suggestedFix = this._getSuggestedFix('version', provider.getInstallCommand());
           return {
@@ -472,7 +491,8 @@ export class SetupManager {
 
       // Step 3: Try to auto-install
       onProgress?.('installing', vscode.l10n.t('Installing {0} CLI...', provider.displayName), 20);
-      const installResult = await this.autoInstallCli(providerId, onProgress);
+      const installResult = await this.autoInstallCli(providerId, onProgress, signal);
+      throwIfSetupCancelled(signal);
 
       if (!installResult.success) {
         return {
@@ -490,6 +510,7 @@ export class SetupManager {
     // Step 4: Check authentication
     onProgress?.('authenticating', vscode.l10n.t('Checking authentication...'), 80);
     const authStatus = await provider.checkAuthentication();
+    throwIfSetupCancelled(signal);
 
     if (!authStatus.authenticated) {
       return {
@@ -514,20 +535,47 @@ export class SetupManager {
    */
   async autoInstallCli(
     providerId: string,
-    onProgress?: (step: string, message: string, progress?: number) => void
+    onProgress?: (step: string, message: string, progress?: number) => void,
+    signal?: AbortSignal
   ): Promise<InstallResult> {
-    const running = this._installRuns.get(providerId);
-    if (running) { return running; }
-    const run = this._autoInstallCli(providerId, onProgress);
-    this._installRuns.set(providerId, run);
-    try { return await run; }
-    finally { if (this._installRuns.get(providerId) === run) { this._installRuns.delete(providerId); } }
+    throwIfSetupCancelled(signal);
+    let run = this._installRuns.get(providerId);
+    if (run?.controller.signal.aborted) {
+      // Do not overlap a new installer with a cancelled owner's running command.
+      // Wait for it to settle, then allow a fresh request to retry normally.
+      try { await run.promise; } catch { /* the abandoned run has its own caller */ }
+      throwIfSetupCancelled(signal);
+      return this.autoInstallCli(providerId, onProgress, signal);
+    }
+    if (!run) {
+      const controller = new AbortController();
+      const created = { controller, callers: new Set<AbortSignal | undefined>(), promise: undefined as unknown as Promise<InstallResult> };
+      // Register before starting the first async stage, including progress callbacks.
+      created.promise = Promise.resolve().then(() => this._autoInstallCli(providerId, onProgress, controller.signal))
+        .finally(() => { if (this._installRuns.get(providerId) === created) { this._installRuns.delete(providerId); } });
+      this._installRuns.set(providerId, created);
+      run = created;
+    }
+    const shared = run;
+    shared.callers.add(signal);
+    const onAbort = () => {
+      // One panel's Skip must not cancel an installation another panel still needs.
+      if ([...shared.callers].every(caller => caller?.aborted === true)) { shared.controller.abort(); }
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    try {
+      const result = await shared.promise;
+      throwIfSetupCancelled(signal);
+      return result;
+    } finally { signal?.removeEventListener('abort', onAbort); }
   }
 
   private async _autoInstallCli(
     providerId: string,
-    onProgress?: (step: string, message: string, progress?: number) => void
+    onProgress?: (step: string, message: string, progress?: number) => void,
+    signal?: AbortSignal
   ): Promise<InstallResult> {
+    throwIfSetupCancelled(signal);
     const provider = this._providerManager.getProviderInstance(providerId);
     if (!provider) {
       return {
@@ -553,6 +601,7 @@ export class SetupManager {
     // Check npm availability
     onProgress?.('installing', vscode.l10n.t('Verifying npm availability...'), 15);
     const npmAvailable = await this.checkNpmAvailable();
+    throwIfSetupCancelled(signal);
     if (!npmAvailable) {
       const suggestedFix = this._getSuggestedFix('not-found', installCommand);
       return {
@@ -567,6 +616,7 @@ export class SetupManager {
     // Check network connectivity
     onProgress?.('installing', vscode.l10n.t('Verifying network connectivity...'), 20);
     const networkOk = await this.checkNetworkConnectivity();
+    throwIfSetupCancelled(signal);
     if (!networkOk) {
       const suggestedFix = this._getSuggestedFix('network', installCommand);
       return {
@@ -583,21 +633,25 @@ export class SetupManager {
 
     try {
       const useLoginShell = this._npmPath === 'npm' && !(await this._checkNpmDirect());
+      throwIfSetupCancelled(signal);
 
       // Pre-flight permission check: detect if npm global dir is writable BEFORE attempting install
       onProgress?.('installing', vscode.l10n.t('Checking write permissions to npm global directory...'), 25);
       const hasGlobalWriteAccess = await canWriteNpmGlobalDir();
+      throwIfSetupCancelled(signal);
 
       if (!hasGlobalWriteAccess) {
         // Skip global install entirely — go straight to local install (saves 2-120s)
         console.log('[Mysti] SetupManager: No write access to npm global directory, installing locally');
         onProgress?.('installing', vscode.l10n.t('No global write permissions — installing to user directory (~/.mysti/cli)...'), 30);
 
-        const localResult = await this._installToLocalPrefix(installCommand, useLoginShell);
+        const localResult = await this._installToLocalPrefix(installCommand, useLoginShell, signal);
+        throwIfSetupCancelled(signal);
         if (localResult.success) {
           onProgress?.('installing', vscode.l10n.t('Verifying local installation...'), 65);
 
           const localDiscovery = await provider.discoverCli(true);
+          throwIfSetupCancelled(signal);
           if (localDiscovery.found) {
             await this._recordInstall(providerId);
             return { success: true };
@@ -618,7 +672,8 @@ export class SetupManager {
 
       // Has global write access — proceed with normal global install
       onProgress?.('installing', vscode.l10n.t('Installing globally: {0}', installCommand), 30);
-      const result = await this._retryableInstall(installCommand, useLoginShell, onProgress);
+      const result = await this._retryableInstall(installCommand, useLoginShell, onProgress, signal);
+      throwIfSetupCancelled(signal);
 
       if (!result.success) {
         // Permission error at runtime (edge case: pre-check passed but install still failed)
@@ -626,11 +681,13 @@ export class SetupManager {
           console.log('[Mysti] SetupManager: Permission denied at runtime, trying user-local install...');
           onProgress?.('installing', vscode.l10n.t('Permission issue detected — installing to user directory...'), 50);
 
-          const localResult = await this._installToLocalPrefix(installCommand, useLoginShell);
+          const localResult = await this._installToLocalPrefix(installCommand, useLoginShell, signal);
+          throwIfSetupCancelled(signal);
           if (localResult.success) {
             onProgress?.('installing', vscode.l10n.t('Verifying local installation...'), 65);
 
             const localDiscovery = await provider.discoverCli(true);
+            throwIfSetupCancelled(signal);
             if (localDiscovery.found) {
               await this._recordInstall(providerId);
               return { success: true, attemptNumber: result.attemptNumber };
@@ -651,6 +708,7 @@ export class SetupManager {
 
       // Verify installation
       const discovery = await provider.discoverCli(true);
+      throwIfSetupCancelled(signal);
       if (!discovery.found) {
         return {
           success: false,
@@ -664,6 +722,7 @@ export class SetupManager {
       await this._recordInstall(providerId);
       return { success: true };
     } catch (error) {
+      throwIfSetupCancelled(signal);
       const errorMessage = error instanceof Error ? error.message : vscode.l10n.t('Unknown error');
       return {
         success: false,
@@ -681,8 +740,10 @@ export class SetupManager {
    */
   private async _installToLocalPrefix(
     originalCommand: string,
-    useLoginShell: boolean
+    useLoginShell: boolean,
+    signal?: AbortSignal
   ): Promise<InstallResult> {
+    throwIfSetupCancelled(signal);
     const homeDir = os.homedir();
     const localPrefix = path.join(homeDir, LOCAL_CLI_PREFIX);
 
@@ -730,7 +791,8 @@ export class SetupManager {
    * Run authentication command for a provider.
    * Opens a terminal for the user to complete auth interactively.
    */
-  async authenticateProvider(providerId: string): Promise<AuthStatus> {
+  async authenticateProvider(providerId: string, signal?: AbortSignal): Promise<AuthStatus> {
+    throwIfSetupCancelled(signal);
     const provider = this._providerManager.getProviderInstance(providerId);
     if (!provider) {
       return {
@@ -739,15 +801,27 @@ export class SetupManager {
       };
     }
 
-    if (provider.configureAuthentication) { return provider.configureAuthentication(); }
+    if (provider.configureAuthentication) {
+      try {
+        const result = await provider.configureAuthentication(signal);
+        throwIfSetupCancelled(signal);
+        return result;
+      } finally {
+        // A provider can commit credentials before validation fails or its
+        // owner cancels. Never keep the previous account's cached status.
+        this._discoveryService?.invalidate(providerId);
+      }
+    }
 
     if (providerId === 'openrouter' || providerId === 'localai') {
       await vscode.commands.executeCommand('workbench.action.openSettings', providerId === 'openrouter' ? 'mysti.openrouter.apiKey' : 'mysti.localaiEndpoint');
+      throwIfSetupCancelled(signal);
       return { authenticated: false, error: 'Configure the provider connection in Settings, then refresh detection.' };
     }
 
     let authCommand = provider.getAuthCommand();
     const discovery = await provider.discoverCli();
+    throwIfSetupCancelled(signal);
     if (discovery.path && path.isAbsolute(discovery.path)) {
       authCommand = authCommand.replace(/^\S+/, quoteSetupExecutable(discovery.path));
     }
@@ -779,8 +853,10 @@ export class SetupManager {
   async authenticateWithMethod(
     providerId: string,
     method: AuthMethodType,
-    apiKey?: string
+    apiKey?: string,
+    signal?: AbortSignal
   ): Promise<AuthStatus> {
+    throwIfSetupCancelled(signal);
     const provider = this._providerManager.getProviderInstance(providerId);
     if (!provider) {
       return {
@@ -793,11 +869,12 @@ export class SetupManager {
       return { authenticated: false, error: 'This authentication method is not supported by this provider.' };
     }
     if (method === 'api-key') {
-      apiKey = apiKey?.trim() || (await vscode.window.showInputBox({
+      apiKey = apiKey?.trim() || (await showAuthenticationInput({
         title: `${provider.displayName} API key`, password: true, ignoreFocusOut: true,
         prompt: 'Enter your API key. This connection lasts until VS Code restarts.',
         validateInput: value => value.trim() ? undefined : 'Enter an API key.'
-      }))?.trim();
+      }, signal))?.trim();
+      throwIfSetupCancelled(signal);
       if (!apiKey) { return { authenticated: false, error: 'API-key entry cancelled. Choose a sign-in method to try again.' }; }
     }
 
@@ -807,6 +884,7 @@ export class SetupManager {
         // Save to VS Code settings for persistence + set env var for immediate use
         const config = vscode.workspace.getConfiguration('mysti');
         await config.update('cursorApiKey', apiKey, vscode.ConfigurationTarget.Global);
+        throwIfSetupCancelled(signal);
         process.env['CURSOR_API_KEY'] = apiKey;
         console.log('[Mysti] SetupManager: Saved Cursor API key to settings and env');
       } else if (providerId === 'google-gemini') {
@@ -821,11 +899,12 @@ export class SetupManager {
       this._discoveryService?.invalidate(providerId);
 
       const authStatus = await provider.checkAuthentication();
+      throwIfSetupCancelled(signal);
       return authStatus;
     }
 
     // For OAuth/CLI login, use the standard flow
-    return this.authenticateProvider(providerId);
+    return this.authenticateProvider(providerId, signal);
   }
 
   // ============================================================================
@@ -1051,6 +1130,15 @@ export class SetupManager {
    * onWizardStatusUpdated fires once it completes.
    */
   getWizardStatusCached(): CachedWizardStatusResult {
+    const status = this._buildCachedWizardStatus();
+    if (!status.complete) {
+      this._kickBackgroundWizardRefresh();
+    }
+    return status;
+  }
+
+  /** Read the retained status without scheduling discovery or tool probes. */
+  private _buildCachedWizardStatus(): CachedWizardStatusResult {
     const providers: WizardProviderStatus[] = [];
     let complete = this._discoveryService !== undefined;
 
@@ -1065,10 +1153,6 @@ export class SetupManager {
         status?.authenticated ?? false,
         status?.version
       ));
-    }
-
-    if (!complete) {
-      this._kickBackgroundWizardRefresh();
     }
 
     return {
@@ -1164,55 +1248,102 @@ export class SetupManager {
   }
 
   private async _getNodeVersion(): Promise<string | undefined> {
-    try {
-      const { stdout } = await execAsync('node --version');
-      this._lastNodeVersion = stdout.trim();
-      return this._lastNodeVersion;
-    } catch {
-      return undefined;
-    }
+    this._lastNodeVersion = (await this._checkNodeVersion()).version;
+    return this._lastNodeVersion;
   }
 
   // ============================================================================
   // Diagnostics
   // ============================================================================
 
+  private _diagnosticRun?: Promise<DiagnosticResult>;
+
+  private async _diagnosticProbe<T>(task: Promise<T>, label: string, deadline: number): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        task,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`${label} timed out. Refresh detection or retry diagnostics after checking the provider.`)), Math.max(1, deadline - Date.now()));
+        }),
+      ]);
+    } finally { clearTimeout(timer); }
+  }
+
+  private async _diagnoseProvider(provider: ICliProvider): Promise<DiagnosticResult['providers'][number]> {
+    const result: DiagnosticResult['providers'][number] = {
+      id: provider.id, displayName: provider.displayName, installed: false, authenticated: false,
+    };
+    // A broken backend must not hold the entire diagnostic report indefinitely.
+    // These reads do not own provider processes; the timeout only bounds waiting.
+    const deadline = Date.now() + 15_000;
+    try {
+      const discovery = await this._diagnosticProbe(provider.discoverCli(), `${provider.displayName} discovery`, deadline);
+      result.installed = discovery.found;
+      result.path = discovery.path;
+      result.version = discovery.version;
+      if (discovery.found) {
+        const auth = await this._diagnosticProbe(provider.checkAuthentication(), `${provider.displayName} authentication`, deadline);
+        result.authenticated = auth.authenticated;
+        if (!auth.authenticated) { result.error = auth.error; }
+      }
+    } catch (error) {
+      result.error = error instanceof Error ? error.message : String(error);
+    }
+    return result;
+  }
+
   /**
    * Run comprehensive diagnostics for troubleshooting install issues.
    * Collects platform info, npm/node status, provider statuses, and network check.
    */
   async runDiagnostics(): Promise<DiagnosticResult> {
-    const platformInfo = await getPlatformInfo();
-    const npmAvailable = await this.checkNpmAvailable();
-    const npmPrefix = await getNpmPrefix();
-    const npmWritable = await canWriteNpmGlobalDir();
-
-    const nodeCheck = await this._checkNodeVersion();
-    const networkReachable = await this.checkNetworkConnectivity();
-
-    // Check all providers
-    const providers: DiagnosticResult['providers'] = [];
-    for (const provider of this._providerManager.getAllProviders()) {
-      const discovery = await provider.discoverCli();
-      let authenticated = false;
-      let authError: string | undefined;
-
-      if (discovery.found) {
-        const authStatus = await provider.checkAuthentication();
-        authenticated = authStatus.authenticated;
-        if (!authenticated) {
-          authError = authStatus.error;
-        }
-      }
-
-      providers.push({
-        id: provider.id,
-        displayName: provider.displayName,
-        installed: discovery.found,
-        version: discovery.version,
-        authenticated,
-        error: authError
+    if (!this._diagnosticRun) {
+      const run = this._runDiagnostics().finally(() => {
+        if (this._diagnosticRun === run) { this._diagnosticRun = undefined; }
       });
+      this._diagnosticRun = run;
+    }
+    return this._diagnosticRun;
+  }
+
+  private async _runDiagnostics(): Promise<DiagnosticResult> {
+    const platformTask = getPlatformInfo();
+    // Provider checks are independent of npm and already carry a shared per-provider deadline.
+    const providersTask = Promise.all(this._providerManager.getAllProviders()
+      .map(provider => this._diagnoseProvider(provider)));
+    const npmAvailable = await this.checkNpmAvailable();
+    const env = { ...process.env };
+    const npm = this._npmPath && path.isAbsolute(this._npmPath)
+      ? this._npmPath : process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    if (path.isAbsolute(npm)) {
+      const pathKey = Object.keys(env).find(key => key.toLowerCase() === 'path') || 'PATH';
+      env[pathKey] = path.dirname(npm) + path.delimiter + (env[pathKey] || '');
+    }
+    const loginShell = this._npmUsesLoginShell && process.platform !== 'win32';
+    const shell = process.env.SHELL || '/bin/bash';
+    const probeNpm = (args: string[]) => !npmAvailable ? Promise.resolve(undefined)
+      : loginShell ? probeCliOutput(shell, ['-l', '-c', `npm ${args.join(' ')}`], 5000, env)
+      : probeCliOutput(npm, args, 5000, env);
+    const npmPathTask = !npmAvailable ? Promise.resolve(undefined)
+      : path.isAbsolute(npm) ? Promise.resolve(npm)
+      : loginShell ? probeCliOutput(shell, ['-l', '-c', 'command -v npm'], 5000, env)
+      : resolveCommandOnPath(npm, env);
+    const [platformInfo, providers, versionOutput, prefixOutput, npmPath, nodeCheck, networkReachable] = await Promise.all([
+      platformTask, providersTask, probeNpm(['--version']), probeNpm(['config', 'get', 'prefix']), npmPathTask,
+      this._checkNodeVersion(), npmAvailable ? this.checkNetworkConnectivity() : Promise.resolve(false),
+    ]);
+    const npmVersion = versionOutput?.split(/\r?\n/).map(line => line.trim())
+      .find(line => /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(line));
+    const npmPrefix = prefixOutput?.split(/\r?\n/).map(line => line.trim()).find(line => path.isAbsolute(line));
+    let npmWritable = false;
+    if (npmPrefix) {
+      try {
+        const globalDir = process.platform === 'win32'
+          ? path.join(npmPrefix, 'node_modules') : path.join(npmPrefix, 'lib', 'node_modules');
+        fs.accessSync(fs.existsSync(globalDir) ? globalDir : npmPrefix, fs.constants.W_OK);
+        npmWritable = true;
+      } catch { /* Preserve a failed selected-prefix permission check in the report. */ }
     }
 
     // Generate recommendations
@@ -1230,7 +1361,7 @@ export class SetupManager {
     if (!networkReachable) {
       recommendations.push(vscode.l10n.t('Check internet connection - cannot reach npm registry'));
     }
-    if (providers.every(p => !p.installed)) {
+    if (providers.every(p => !p.installed && !p.error)) {
       recommendations.push(vscode.l10n.t('No CLI providers installed. Install at least one to get started.'));
     }
     if (providers.some(p => p.installed && !p.authenticated)) {
@@ -1250,7 +1381,8 @@ export class SetupManager {
       },
       npmStatus: {
         available: npmAvailable,
-        version: platformInfo.npmVersion || undefined,
+        path: npmPath?.trim() || undefined,
+        version: npmVersion,
         prefix: npmPrefix || undefined,
         canWriteGlobalDir: npmWritable,
       },

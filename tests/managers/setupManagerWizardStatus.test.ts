@@ -173,6 +173,46 @@ describe('SetupManager wizard status (Plan 03 Phase 3a)', () => {
     expect(codex.discoverCli).not.toHaveBeenCalled();
   });
 
+  it('publishes first discovery and version changes without probing unrelated providers or tools', async () => {
+    const cline = fakeProvider('cline', { version: '1.0.0' });
+    const codex = fakeProvider('openai-codex');
+    const h = buildHarness([cline, codex]);
+    service = h.service;
+    const nodeVersion = vi.spyOn(h.setupManager as any, '_getNodeVersion');
+    const updates: WizardStatusResult[] = [];
+    h.setupManager.onWizardStatusUpdated((status) => updates.push(status));
+
+    await h.setupManager.ensureProviderStatusFresh('cline');
+
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({ complete: false, anyReady: true });
+    expect(updates[0].providers.find((p) => p.providerId === 'cline')).toMatchObject({
+      installed: true, authenticated: true, cliVersion: '1.0.0',
+    });
+    expect(updates[0].providers.find((p) => p.providerId === 'openai-codex')).toMatchObject({
+      installed: false, authenticated: false,
+    });
+    expect(codex.discoverCli).not.toHaveBeenCalled();
+    expect(codex.checkAuthentication).not.toHaveBeenCalled();
+    expect(h.setupManager.checkNpmAvailable).not.toHaveBeenCalled();
+    expect(nodeVersion).not.toHaveBeenCalled();
+
+    cline.discoverCli.mockResolvedValue({
+      found: true, path: '/usr/local/bin/cline', version: '3.0.61',
+    });
+    await h.setupManager.refreshProviderStatus('cline');
+
+    expect(updates).toHaveLength(2);
+    expect(updates[1].providers.find((p) => p.providerId === 'cline')).toMatchObject({
+      installed: true, authenticated: true, cliVersion: '3.0.61',
+    });
+    expect(cline.discoverCli).toHaveBeenCalledTimes(2);
+    expect(codex.discoverCli).not.toHaveBeenCalled();
+    expect(codex.checkAuthentication).not.toHaveBeenCalled();
+    expect(h.setupManager.checkNpmAvailable).not.toHaveBeenCalled();
+    expect(nodeVersion).not.toHaveBeenCalled();
+  });
+
   it('resetNpmCache invalidates the discovery cache (manual refresh semantics)', async () => {
     const claude = fakeProvider('claude-code');
     const h = buildHarness([claude]);

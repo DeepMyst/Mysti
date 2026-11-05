@@ -24,6 +24,7 @@
  */
 
 import * as crypto from 'crypto';
+import { formatReferenceData } from '../utils/contextReference';
 import { CollaboratorPool } from '../services/CollaboratorPool';
 import { CoordinatorModelClient } from '../services/CoordinatorModelClient';
 import {
@@ -64,6 +65,9 @@ export interface OrchestratorProviderManager {
 export interface OrchestratorRunInput {
   brief: string;
   context: ContextItem[];
+  /** Host-only dispatch context; never replaces the canonical manual context. */
+  resolveContext?: () => ContextItem[];
+  isCancelled?: () => boolean;
   settings: Settings;
   panelId: string;
   conversation?: Conversation | null;
@@ -83,6 +87,7 @@ export class MystiOrchestratorManager {
    * frontier past the 32nd. Stop now cancels exactly what was dispatched.
    */
   private _dispatchedByRun: Map<string, Set<string>> = new Map();
+  private _runAborts = new Map<string, AbortController>();
   constructor(
     private readonly _pool: CollaboratorPool,
     private readonly _coordinator: CoordinatorModelClient,
@@ -118,12 +123,19 @@ export class MystiOrchestratorManager {
     let panelRuns = this._activeRunsByPanel.get(input.panelId);
     if (!panelRuns) { panelRuns = new Set(); this._activeRunsByPanel.set(input.panelId, panelRuns); }
     panelRuns.add(runId);
+    const abort = new AbortController();
+    this._runAborts.set(runId, abort);
+    const ownerCancelled = input.isCancelled;
+    const isCancelled = () => abort.signal.aborted || ownerCancelled?.() === true;
+    input = { ...input, isCancelled };
     try {
+    if (isCancelled()) { return { runId, outcomes: [], synthesis: '' }; }
 
     // --- 1. Decompose into a DAG (on the free coordinator model) ---
     yield { runId, type: 'orch_status', phase: 'decompose', content: 'Planning the task…' };
     const backends = this._availableBackends();
-    let plan = await this._decompose(input.brief, backends, input.context);
+    let plan = await this._decompose(input, backends, abort.signal);
+    if (isCancelled()) { return { runId, outcomes: [], synthesis: '' }; }
     if (!plan) {
       // Fallback: run the whole brief as a single node on the active backend.
       plan = { nodes: [{ id: 'task', task: input.brief.trim(), backend: input.settings.provider, dependsOn: [] }] };
@@ -171,6 +183,7 @@ export class MystiOrchestratorManager {
       }
       let groupIndex = 0;
       for (const frontier of groups) {
+        if (isCancelled()) { return { runId, outcomes: [...outcomes.values()], synthesis: '' }; }
         const frontierRunId = `${runId}-f${groupIndex++}`;
         widestGroup = Math.max(widestGroup, frontier.length);
         const specs = frontier.map(nodeId => this._buildSpec(plan!, nodeId, input, outcomes, runId));
@@ -193,9 +206,11 @@ export class MystiOrchestratorManager {
           conversation: input.conversation ?? null,
           onQuestion: input.onQuestion,
           onGate: input.onGate,
+          isCancelled,
         });
 
         for await (const chunk of stream) {
+          if (isCancelled()) { return { runId, outcomes: [...outcomes.values()], synthesis: '' }; }
           const outcome = outcomes.get(chunk.collaboratorId);
           if (outcome) {
             if (chunk.type === 'collab_text' && chunk.content) {
@@ -227,6 +242,7 @@ export class MystiOrchestratorManager {
     // each other's edits, so contradictions surface only after the merge. One
     // read-only pass, once per run, before anything is folded together.
     let list = Array.from(outcomes.values());
+    if (isCancelled()) { return { runId, outcomes: list, synthesis: '' }; }
     const succeeded = list.filter(o => !o.hasError && o.text.trim());
     if (widestGroup > 1 && succeeded.length > 1 && this._fanout().verifyParallelLanes) {
       yield { runId, type: 'orch_status', phase: 'verify', content: 'Checking the parallel results for conflicts…' };
@@ -254,12 +270,15 @@ export class MystiOrchestratorManager {
 
     // --- 3. Synthesize the final answer (on the coordinator model) ---
     yield { runId, type: 'orch_status', phase: 'synthesize', content: 'Synthesizing the result…' };
-    const synthesis = await this._synthesize(input.brief, list);
+    if (isCancelled()) { return { runId, outcomes: list, synthesis: '' }; }
+    const synthesis = await this._synthesize(input.brief, list, isCancelled, abort.signal);
+    if (isCancelled()) { return { runId, outcomes: list, synthesis: '' }; }
     yield { runId, type: 'orch_synthesis', content: synthesis };
     yield { runId, type: 'orch_done' };
 
     return { runId, outcomes: list, synthesis };
     } finally {
+      this._runAborts.delete(runId);
       this._dispatchedByRun.delete(runId);
       const runs = this._activeRunsByPanel.get(input.panelId);
       runs?.delete(runId);
@@ -274,6 +293,7 @@ export class MystiOrchestratorManager {
    * set of live frontiers is now known exactly, so there is nothing to guess.
    */
   public cancelRun(runId: string, _frontierCount = 32): void {
+    this._runAborts.get(runId)?.abort();
     const live = this._dispatchedByRun.get(runId);
     if (!live) { return; }
     for (const frontierRunId of live) {
@@ -300,9 +320,13 @@ export class MystiOrchestratorManager {
     return this._providers.getAllProviderIds().filter(id => id !== MYSTI_PROVIDER_ID) as AgentType[];
   }
 
-  private async _decompose(brief: string, backends: AgentType[], context: ContextItem[]): Promise<OrchestratorPlan | null> {
-    const prompt = this._decomposePrompt(brief, backends, context);
-    const res = await this._coordinator.complete([{ role: 'user', content: prompt }], { maxTokens: 1500 });
+  private async _decompose(input: OrchestratorRunInput, backends: AgentType[], signal: AbortSignal): Promise<OrchestratorPlan | null> {
+    const prompt = this._decomposePrompt(input.brief, backends, input.context);
+    const res = await this._coordinator.complete([{ role: 'user', content: prompt }], {
+      maxTokens: 1500, signal, isCancelled: input.isCancelled,
+      resolveMessages: input.resolveContext ? () => [{ role: 'user',
+        content: this._decomposePrompt(input.brief, backends, input.resolveContext!()) }] : undefined,
+    });
     if (res.failed) {
       return null;
     }
@@ -363,6 +387,7 @@ export class MystiOrchestratorManager {
       conversation: null,
       onQuestion: input.onQuestion,
       onGate: input.onGate,
+      isCancelled: input.isCancelled,
     });
     for await (const chunk of stream) {
       if (chunk.type === 'collab_text' && chunk.content) { text += chunk.content; }
@@ -384,7 +409,7 @@ export class MystiOrchestratorManager {
     return available.includes(active) ? active : available[0];
   }
 
-  private async _synthesize(brief: string, outcomes: OrchestratorNodeOutcome[]): Promise<string> {
+  private async _synthesize(brief: string, outcomes: OrchestratorNodeOutcome[], isCancelled?: () => boolean, signal?: AbortSignal): Promise<string> {
     const succeeded = outcomes.filter(o => !o.hasError && o.text.trim());
     const failed = outcomes.filter(o => o.hasError || !o.text.trim());
     // Nothing to synthesize — surface a plain failure note.
@@ -393,7 +418,7 @@ export class MystiOrchestratorManager {
     }
     const synthNonce = crypto.randomUUID();
     const prompt = this._synthesizePrompt(brief, succeeded, failed, synthNonce);
-    const res = await this._coordinator.complete([{ role: 'user', content: prompt }], { maxTokens: 2000 });
+    const res = await this._coordinator.complete([{ role: 'user', content: prompt }], { maxTokens: 2000, isCancelled, signal });
     if (res.failed) {
       // Fallback: concatenate the node outputs so nothing is lost.
       return succeeded.map(o => `### ${getProviderDisplayName(o.backend)} — ${o.task}\n\n${o.text.trim()}`).join('\n\n');
@@ -440,10 +465,10 @@ export class MystiOrchestratorManager {
 
     // The user's attached files and recent conversation — model-/file-authored,
     // so fenced as UNTRUSTED data (a file must not be able to forge a task).
-    const reference = this._buildReferenceBlock(input, nonce);
-    if (reference) {
-      parts.push(reference);
-    }
+    const buildPrompt = (context: ContextItem[]) => {
+      const reference = this._buildReferenceBlock({ ...input, context }, nonce);
+      return [...parts, ...(reference ? [reference] : [])].join('\n\n---\n\n');
+    };
 
     return {
       collaboratorId: node.id,
@@ -451,7 +476,8 @@ export class MystiOrchestratorManager {
       label: `${getProviderDisplayName(backend)} · ${node.task.slice(0, 40)}`,
       // Nodes may edit files; route through the gate (Plan 0 security floor).
       access: 'gated-write',
-      prompt: parts.join('\n\n---\n\n'),
+      prompt: buildPrompt(input.context),
+      resolvePrompt: input.resolveContext ? () => buildPrompt(input.resolveContext!()) : undefined,
     };
   }
 
@@ -517,7 +543,8 @@ export class MystiOrchestratorManager {
     if (files.length === 0) { return ''; }
     const list = files.slice(0, 20).map(f => `- ${f.path}`).join('\n');
     const more = files.length > 20 ? `\n- …and ${files.length - 20} more` : '';
-    return `\nAttached context the user provided (files available to the steps you create):\n${list}${more}\n`;
+    return '\nAttached context the user provided (files available to the steps you create):\n'
+      + formatReferenceData(list + more, 'Attached file paths') + '\n';
   }
 
   /**
@@ -535,8 +562,8 @@ export class MystiOrchestratorManager {
     }
 
     const files = (input.context || []).filter(c => c.enabled !== false && c.content);
-    for (const file of files) {
-      segments.push(this._fenceUntrusted(`File: ${file.path}`, file.content || '', nonce));
+    for (const [index, file] of files.entries()) {
+      segments.push(this._fenceUntrusted(`Reference item ${index + 1}`, `File: ${file.path}\n${file.content || ''}`, nonce));
     }
 
     if (segments.length === 0) {

@@ -194,6 +194,7 @@ export class CheckpointManager {
   private _initialized = false;
   private _initRoot: string | null = null;
   private _gitAvailable: boolean | null = null;
+  private _workspaceRevision = 0;
   /** Latched once so we don't spam the log when a huge repo keeps getting skipped. */
   private _warnedOverCap = false;
 
@@ -205,6 +206,7 @@ export class CheckpointManager {
     // A workspace-folder change invalidates the resolved root/repo.
     this._disposables.push(
       vscode.workspace.onDidChangeWorkspaceFolders(() => {
+        this._workspaceRevision++;
         this._initialized = false;
         this._initRoot = null;
         this._gitDir = null;
@@ -238,11 +240,17 @@ export class CheckpointManager {
    * (honoring excludes — never deletes node_modules/ignored paths). Takes a
    * safety snapshot first so the rewind itself is undoable.
    */
-  public async rewindTo(commit: string): Promise<RewindResult> {
+  public async rewindTo(commit: string, isCurrent?: () => boolean): Promise<RewindResult> {
+    if (!/^[0-9a-f]{7,40}$/i.test(commit)) {
+      return { ok: false, reason: 'Invalid checkpoint reference.' };
+    }
+    const root = this._workspaceRoot(), revision = this._workspaceRevision;
+    const current = () => this._workspaceRevision === revision && this._workspaceRoot() === root && (!isCurrent || isCurrent());
+    if (!current()) { return { ok: false, reason: 'Rewind cancelled because its owner or workspace changed.' }; }
     if (!(await this.isAvailable())) {
       return { ok: false, reason: 'Checkpoints are unavailable (git not found or feature disabled).' };
     }
-    return this._enqueue(() => this._rewindImpl(commit));
+    return this._enqueue(() => this._rewindImpl(commit, current));
   }
 
   /**
@@ -366,33 +374,108 @@ export class CheckpointManager {
     }
   }
 
-  private async _rewindImpl(commit: string): Promise<RewindResult> {
+  private async _rewindImpl(commit: string, isCurrent: () => boolean): Promise<RewindResult> {
+    const cancelled = (): RewindResult => ({ ok: false, reason: 'Rewind cancelled because its owner or workspace changed.' });
     try {
+      if (!isCurrent()) { return cancelled(); }
       await this.ensureRepo();
+      if (!isCurrent()) { return cancelled(); }
+      const gitDir = this._gitDir!, workTree = this._workTree!;
       await this._clearStaleLock();
+      if (!isCurrent()) { return cancelled(); }
 
       // Validate the commit exists before doing anything destructive.
       const probe = await this._runGit(['cat-file', '-t', commit]);
       if (probe.code !== 0 || probe.stdout.trim() !== 'commit') {
         return { ok: false, reason: 'Checkpoint no longer exists.' };
       }
+      if (!isCurrent()) { return cancelled(); }
 
       // Safety snapshot first so the rewind can itself be undone.
       const safetyCommit = await this._snapshotImpl('pre-rewind safety snapshot', true, false);
-
-      await this._runGitOrThrow(['reset', '--hard', commit]);
-      // clean -fd (NOT -x): remove files created after the checkpoint while
-      // honoring .gitignore + info/exclude (never nukes node_modules etc.).
-      await this._runGitOrThrow(['clean', '-fd']);
+      if (!safetyCommit) {
+        return { ok: false, reason: 'Could not save a safety checkpoint. No workspace files were restored.' };
+      }
+      if (!isCurrent() || this._gitDir !== gitDir || this._workTree !== workTree) { return cancelled(); }
+      const conflict = await this._unbackedRestoreConflict(gitDir, workTree, commit, safetyCommit);
+      if (conflict !== null) {
+        return { ok: false, reason: `Cannot rewind: ${JSON.stringify(conflict)} would be overwritten but is not backed up in the safety checkpoint. Move or back up that path first.` };
+      }
+      // This is the cancellation boundary. Once reset starts, finish (or roll
+      // back) against these captured paths even if a workspace-folder event
+      // changes the manager's current repo while git is running.
+      if (!isCurrent() || this._gitDir !== gitDir || this._workTree !== workTree) { return cancelled(); }
+      const runPinned = async (args: string[]): Promise<void> => {
+        const result = await this._spawnGit([`--git-dir=${gitDir}`, `--work-tree=${workTree}`, ...args], CHECKPOINT_GIT_TIMEOUT_MS, workTree);
+        if (result.code !== 0) { throw new Error(`git ${args.join(' ')} failed: ${result.stderr || result.stdout || `exit ${result.code}`}`); }
+      };
+      try {
+        await runPinned(['reset', '--hard', commit]);
+        // The required safety snapshot made every eligible current file
+        // tracked, so reset also removes files added since the target. Do not
+        // run clean: restoring an older .gitignore can expose ignored files
+        // that were never backed up, and deleting those is irreversible.
+      } catch (restoreError) {
+        const detail = restoreError instanceof Error ? restoreError.message : String(restoreError);
+        try {
+          await runPinned(['reset', '--hard', safetyCommit]);
+          return { ok: false, reason: `Rewind failed; the previous workspace was restored from its safety checkpoint. ${detail}` };
+        } catch (rollbackError) {
+          const rollbackDetail = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+          return { ok: false, reason: `Rewind failed and automatic recovery failed. Workspace files may be partially restored; recovery checkpoint: ${safetyCommit}. ${detail} Recovery: ${rollbackDetail}` };
+        }
+      }
 
       // Deferred from the safety snapshot above, now that the restore is done.
-      await this._pruneSnapshots();
+      if (this._gitDir === gitDir && this._workTree === workTree) { await this._pruneSnapshots(); }
       return { ok: true, safetyCommit };
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       console.log('[Mysti] CheckpointManager: rewind failed:', err);
       return { ok: false, reason };
     }
+  }
+
+  /**
+   * reset --hard can replace ignored/untracked obstructions even without
+   * clean. Refuse such replacements: ignored bytes must not be secretly
+   * copied into the checkpoint store or destroyed by a rewind.
+   */
+  private async _unbackedRestoreConflict(gitDir: string, workTree: string, target: string, safety: string): Promise<string | null> {
+    const listPaths = async (commit: string): Promise<string[]> => {
+      const result = await this._spawnGit([`--git-dir=${gitDir}`, `--work-tree=${workTree}`, 'ls-tree', '-r', '--name-only', '-z', commit], CHECKPOINT_GIT_TIMEOUT_MS, workTree);
+      if (result.code !== 0) { throw new Error('Could not verify checkpoint file safety; no files were restored.'); }
+      return result.stdout.split('\0').filter(Boolean);
+    };
+    const [targets, backedUp] = await Promise.all([listPaths(target), listPaths(safety)]);
+    const protectedPaths = new Set(backedUp);
+    const inspected = new Map<string, fs.Stats | null>();
+    for (const targetPath of targets) {
+      if (protectedPaths.has(targetPath)) { continue; }
+      const parts = targetPath.split('/');
+      if (path.isAbsolute(targetPath) || parts.some(part => part === '..')) {
+        throw new Error('Invalid checkpoint file path; no files were restored.');
+      }
+      for (let length = 1; length <= parts.length; length++) {
+        const relative = parts.slice(0, length).join('/');
+        if (!inspected.has(relative)) {
+          try { inspected.set(relative, await fs.promises.lstat(path.join(workTree, relative))); }
+          catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') { inspected.set(relative, null); }
+            else { throw error; }
+          }
+        }
+        const stat = inspected.get(relative);
+        if (!stat) { break; }
+        if (length === parts.length || !stat.isDirectory()) {
+          if (!protectedPaths.has(relative)) { return relative; }
+          // A backed-up file/symlink ancestor can be replaced safely. Never
+          // follow a symlink to inspect bytes outside the captured workspace.
+          break;
+        }
+      }
+    }
+    return null;
   }
 
   // --- Repo lifecycle ----------------------------------------------------

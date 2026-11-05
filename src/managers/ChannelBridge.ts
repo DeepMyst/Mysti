@@ -424,6 +424,11 @@ RULES:
 
   // --- Inbound: Message Routing ---
 
+  /** Inspect without consuming: a composer turn may supersede a delayed drain. */
+  hasQueuedMessages(panelId: string): boolean {
+    return (this._queuedMessages.get(panelId)?.length ?? 0) > 0;
+  }
+
   /**
    * Drain queued inbound messages for a panel.
    * Called by ChatViewProvider after a response finishes ('done' chunk).
@@ -434,7 +439,7 @@ RULES:
     return queued;
   }
 
-  /** A stopped or replaced turn must not inject its old inputs into later work. */
+  /** Stop, closing a panel or changing conversations discards pending input. */
   clearQueuedMessages(panelId: string): void {
     this._queuedMessages.delete(panelId);
   }

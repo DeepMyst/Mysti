@@ -14,6 +14,9 @@ export interface PendingPlanData {
   options: PlanOption[];
   messageId: string;
   originalQuery: string;
+  conversationId?: string | null;
+  provider?: string;
+  isCurrent?: () => boolean;
 }
 
 interface PendingPlan {
@@ -72,6 +75,10 @@ export class PendingPlanStore {
     plans.delete(planId);
     if (plans.size === 0) { this._panels.delete(panelId); }
     return plan.data;
+  }
+
+  public peek(panelId: string, planId: string): PendingPlanData | undefined {
+    return this._panels.get(panelId)?.get(planId)?.data;
   }
 
   public clearPanel(panelId: string): void {

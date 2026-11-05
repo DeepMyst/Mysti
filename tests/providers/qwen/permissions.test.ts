@@ -22,16 +22,12 @@ describe('Qwen permission flag mapping', () => {
   it.each([
     ['quick-plan'],
     ['detailed-plan'],
-  ] as const)('should use --approval-mode plan for %s mode', (mode) => {
-    const args = provider.buildCliArgs(s({ mode }), createQwenSession());
-    expect(args).toContain('--approval-mode');
-    expect(args).toContain('plan');
+  ] as const)('rejects unsupported %s mode before constructing CLI arguments', (mode) => {
+    expect(() => provider.buildCliArgs(s({ mode }), createQwenSession())).toThrow(/Qwen Code CLI cannot enforce Plan, Read Only/);
   });
 
-  it('should use --approval-mode plan for read-only access', () => {
-    const args = provider.buildCliArgs(s({ accessLevel: 'read-only' }), createQwenSession());
-    expect(args).toContain('--approval-mode');
-    expect(args).toContain('plan');
+  it('rejects unsupported read-only access before constructing CLI arguments', () => {
+    expect(() => provider.buildCliArgs(s({ accessLevel: 'read-only' }), createQwenSession())).toThrow(/Qwen Code CLI cannot enforce Plan, Read Only/);
   });
 
   it('should use --approval-mode yolo for edit-automatically + full-access', () => {
@@ -44,9 +40,13 @@ describe('Qwen permission flag mapping', () => {
     { mode: 'default' as const, accessLevel: 'full-access' as const },
     { mode: 'default' as const, accessLevel: 'ask-permission' as const },
     { mode: 'ask-before-edit' as const, accessLevel: 'ask-permission' as const },
-  ])('should use --approval-mode auto-edit for mode=$mode access=$accessLevel', ({ mode, accessLevel }) => {
+  ])('honors or explicitly rejects mode=$mode access=$accessLevel', ({ mode, accessLevel }) => {
+    if (accessLevel !== 'full-access') {
+      expect(() => provider.buildCliArgs(s({ mode, accessLevel }), createQwenSession())).toThrow(/native approvals/);
+      return;
+    }
     const args = provider.buildCliArgs(s({ mode, accessLevel }), createQwenSession());
     expect(args).toContain('--approval-mode');
-    expect(args).toContain('auto-edit');
+    expect(args).toContain('yolo');
   });
 });

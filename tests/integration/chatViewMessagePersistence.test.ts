@@ -45,6 +45,9 @@ import type { Settings, StreamChunk, WebviewMessage } from '../../src/types';
 import { createModelRegistryStub } from '../helpers/modelRegistryStub';
 import { MYSTI_MODELS_UNAVAILABLE } from '../../src/services/CoordinatorModelClient';
 import { coordinatorToolSchemas } from '../../src/services/coordinatorTools';
+import { ConversationManager } from '../../src/managers/ConversationManager';
+import { ContextManager } from '../../src/managers/ContextManager';
+import { ProviderManager } from '../../src/managers/ProviderManager';
 
 // ---------------------------------------------------------------------------
 // Test harness
@@ -146,6 +149,7 @@ function createHarness(): Harness {
 
   const lifecycleManager = {
     onLifecycleEvent: () => undefined,
+    removeSession: () => undefined,
     touchSession: () => undefined,
     markBusy: () => undefined,
     markIdle: () => undefined,
@@ -163,6 +167,7 @@ function createHarness(): Harness {
   } as any;
 
   const engagementManager = {
+    trackConversationStarted: () => [],
     trackCustomPersonaCreated: () => undefined,
     trackCustomSkillCreated: () => undefined,
     trackMessageSent: () => [],
@@ -191,6 +196,7 @@ function createHarness(): Harness {
 
   const compactionManager = {
     shouldCompact: () => false,
+    resetUsage: () => undefined,
     recordUsage: () => undefined,
     // Smart-compaction (Plan 08) additions the done-handler calls unconditionally.
     appendHistory: () => undefined,
@@ -202,11 +208,7 @@ function createHarness(): Harness {
     getThreshold: () => 75,
   } as any;
 
-  const contextManager = {
-    getContext: () => [],
-    setAutoContext: () => undefined,
-    clearPanelContext: () => undefined,
-  } as any;
+  const contextManager = new ContextManager(extensionContext);
 
   const noop = {} as any;
 
@@ -266,6 +268,110 @@ function getAssistantPersistCall(h: Harness): any[] {
   return call!;
 }
 
+describe('Qwen reported model in the response turn', () => {
+  let h: Harness;
+  const qwenSettings = { ...SETTINGS, provider: 'qwen-code', model: 'qwen3-coder' } as Settings;
+  const report = (model: unknown): StreamChunk => ({ type: 'model_info', reportedModel: model } as any);
+  const submit = (panelId = 'sidebar') => (h.provider as any)._handleSendMessage(
+    { content: 'Explain the owned fixture.', context: [], settings: { ...qwenSettings } }, panelId);
+  beforeEach(() => { clearMockConfig(); h = createHarness(); });
+  afterEach(() => { h.dispose(); });
+
+  it('persists actual and requested models while accounting usage against the actual model', async () => {
+    const host = h.provider as any;
+    const normalize = vi.spyOn(host, '_normalizeTurnUsage');
+    h.setStream([report('coder-model'), { type: 'text', content: 'Actual response.' },
+      { type: 'done', contextWindow: 1000000, usage: { input_tokens: 10, output_tokens: 2 } }]);
+    await submit();
+    expect(getAssistantPersistCall(h)[6]).toMatchObject({ model: 'coder-model', requestedModel: 'qwen3-coder' });
+    expect(normalize.mock.calls[0].slice(0, 2)).toEqual(['qwen-code', 'coder-model']);
+    expect(host._reportedContextWindows.get('qwen-code\u0000coder-model')).toBe(1000000);
+    expect(h.sidebarMessages.find(m => m.type === 'responseComplete')?.payload.message).toMatchObject({
+      content: 'Actual response.', model: 'coder-model', requestedModel: 'qwen3-coder',
+    });
+    expect(h.sidebarMessages.filter(m => m.type === 'responseChunk' && m.payload.type === 'model_info').map(m => m.payload))
+      .toEqual([{ type: 'model_info', provider: 'qwen-code', model: 'coder-model', requestedModel: 'qwen3-coder' }]);
+    expect(h.sidebarMessages.filter(m => m.type === 'modelChanged')).toEqual([]);
+    expect(host._providerManager.sendMessage.mock.calls[0][2].model).toBe('qwen3-coder');
+  });
+
+  it('updates fallback attribution once and resets to requested when the next turn has no report', async () => {
+    h.setStream([report('coder-model'), { type: 'text', content: 'Before. ' }, report('fallback-model'),
+      report('fallback-model'), { type: 'text', content: 'After.' }, { type: 'done' }]);
+    await submit();
+    expect(getAssistantPersistCall(h)[2]).toBe('Before. After.');
+    expect(getAssistantPersistCall(h)[6].model).toBe('fallback-model');
+    expect(h.sidebarMessages.filter(m => m.type === 'responseChunk' && m.payload.type === 'model_info')).toHaveLength(2);
+    h.setStream([report('bad\nmodel'), { type: 'text', content: 'Fresh.' }, { type: 'done' }]);
+    await submit();
+    const fresh = h.persistedCalls.filter(c => c[1] === 'assistant').at(-1)!;
+    expect(fresh[6].model).toBe('qwen3-coder'); expect(fresh[6].requestedModel).toBeUndefined();
+  });
+
+  it.each(['error', 'auth_error', 'eof', 'throw'] as const)('retains actual attribution with a partial %s response', async terminal => {
+    const host = h.provider as any;
+    host._providerManager.sendMessage.mockImplementation(async function* () {
+      yield report('coder-model'); yield { type: 'text', content: 'Useful partial.' };
+      if (terminal === 'throw') throw new Error('Owned failure');
+      if (terminal !== 'eof') yield { type: terminal, content: 'Owned failure' };
+    });
+    await submit();
+    expect(getAssistantPersistCall(h)[6]).toMatchObject({ model: 'coder-model', requestedModel: 'qwen3-coder' });
+    const event = h.sidebarMessages.find(m => m.type === (terminal === 'auth_error' ? 'authError' : 'error'));
+    expect(event?.payload.message).toMatchObject({ content: 'Useful partial.', model: 'coder-model', requestedModel: 'qwen3-coder' });
+    expect(h.sidebarMessages.some(m => m.type === 'responseComplete')).toBe(false);
+  });
+
+  it('does not invent an assistant message from metadata before a failure', async () => {
+    h.setStream([report('coder-model'), { type: 'error', content: 'Owned failure' }]);
+    await submit();
+    expect(h.persistedCalls.filter(c => c[1] === 'assistant')).toEqual([]);
+  });
+
+  it('Stop keeps its actual partial model while late old metadata cannot overwrite a replacement', async () => {
+    const host = h.provider as any;
+    host._providerManager.getAllProviderIds = () => [];
+    host._brainstormManager = { cancelSession: vi.fn() };
+    let start!: () => void, release!: () => void;
+    const ready = new Promise<void>(r => { start = r; }), wait = new Promise<void>(r => { release = r; });
+    host._providerManager.sendMessage.mockImplementationOnce(async function* () {
+      yield report('coder-model'); yield { type: 'text', content: 'Stopped partial.' };
+      start(); await wait; yield report('STALE_MODEL'); yield { type: 'done' };
+    });
+    const pending = submit();
+    try {
+      await ready; await host._handleMessage({ type: 'cancelRequest', panelId: 'sidebar' });
+      expect(h.sidebarMessages.find(m => m.type === 'requestCancelled')?.payload.message)
+        .toMatchObject({ model: 'coder-model', requestedModel: 'qwen3-coder' });
+      h.setStream([report('replacement-model'), { type: 'text', content: 'Replacement.' }, { type: 'done' }]);
+      await submit(); const boundary = h.sidebarMessages.length; release(); await pending;
+      expect(JSON.stringify(h.sidebarMessages.slice(boundary))).not.toContain('STALE_MODEL');
+      expect(h.persistedCalls.filter(c => c[1] === 'assistant').map(c => c[6].model)).toEqual(['coder-model', 'replacement-model']);
+    } finally { release(); await pending; }
+  });
+
+  it('isolates interleaved panels and ignores metadata emitted after done', async () => {
+    const host = h.provider as any;
+    const peerMessages: any[] = [];
+    host._panelStates.set('peer', { id: 'peer', isSidebar: false, currentConversationId: null,
+      webview: { postMessage: async (m: any) => { peerMessages.push(m); return true; } } });
+    let start!: () => void, release!: () => void;
+    const ready = new Promise<void>(r => { start = r; }), wait = new Promise<void>(r => { release = r; });
+    host._providerManager.sendMessage.mockImplementation(async function* (...args: any[]) {
+      const own = args[5]; yield report(own === 'sidebar' ? 'coder-model' : 'peer-model');
+      if (own === 'sidebar') { start(); await wait; }
+      yield { type: 'text', content: `${own} response.` }; yield { type: 'done' }; yield report('AFTER_DONE');
+    });
+    const pending = submit();
+    try {
+      await ready; await submit('peer'); release(); await pending;
+      expect(h.sidebarMessages.find(m => m.type === 'responseComplete')?.payload.message.model).toBe('coder-model');
+      expect(peerMessages.find(m => m.type === 'responseComplete')?.payload.message.model).toBe('peer-model');
+      expect(JSON.stringify([...h.sidebarMessages, ...peerMessages])).not.toContain('AFTER_DONE');
+    } finally { release(); await pending; }
+  });
+});
+
 async function send(h: Harness, content = 'do the thing'): Promise<void> {
   await (h.provider as any)._handleSendMessage(
     { content, context: [], settings: { ...SETTINGS } },
@@ -283,6 +389,526 @@ describe('ChatViewProvider done-handler persistence (Plan 02 Phase 3)', () => {
 
   afterEach(() => {
     h.dispose();
+  });
+
+  it('forwards only prior same-panel history through Claude→Codex→Copilot→Claude without duplicating the live user', async () => {
+    const host = h.provider as any;
+    const conversations = new ConversationManager(host._extensionContext);
+    host._conversationManager = conversations;
+    vi.spyOn(conversations, 'isFirstUserMessage').mockReturnValue(false);
+    const original = conversations.getCurrentConversation()!;
+    host._panelStates.get('sidebar').currentConversationId = original.id;
+    const peer = conversations.createNewConversation();
+    conversations.addMessageToConversation(peer.id, 'user', 'OTHER_PANEL_PRIVATE_QUESTION');
+    conversations.addMessageToConversation(peer.id, 'assistant', 'OTHER_PANEL_PRIVATE_ANSWER', [], undefined, undefined, { provider: 'claude-code' });
+    host._panelStates.set('other-panel', { id: 'other-panel', currentConversationId: peer.id,
+      webview: { postMessage: async () => true }, settingsOverrides: { provider: 'claude-code' } });
+
+    const captured: any[] = [];
+    const liveHistoryReferences: any[] = [];
+    const providers = new Map(['claude-code', 'openai-codex', 'github-copilot'].map(provider => [provider, {
+      id: provider, cancelCurrentRequest: vi.fn(),
+      async *sendMessage(content: string, _context: unknown, settings: Settings, conversation: any, _persona: unknown, panelId: string) {
+        liveHistoryReferences.push(conversation);
+        captured.push({ provider, content, panelId, conversation: JSON.parse(JSON.stringify(conversation)) });
+        yield { type: 'text', content: `${provider}: ${content} reviewed. COPILOT_PATCH_TAG=${provider === 'github-copilot' ? 'peer-only-change' : 'none'}` };
+        yield { type: 'done' };
+      },
+    }]));
+    // Exercise the actual routing facade too; only the final backend stream is
+    // controlled. No native process, history injection, or private wire mock.
+    const router = Object.assign(Object.create(ProviderManager.prototype), {
+      _registry: { get: (id: string) => providers.get(id) }, _panelProviders: new Map(), _nativeApprovalHost: {},
+    });
+    host._providerManager.sendMessage = ProviderManager.prototype.sendMessage.bind(router);
+    for (const [index, provider] of ['claude-code', 'openai-codex', 'github-copilot', 'claude-code'].entries()) {
+      host._panelStates.get('sidebar').settingsOverrides = { provider, agent: provider };
+      await host._handleSendMessage({ content: `TURN_${index + 1}`, context: [], settings: { ...SETTINGS, provider } }, 'sidebar');
+    }
+    expect(captured.map(call => call.provider)).toEqual(['claude-code', 'openai-codex', 'github-copilot', 'claude-code']);
+    for (const [index, call] of captured.entries()) {
+      expect(call.panelId).toBe('sidebar'); expect(call.conversation.id).toBe(original.id);
+      expect(call.conversation.messages).toHaveLength(index * 2);
+      expect(call.conversation.messages.some((message: any) => message.content === call.content)).toBe(false);
+      expect(JSON.stringify(call.conversation)).not.toContain('OTHER_PANEL_PRIVATE');
+    }
+    expect(captured[3].conversation.messages.filter((message: any) => message.role === 'assistant').map((message: any) => message.provider))
+      .toEqual(['claude-code', 'openai-codex', 'github-copilot']);
+    expect(captured[3].conversation.messages.at(-1).content).toContain('COPILOT_PATCH_TAG=peer-only-change');
+    expect(liveHistoryReferences[0].messages).toHaveLength(0); // later persistence cannot mutate dispatched history
+    expect(original.messages).toHaveLength(8);
+    expect(original.messages.filter(message => message.role === 'user').map(message => message.content)).toEqual(['TURN_1', 'TURN_2', 'TURN_3', 'TURN_4']);
+    expect(peer.messages.map(message => message.content)).toEqual(['OTHER_PANEL_PRIVATE_QUESTION', 'OTHER_PANEL_PRIVATE_ANSWER']);
+  });
+
+  it('excludes the current user by identity while preserving an identical unanswered earlier request', async () => {
+    const host = h.provider as any;
+    const conversations = new ConversationManager(host._extensionContext);
+    host._conversationManager = conversations;
+    vi.spyOn(conversations, 'isFirstUserMessage').mockReturnValue(false);
+    const conversation = conversations.getCurrentConversation()!;
+    host._panelStates.get('sidebar').currentConversationId = conversation.id;
+    const prior = conversations.addMessageToConversation(conversation.id, 'user', 'Repeat this request exactly');
+    let history: any;
+    host._providerManager.sendMessage.mockImplementation(async function* (_content: string, _context: unknown, _settings: Settings, supplied: any) {
+      history = supplied; yield { type: 'text', content: 'Recovered answer.' }; yield { type: 'done' };
+    });
+    await send(h, 'Repeat this request exactly');
+    expect(history.messages.map((message: any) => message.id)).toEqual([prior.id]);
+    expect(history.messages[0].content).toBe('Repeat this request exactly');
+    expect(conversation.messages.map(message => message.role)).toEqual(['user', 'user', 'assistant']);
+    expect(conversation.messages[1].id).not.toBe(prior.id);
+    prior.content = 'A later persisted revision';
+    expect(history.messages[0].content).toBe('Repeat this request exactly');
+  });
+
+  it('finishes once when a faulty stream repeats done and emits text after its terminal event', async () => {
+    h.setStream([{ type: 'text', content: 'The actual answer.' }, { type: 'done' },
+      { type: 'text', content: ' Late stale output.' }, { type: 'done' }]);
+    await send(h);
+    expect(h.persistedCalls.filter(call => call[1] === 'assistant')).toHaveLength(1);
+    expect(getAssistantPersistCall(h)[2]).toBe('The actual answer.');
+    expect(h.sidebarMessages.filter(message => message.type === 'responseComplete')).toHaveLength(1);
+    expect(h.sidebarMessages.filter(message => message.type === 'responseChunk').map(message => message.payload.content))
+      .toEqual(['The actual answer.']);
+  });
+
+  it('PB-01 invalid native questions terminate once with useful partial history and no hidden pending card', async () => {
+    h.setStream([{ type: 'text', content: 'The retry cap still needs a choice.' },
+      { type: 'ask_user_question', askUserQuestion: { toolCallId: 'invalid-question', questions: { bad: true } } } as any,
+      { type: 'done' }]);
+    await send(h);
+    expect(h.sidebarMessages.filter(message => ['responseComplete', 'askUserQuestion', 'toolUse'].includes(message.type))).toEqual([]);
+    expect(h.sidebarMessages.filter(message => message.type === 'error')).toEqual([expect.objectContaining({ payload: {
+      error: expect.stringMatching(/invalid.*question.*retry/i), message: expect.objectContaining({ content: 'The retry cap still needs a choice.' }),
+    } })]);
+    expect((h.provider as any)._pendingAskUserQuestions.size).toBe(0);
+    expect((h.provider as any)._pendingQuestionData.size).toBe(0);
+    expect((h.provider as any)._runningPanels.has('sidebar')).toBe(false);
+    expect(h.persistedCalls.filter(call => call[1] === 'assistant')).toHaveLength(1);
+  });
+
+  it.each(['eof', 'throw', 'error chunk'])('preserves an interrupted partial reply and settles its tools on %s', async failure => {
+    const host = h.provider as any;
+    const success = vi.spyOn(host._engagementManager, 'trackSuccessfulResponse');
+    const drain = vi.spyOn(host._channelBridge, 'drainQueuedMessages');
+    const idle = vi.spyOn(host._lifecycleManager, 'markIdle');
+    host._providerManager.sendMessage.mockImplementation(async function* () {
+      yield { type: 'text', content: 'The Unicode retry review 🔁 is incomplete.' };
+      yield { type: 'tool_use', toolCall: { id: 'pending-read', name: 'Read', input: { file_path: '/src/retry.ts' }, status: 'running' } };
+      if (failure === 'throw') throw new Error('Review stream disconnected');
+      if (failure === 'error chunk') {
+        yield { type: 'error', content: 'Review stream disconnected' };
+        yield { type: 'done' };
+      }
+    });
+    await send(h);
+    const saved = h.persistedCalls.filter(call => call[1] === 'assistant');
+    expect(saved).toHaveLength(1);
+    expect(saved[0][2]).toBe('The Unicode retry review 🔁 is incomplete.');
+    expect(saved[0][6].toolCalls).toEqual([expect.objectContaining({ id: 'pending-read', status: 'failed' })]);
+    expect(h.sidebarMessages.filter(message => message.type === 'error')).toHaveLength(1);
+    expect(h.sidebarMessages.filter(message => message.type === 'responseComplete')).toHaveLength(0);
+    expect(host._runningPanels.has('sidebar')).toBe(false);
+    expect(success).not.toHaveBeenCalled(); expect(drain).not.toHaveBeenCalled();
+    expect(idle).toHaveBeenCalledWith('sidebar');
+  });
+
+  it.each([false, true])('Stop saves useful partial history exactly once before late output (before tokens: %s)', async beforeTokens => {
+    const host = h.provider as any;
+    host._providerManager.getAllProviderIds = () => [];
+    host._brainstormManager = { cancelSession: vi.fn() };
+    const success = vi.spyOn(host._engagementManager, 'trackSuccessfulResponse');
+    const drain = vi.spyOn(host._channelBridge, 'drainQueuedMessages');
+    let started!: () => void; const ready = new Promise<void>(resolve => { started = resolve; });
+    let release!: () => void; const waiting = new Promise<void>(resolve => { release = resolve; });
+    host._providerManager.sendMessage.mockImplementationOnce(async function* () {
+      if (!beforeTokens) {
+        yield { type: 'text', content: 'Partial Unicode review 🔁.' };
+        yield { type: 'tool_use', toolCall: { id: 'stopped-read', name: 'Read', input: { file_path: '/src/retry.ts' }, status: 'running' } };
+      }
+      started(); await waiting;
+      yield { type: 'text', content: 'LATE_OLD_OUTPUT' }; yield { type: 'done' };
+    });
+    const pending = send(h);
+    try {
+      await ready;
+      await host._handleMessage({ type: 'cancelRequest', panelId: 'sidebar' });
+      const saved = h.persistedCalls.filter(call => call[1] === 'assistant');
+      expect(saved).toHaveLength(beforeTokens ? 0 : 1);
+      expect(host._runningPanels.has('sidebar')).toBe(false);
+      expect(host._canvasTurnPanels.has('sidebar')).toBe(false);
+      const stopped = h.sidebarMessages.filter(message => message.type === 'requestCancelled');
+      expect(stopped).toHaveLength(1);
+      if (!beforeTokens) {
+        expect(saved[0][2]).toBe('Partial Unicode review 🔁.');
+        expect(saved[0][6]).toMatchObject({ provider: SETTINGS.provider, model: SETTINGS.model,
+          toolCalls: [{ id: 'stopped-read', status: 'failed' }],
+          segments: [{ type: 'text', content: 'Partial Unicode review 🔁.' }, { type: 'tool', toolCallId: 'stopped-read' }],
+        });
+        expect(stopped[0].payload.message).toMatchObject({ id: expect.any(String), content: saved[0][2], ...saved[0][6] });
+      } else { expect(stopped[0].payload?.message).toBeUndefined(); }
+      expect(success).not.toHaveBeenCalled(); expect(drain).not.toHaveBeenCalled();
+      expect(h.sidebarMessages.some(message => message.type === 'responseComplete')).toBe(false);
+      release(); await pending;
+      expect(h.persistedCalls.filter(call => call[1] === 'assistant')).toHaveLength(beforeTokens ? 0 : 1);
+      expect(JSON.stringify(h.sidebarMessages)).not.toContain('LATE_OLD_OUTPUT');
+      h.setStream([{ type: 'text', content: 'Fresh reply after Stop.' }, { type: 'done' }]);
+      await send(h, 'Fresh question');
+      expect(h.sidebarMessages.filter(message => message.type === 'responseComplete')).toHaveLength(1);
+      expect(h.persistedCalls.filter(call => call[1] === 'assistant').at(-1)?.[2]).toBe('Fresh reply after Stop.');
+    } finally { release(); await pending; }
+  });
+
+  it('late cleanup from a stopped stream cannot remove the replacement Stop snapshot', async () => {
+    const host = h.provider as any;
+    host._providerManager.getAllProviderIds = () => [];
+    host._brainstormManager = { cancelSession: vi.fn() };
+    const starts: Array<() => void> = [], releases: Array<() => void> = [];
+    const ready = [0, 1].map(index => new Promise<void>(resolve => { starts[index] = resolve; }));
+    const waits = [0, 1].map(index => new Promise<void>(resolve => { releases[index] = resolve; }));
+    let index = 0;
+    host._providerManager.sendMessage.mockImplementation(async function* () {
+      const own = index++;
+      yield { type: 'text', content: `Partial response ${own}` };
+      starts[own](); await waits[own]; yield { type: 'done' };
+    });
+    const first = send(h, 'First');
+    let second: Promise<void> | undefined;
+    try {
+      await ready[0]; await host._handleMessage({ type: 'cancelRequest', panelId: 'sidebar' });
+      second = send(h, 'Replacement'); await ready[1];
+      releases[0](); await first;
+      expect(host._runningPanels.has('sidebar')).toBe(true);
+      await host._handleMessage({ type: 'cancelRequest', panelId: 'sidebar' });
+      expect(h.persistedCalls.filter(call => call[1] === 'assistant').map(call => call[2]))
+        .toEqual(['Partial response 0', 'Partial response 1']);
+      expect(h.sidebarMessages.filter(message => message.type === 'requestCancelled').map(message => message.payload.message.content))
+        .toEqual(['Partial response 0', 'Partial response 1']);
+      expect(h.sidebarMessages.some(message => message.type === 'responseComplete')).toBe(false);
+    } finally { releases.forEach(release => release()); await first; await second; }
+  });
+
+  it.each(['done', 'error', 'auth_error'] as const)('keeps the %s receipt terminal when provider cleanup throws', async terminal => {
+    const host = h.provider as any;
+    const cleanup = vi.fn();
+    const successful = vi.spyOn(host._engagementManager, 'trackSuccessfulResponse');
+    const drain = vi.spyOn(host._channelBridge, 'drainQueuedMessages');
+    host._providerManager.sendMessage.mockImplementation(async function* () {
+      try {
+        yield { type: 'text', content: 'The answer before provider cleanup.' };
+        yield { type: terminal, content: terminal === 'done' ? undefined : 'The provider stopped this turn.' };
+      } finally {
+        cleanup();
+        throw new Error('Provider cleanup failed after its terminal event');
+      }
+    });
+    await send(h);
+    expect(cleanup).toHaveBeenCalledOnce();
+    const saved = h.persistedCalls.filter(call => call[1] === 'assistant');
+    expect(saved).toHaveLength(1);
+    expect(saved[0][2]).toBe('The answer before provider cleanup.');
+    const terminalTypes = h.sidebarMessages.filter(message => ['responseComplete', 'error', 'authError'].includes(message.type)).map(message => message.type);
+    expect(terminalTypes).toEqual([terminal === 'done' ? 'responseComplete' : terminal === 'auth_error' ? 'authError' : 'error']);
+    expect(host._runningPanels.has('sidebar')).toBe(false);
+    if (terminal !== 'done') { expect(successful).not.toHaveBeenCalled(); expect(drain).not.toHaveBeenCalled(); }
+  });
+
+  it('retains a completed response once if an engagement hook throws after completion', async () => {
+    const host = h.provider as any;
+    vi.spyOn(host._engagementManager, 'trackSuccessfulResponse').mockImplementation(() => { throw new Error('Engagement bookkeeping unavailable'); });
+    h.setStream([{ type: 'text', content: 'The completed code review.' }, { type: 'done' }]);
+    await send(h);
+    expect(h.persistedCalls.filter(call => call[1] === 'assistant')).toHaveLength(1);
+    expect(h.sidebarMessages.filter(message => message.type === 'responseComplete')).toHaveLength(1);
+    expect(h.sidebarMessages.filter(message => message.type === 'error')).toHaveLength(0);
+    expect(host._runningPanels.has('sidebar')).toBe(false);
+    expect(host._canvasTurnPanels.has('sidebar')).toBe(false);
+  });
+
+  it('delivers the completed response when optional compaction history bookkeeping throws', async () => {
+    const host = h.provider as any;
+    vi.spyOn(host._compactionManager, 'appendHistory').mockImplementation(() => { throw new Error('Optional history unavailable'); });
+    h.setStream([{ type: 'text', content: 'The saved code review.' }, { type: 'done' }]);
+    await send(h);
+    expect(h.persistedCalls.filter(call => call[1] === 'assistant')).toHaveLength(1);
+    expect(h.sidebarMessages.filter(message => message.type === 'responseComplete')).toHaveLength(1);
+    expect(h.sidebarMessages.filter(message => message.type === 'error')).toHaveLength(0);
+    expect(host._runningPanels.has('sidebar')).toBe(false);
+  });
+
+  it('does not idle or close a replacement turn when older exit-plan handling finishes late', async () => {
+    const host = h.provider as any;
+    let planStarted!: () => void; const planReady = new Promise<void>(resolve => { planStarted = resolve; });
+    let finishPlan!: () => void; const planWait = new Promise<void>(resolve => { finishPlan = resolve; });
+    let newStarted!: () => void; const newReady = new Promise<void>(resolve => { newStarted = resolve; });
+    let finishNew!: () => void; const newWait = new Promise<void>(resolve => { finishNew = resolve; });
+    vi.spyOn(host, '_handleExitPlanMode').mockImplementation(async () => { planStarted(); await planWait; });
+    const idle = vi.spyOn(host._lifecycleManager, 'markIdle');
+    const replacementCanvas = { done: vi.fn(), fail: vi.fn() };
+    let calls = 0;
+    host._providerManager.sendMessage.mockImplementation(async function* () {
+      if (++calls === 1) {
+        yield { type: 'text', content: 'The first plan.' };
+        yield { type: 'exit_plan_mode', planFilePath: null };
+        yield { type: 'done' };
+      } else {
+        host._canvasTurnJobs.set('sidebar', replacementCanvas);
+        newStarted(); await newWait;
+        yield { type: 'text', content: 'The replacement answer.' };
+        yield { type: 'done' };
+      }
+    });
+    let first: Promise<void> | undefined; let second: Promise<void> | undefined;
+    try {
+      first = send(h, 'Make a plan'); await planReady;
+      second = send(h, 'Now review the cache'); await newReady;
+      const idleBefore = idle.mock.calls.length;
+      const messageBoundary = h.sidebarMessages.length;
+      finishPlan(); await first;
+      expect(idle.mock.calls).toHaveLength(idleBefore);
+      expect(replacementCanvas.done).not.toHaveBeenCalled();
+      expect(replacementCanvas.fail).not.toHaveBeenCalled();
+      expect(host._canvasTurnJobs.get('sidebar')).toBe(replacementCanvas);
+      expect(host._canvasTurnPanels.has('sidebar')).toBe(true);
+      expect(host._runningPanels.has('sidebar')).toBe(true);
+      expect(h.sidebarMessages.slice(messageBoundary).some(message => ['responseComplete', 'error', 'authError'].includes(message.type))).toBe(false);
+      finishNew(); await second;
+      expect(replacementCanvas.done).toHaveBeenCalledOnce();
+      expect(h.persistedCalls.filter(call => call[1] === 'assistant').map(call => call[2])).toEqual(['The first plan.', 'The replacement answer.']);
+    } finally { finishPlan(); finishNew(); await first; await second; }
+  });
+
+  it('preserves a delayed channel batch when a queued composer follow-up starts first', async () => {
+    const host = h.provider as any;
+    vi.useFakeTimers();
+    const prompts: string[] = [];
+    host._providerManager.sendMessage.mockImplementation(async function* (content: string) {
+      prompts.push(content);
+      if (prompts.length === 1) {
+        host._channelBridge._queuedMessages.set('sidebar', [
+          { channelId: 'controlled-channel', channelName: 'Team Chat', sender: 'Alice', content: 'CHANNEL_FIRST', timestamp: 1 },
+          { channelId: 'controlled-channel', channelName: 'Team Chat', sender: 'Bob', content: 'CHANNEL_SECOND', timestamp: 2 },
+        ]);
+      }
+      yield { type: 'text', content: 'Finished this controlled turn.' }; yield { type: 'done' };
+    });
+    try {
+      await send(h, 'INITIAL_TURN');
+      // The webview drains its own queue immediately on responseComplete,
+      // before the host's 500ms channel delay expires.
+      await send(h, 'LOCAL_QUEUED_FOLLOWUP');
+      await vi.advanceTimersByTimeAsync(600);
+      expect(prompts).toHaveLength(3);
+      expect(prompts[0]).toContain('INITIAL_TURN'); expect(prompts[1]).toContain('LOCAL_QUEUED_FOLLOWUP');
+      expect(prompts[2]).toContain('[Via Team Chat from Alice]: CHANNEL_FIRST');
+      expect(prompts[2]).toContain('[Via Team Chat from Bob]: CHANNEL_SECOND');
+      expect(prompts[2].indexOf('CHANNEL_FIRST')).toBeLessThan(prompts[2].indexOf('CHANNEL_SECOND'));
+      expect(host._channelBridge.drainQueuedMessages('sidebar')).toEqual([]);
+    } finally { host._delayedChannelTurns.cancelPanel('sidebar'); vi.useRealTimers(); }
+  });
+
+  it('preserves every attributed channel input across 50 competing composer queue bursts', async () => {
+    const host = h.provider as any;
+    vi.useFakeTimers();
+    const prompts: string[] = [];
+    let burst = 0;
+    host._providerManager.sendMessage.mockImplementation(async function* (content: string) {
+      prompts.push(content);
+      if (content.includes(`START_BURST_${burst}`)) {
+        host._channelBridge._queuedMessages.set('sidebar', Array.from({ length: 3 }, (_, index) => ({
+          channelId: 'controlled-channel', channelName: 'Team Chat', sender: `Reviewer ${index}`,
+          content: `BURST_${burst}_AMENDMENT_${index}`, timestamp: burst * 10 + index,
+        })));
+      }
+      yield { type: 'text', content: 'Controlled reply.' }; yield { type: 'done' };
+    });
+    try {
+      for (burst = 0; burst < 50; burst++) {
+        await send(h, `START_BURST_${burst}`);
+        await send(h, `LOCAL_FOLLOWUP_${burst}`);
+        await vi.advanceTimersByTimeAsync(600);
+        const actual = prompts.slice(burst * 3, burst * 3 + 3);
+        expect(actual).toHaveLength(3);
+        expect(actual[0]).toContain(`START_BURST_${burst}`); expect(actual[1]).toContain(`LOCAL_FOLLOWUP_${burst}`);
+        for (let index = 0; index < 3; index++) {
+          expect(actual[2].split(`BURST_${burst}_AMENDMENT_${index}`)).toHaveLength(2);
+          expect(actual[2]).toContain(`[Via Team Chat from Reviewer ${index}]`);
+        }
+        expect(host._channelBridge.drainQueuedMessages('sidebar')).toEqual([]);
+      }
+      expect(prompts).toHaveLength(150);
+    } finally { host._delayedChannelTurns.cancelPanel('sidebar'); vi.useRealTimers(); }
+  });
+
+  it('still discards a delayed channel batch on explicit Stop before a fresh local turn', async () => {
+    const host = h.provider as any;
+    host._providerManager.getAllProviderIds = () => [];
+    host._brainstormManager = { cancelSession: vi.fn() };
+    vi.useFakeTimers();
+    const prompts: string[] = [];
+    host._providerManager.sendMessage.mockImplementation(async function* (content: string) {
+      prompts.push(content);
+      if (prompts.length === 1) { host._channelBridge._queuedMessages.set('sidebar', [{ channelId: 'test', channelName: 'Team Chat', content: 'CANCELLED_CHANNEL_INPUT', timestamp: 1 }]); }
+      yield { type: 'text', content: 'Controlled reply.' }; yield { type: 'done' };
+    });
+    try {
+      await send(h, 'First local task');
+      await host._handleMessage({ type: 'cancelRequest', panelId: 'sidebar' });
+      await send(h, 'Fresh task after Stop'); await vi.advanceTimersByTimeAsync(600);
+      expect(prompts).toHaveLength(2);
+      expect(prompts.join('\n')).not.toContain('CANCELLED_CHANNEL_INPUT');
+    } finally { host._delayedChannelTurns.cancelPanel('sidebar'); vi.useRealTimers(); }
+  });
+
+  it('rejects an obsolete second-opinion action without cancelling the current conversation turn', async () => {
+    const host = h.provider as any;
+    host._panelStates.get('sidebar').currentConversationId = 'current-chat';
+    host._conversationManager.getConversation = () => ({ id: 'current-chat', messages: [] });
+    host._providerManager.getProvider = (id: string) => id === 'openai-codex' ? { id, defaultModel: 'codex-test' } : undefined;
+    host._providerManager.getAllProviderIds = () => [];
+    const cancel = vi.spyOn(host._providerManager, 'cancelRequest');
+    let started!: () => void; const ready = new Promise<void>(resolve => { started = resolve; });
+    let finish!: () => void; const waiting = new Promise<void>(resolve => { finish = resolve; });
+    host._providerManager.sendMessage.mockImplementation(async function* () {
+      yield { type: 'text', content: 'The current answer is still being written.' };
+      started(); await waiting;
+      yield { type: 'text', content: ' Finished correctly.' }; yield { type: 'done' };
+    });
+    const active = send(h, 'Current conversation task');
+    try {
+      await ready; const generation = host._mystiRunGen.get('sidebar'); const boundary = h.sidebarMessages.length;
+      await host._handleSendMessage({ content: 'Old opinion request', context: [], settings: { ...SETTINGS },
+        secondOpinion: { provider: 'openai-codex', messageId: 'question-from-previous-chat' } }, 'sidebar');
+      expect(cancel).not.toHaveBeenCalled();
+      expect(host._mystiRunGen.get('sidebar')).toBe(generation);
+      expect(host._runningPanels.has('sidebar')).toBe(true);
+      const feedback = h.sidebarMessages.slice(boundary);
+      expect(feedback.some(message => message.type === 'systemNotice')).toBe(true);
+      expect(feedback.some(message => ['error', 'authError', 'responseComplete', 'requestCancelled'].includes(message.type))).toBe(false);
+      finish(); await active;
+      expect(getAssistantPersistCall(h)[2]).toBe('The current answer is still being written. Finished correctly.');
+    } finally { finish(); await active; }
+  });
+
+  it.each([false, true])('waits for the selected model to clear a previous custom override before sending (later effort update: %s)', async laterEffort => {
+    const host = h.provider as any;
+    setMockConfig('claudeCodeModel', 'old-custom-override');
+    const configuration = (await import('vscode')).workspace.getConfiguration('mysti');
+    const update = vi.spyOn(configuration, 'update').mockImplementation(async (key, value) => { setMockConfig(key, value); });
+    let release!: () => void;
+    host._extensionContext.globalState.update = vi.fn((key: string) => key === 'mysti.providerModelSelections'
+      ? new Promise<void>(resolve => { release = resolve; })
+      : Promise.resolve());
+    const selected = 'claude-selected-model';
+    const wire: string[] = [];
+    host._providerManager.sendMessage.mockImplementation(async function* (_prompt: string, _context: unknown, settings: Settings) {
+      const configuration = (await import('vscode')).workspace.getConfiguration('mysti');
+      wire.push(configuration.get<string>('claudeCodeModel', '') || settings.model);
+      yield { type: 'text', content: 'Selected model answered.' }; yield { type: 'done' };
+    });
+    const selection = host._handleUpdateSettings({ model: selected, customModel: '' }, 'sidebar');
+    if (laterEffort) { await host._handleUpdateSettings({ effortLevel: 'high' }, 'sidebar'); }
+    const sending = host._handleSendMessage({ content: 'Use my selected model', context: [], settings: { ...SETTINGS, model: selected } }, 'sidebar');
+    await new Promise<void>(resolve => setImmediate(resolve));
+    release();
+    await Promise.all([selection, sending]);
+    update.mockRestore();
+    expect(wire).toEqual([selected]);
+  });
+
+  it.each(['stop', 'replace conversation', 'close panel'])('does not dispatch after %s while model selection is saving', async action => {
+    const host = h.provider as any;
+    let release!: () => void;
+    host._extensionContext.globalState.update = vi.fn((key: string) => key === 'mysti.providerModelSelections'
+      ? new Promise<void>(resolve => { release = resolve; }) : Promise.resolve());
+    const selection = host._handleUpdateSettings({ model: 'claude-selected-model' }, 'sidebar');
+    const sending = send(h);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    if (action === 'stop') { host._cancelledPanels.add('sidebar'); }
+    else if (action === 'replace conversation') { host._panelStates.get('sidebar').currentConversationId = 'replacement'; }
+    else { host._panelStates.delete('sidebar'); }
+    release();
+    await Promise.all([selection, sending]);
+    expect(host._providerManager.sendMessage).not.toHaveBeenCalled();
+    expect(h.persistedCalls).toHaveLength(0);
+  });
+
+  it('reports a failed selection save and avoids dispatching with the previous model', async () => {
+    const host = h.provider as any;
+    let reject!: (error: Error) => void;
+    host._extensionContext.globalState.update = vi.fn((key: string) => key === 'mysti.providerModelSelections'
+      ? new Promise<void>((_resolve, fail) => { reject = fail; }) : Promise.resolve());
+    const selection = host._handleUpdateSettings({ model: 'claude-selected-model' }, 'sidebar');
+    const rejected = expect(selection).rejects.toThrow('Settings storage unavailable');
+    const sending = send(h);
+    reject(new Error('Settings storage unavailable'));
+    await Promise.all([rejected, sending]);
+    expect(host._providerManager.sendMessage).not.toHaveBeenCalled();
+    expect(h.sidebarMessages.filter(message => message.type === 'settingsError')).toHaveLength(1);
+    expect(h.sidebarMessages.filter(message => message.type === 'requestCancelled')).toHaveLength(1);
+  });
+
+  it.each(['done', 'auth_error'])('preserves the dispatched model on a %s receipt after an active-turn settings change', async terminal => {
+    const host = h.provider as any;
+    setMockConfig('claudeCodeModel', 'original-model');
+    const configuration = (await import('vscode')).workspace.getConfiguration('mysti');
+    host._providerManager.getProviderInstance = () => ({
+      capabilities: { emitsUsage: true },
+      getEffectiveModelForSettings: () => configuration.get('claudeCodeModel', ''),
+    });
+    const wire: string[] = [];
+    host._providerManager.sendMessage.mockImplementation(async function* () {
+      wire.push(configuration.get<string>('claudeCodeModel', ''));
+      yield { type: 'text', content: 'Original model answered.' };
+      setMockConfig('claudeCodeModel', 'next-turn-model');
+      yield { type: terminal, content: terminal === 'auth_error' ? 'Session expired' : undefined };
+    });
+    await send(h);
+    expect(wire).toEqual(['original-model']);
+    expect(getAssistantPersistCall(h)[6].model).toBe('original-model');
+  });
+
+  it('ends a rejected authentication turn once without completing or automatically continuing it', async () => {
+    const host = h.provider as any;
+    const successful = vi.spyOn(host._engagementManager, 'trackSuccessfulResponse');
+    const idle = vi.spyOn(host._lifecycleManager, 'markIdle');
+    const drain = vi.spyOn(host._channelBridge, 'drainQueuedMessages');
+    h.setStream([
+      { type: 'auth_error', content: 'Session expired', providerName: 'Claude Code', authCommand: 'claude auth login' },
+      { type: 'auth_error', content: 'Session expired' },
+      { type: 'done' },
+    ]);
+    await send(h);
+    expect(h.sidebarMessages.filter(message => message.type === 'authError')).toHaveLength(1);
+    expect(h.sidebarMessages.filter(message => message.type === 'responseComplete')).toHaveLength(0);
+    expect(h.persistedCalls.filter(call => call[1] === 'assistant')).toHaveLength(0);
+    expect(successful).not.toHaveBeenCalled();
+    expect(drain).not.toHaveBeenCalled();
+    expect(host._runningPanels.has('sidebar')).toBe(false);
+    expect(idle).toHaveBeenCalledWith('sidebar');
+
+    h.sidebarMessages.length = 0;
+    h.setStream([{ type: 'text', content: 'The restored account answered.' }, { type: 'done' }]);
+    await send(h, 'Continue the original task after sign-in');
+    expect(h.sidebarMessages.filter(message => message.type === 'responseComplete')).toHaveLength(1);
+    expect(successful).toHaveBeenCalledOnce();
+  });
+
+  it('persists useful partial output and marks unfinished tools failed when authentication expires mid-stream', async () => {
+    h.setStream([
+      { type: 'text', content: 'The retry bug is in the exponent.' },
+      { type: 'tool_use', toolCall: { id: 'read-auth', name: 'Read', input: { file_path: '/src/retry.ts' }, status: 'running' } },
+      { type: 'auth_error', content: 'Session expired', providerName: 'Claude Code' },
+    ]);
+    await send(h);
+    const persisted = getAssistantPersistCall(h);
+    expect(persisted[2]).toBe('The retry bug is in the exponent.');
+    expect(persisted[6]).toMatchObject({ provider: 'claude-code', model: SETTINGS.model,
+      toolCalls: [{ id: 'read-auth', status: 'failed' }] });
+    const failure = h.sidebarMessages.find(message => message.type === 'authError')?.payload;
+    expect(failure.message).toMatchObject({ role: 'assistant', content: persisted[2], provider: 'claude-code' });
+    expect(h.sidebarMessages.some(message => message.type === 'responseComplete')).toBe(false);
   });
 
   it('measures fill against the window the backend REPORTED, and remembers it for the next turn', async () => {
@@ -360,7 +986,7 @@ describe('ChatViewProvider done-handler persistence (Plan 02 Phase 3)', () => {
     ]);
   });
 
-  it('marks tool calls that never received a tool_result as completed at persist time (no eternal spinners)', async () => {
+  it('marks tool calls that never received a tool_result as unconfirmed without claiming success', async () => {
     h.setStream([
       { type: 'tool_use', toolCall: { id: 'tu-2', name: 'Read', input: { file_path: '/b.ts' }, status: 'running' } },
       { type: 'text', content: 'ok' },
@@ -371,7 +997,7 @@ describe('ChatViewProvider done-handler persistence (Plan 02 Phase 3)', () => {
 
     const [, , , , , , extras] = getAssistantPersistCall(h);
     expect(extras.toolCalls).toHaveLength(1);
-    expect(extras.toolCalls[0].status).toBe('completed');
+    expect(extras.toolCalls[0].status).toBe('unconfirmed');
   });
 
   it('falls back to legacy plain-string thinking when the provider thinkingStyle is unknown', async () => {
@@ -488,6 +1114,77 @@ describe('ChatViewProvider._runMystiAgentic core loop (review[19])', () => {
   let h: Harness;
   beforeEach(() => { clearMockConfig(); h = createHarness(); });
   afterEach(() => { h.dispose(); });
+
+  it.each(['model', 'footer'] as const)('PC08 deletion during final %s metadata cannot publish a completed old answer', async phase => {
+    const host = h.provider as any;
+    const conversations = new Map(['old', 'other'].map(id => [id, { id, messages: [] }]));
+    host._panelStates.get('sidebar').currentConversationId = 'old';
+    Object.assign(host._conversationManager, {
+      getConversation: (id: string) => conversations.get(id), getAllConversations: () => [...conversations.values()],
+      deleteConversation: (id: string) => conversations.delete(id),
+      createNewConversation: () => { const value = { id: 'fresh', messages: [] }; conversations.set(value.id, value); return value; },
+    });
+    Object.assign(host._providerManager, { clearSession: vi.fn(), getAllProviderIds: () => [] });
+    host._brainstormManager = { cancelSession: vi.fn(), clearSession: vi.fn() };
+    host._availableMystiBackends = () => [];
+    let reached!: () => void; const boundaryReached = new Promise<void>(resolve => { reached = resolve; });
+    let release!: () => void; const stalled = new Promise<void>(resolve => { release = resolve; });
+    let modelCalls = 0;
+    host._mystiCoordinator = {
+      status: () => ({ ready: true }), supportsToolCalls: async () => false,
+      resolveCoordinatorModel: async () => {
+        if (++modelCalls === 2 && phase === 'model') { reached(); await stalled; }
+        return 'coordinator-model';
+      },
+      contextWindowOf: async () => { if (phase === 'footer') { reached(); await stalled; } return 100000; },
+      stream: async function* () { yield { text: 'Completed old answer' }; yield { done: true }; },
+    };
+    const sending = host._handleSendMessage({ content: 'Review a retry design', context: [], settings: { ...SETTINGS, provider: 'mysti' } }, 'sidebar');
+    try {
+      await boundaryReached;
+      await host._handleMessage({ type: 'deleteConversation', panelId: 'sidebar', payload: { id: 'old' } });
+      const postedBefore = h.sidebarMessages.length; const savedBefore = h.persistedCalls.length;
+      release(); await sending;
+      expect(h.sidebarMessages.slice(postedBefore).filter(message => ['responseComplete', 'requestCancelled', 'contextWindowInfo', 'error'].includes(message.type))).toEqual([]);
+      expect(h.persistedCalls.slice(savedBefore)).toEqual([]);
+    } finally { release(); await sending; await host._agentInitPromise; }
+  });
+
+  it.each(['switchConversation', 'newConversation', 'deleteConversation'] as const)(
+    'PC08 %s invalidates a cancelled coordinator tail before it can publish into the next view', async type => {
+      const host = h.provider as any;
+      const conversations = new Map(['old', 'other'].map(id => [id, { id, messages: [] }]));
+      host._panelStates.get('sidebar').currentConversationId = 'old';
+      Object.assign(host._conversationManager, {
+        getConversation: (id: string) => conversations.get(id),
+        getAllConversations: () => [...conversations.values()],
+        deleteConversation: (id: string) => conversations.delete(id),
+        createNewConversation: () => { const c = { id: 'fresh', messages: [] }; conversations.set(c.id, c); return c; },
+      });
+      Object.assign(host._providerManager, { clearSession: vi.fn(), getAllProviderIds: () => [] });
+      host._brainstormManager = { cancelSession: vi.fn(), clearSession: vi.fn() };
+      host._lifecycleManager.markIdle = vi.fn();
+      host._availableMystiBackends = () => [];
+      let started!: () => void; const active = new Promise<void>(resolve => { started = resolve; });
+      let release!: () => void; const stalled = new Promise<void>(resolve => { release = resolve; });
+      host._mystiCoordinator = {
+        status: () => ({ ready: true }), resolveCoordinatorModel: async () => 'coordinator-model',
+        supportsToolCalls: async () => false,
+        stream: async function* () { yield { text: 'Old coordinator partial' }; started(); await stalled; yield { done: true }; },
+      };
+      const sending = host._handleSendMessage({ content: 'Review a retry design', context: [], settings: { ...SETTINGS, provider: 'mysti' } }, 'sidebar');
+      try {
+        await active;
+        await host._handleMessage({ type, panelId: 'sidebar', payload: { id: type === 'deleteConversation' ? 'old' : 'other' } });
+        const boundary = h.sidebarMessages.length;
+        host._lifecycleManager.markIdle.mockClear();
+        release(); await sending;
+        expect(h.sidebarMessages.slice(boundary).filter(message => ['requestCancelled', 'responseComplete', 'error'].includes(message.type))).toEqual([]);
+        expect(h.persistedCalls.filter(call => call[1] === 'assistant')).toEqual([]);
+        expect(host._lifecycleManager.markIdle).not.toHaveBeenCalled();
+      } finally { release(); await sending; await host._agentInitPromise; }
+    },
+  );
 
   it.each(['event', 'throw'] as const)('routes a coordinator %s failure to the same actionable credential card', async mode => {
     const provider = h.provider as any;
@@ -1112,7 +1809,9 @@ describe('ChatViewProvider._runMystiAgentic core loop (review[19])', () => {
     await provider._handleSendMessage({ content: 'go', context: [], settings: { ...SETTINGS, provider: 'mysti' } }, 'sidebar');
     const complete = provider._mystiCoordinator.complete;
     expect(complete).toHaveBeenCalledTimes(1);
-    expect(complete.mock.calls[0][1]).toEqual({ model: 'anthropic/claude-opus-5.5', maxTokens: 4096, signal: expect.any(AbortSignal) });
+    expect(complete.mock.calls[0][1]).toEqual({ model: 'anthropic/claude-opus-5.5', maxTokens: 4096,
+      signal: expect.any(AbortSignal), isCancelled: expect.any(Function), resolveMessages: undefined });
+    expect(complete.mock.calls[0][1].isCancelled()).toBe(false);
     const fed = String(parentCalls[1].at(-1).content);
     expect(fed).toContain('## Result from "advisor (anthropic/claude-opus-5.5)"');
     expect(fed).toContain('use a queue');
@@ -1408,5 +2107,474 @@ describe('explicit mentions outrank the selected agent', () => {
       expect(h.sidebarMessages.filter(m => m.type === 'collaborator' && m.payload.type === 'collab_started')).toHaveLength(2);
       expect(host._runningPanels.has('sidebar')).toBe(false);
     } finally { await host._agentInitPromise; h.dispose(); }
+  });
+});
+
+describe('developer collaboration conversations', () => {
+  async function collaborationHarness() {
+    clearMockConfig();
+    const { MockProviderManager } = await import('../helpers/mockProviderManager');
+    const { MentionRouter } = await import('../../src/managers/MentionRouter');
+    const { CollaboratorPool } = await import('../../src/services/CollaboratorPool');
+    const { CollaborationManager } = await import('../../src/managers/CollaborationManager');
+    const h = createHarness();
+    const host = h.provider as any;
+    const pm = new MockProviderManager();
+    for (const id of ['claude-code', 'openai-codex', 'google-gemini']) { pm.setProviderAvailable(id); }
+    Object.assign(pm, {
+      getProvider: () => undefined,
+      getAllProviderIds: () => ['claude-code', 'openai-codex', 'google-gemini'],
+      clearSession: vi.fn(),
+    });
+    host._providerManager = pm;
+    host._mentionRouter = new MentionRouter(pm as any);
+    host._collaborationManager = new CollaborationManager(new CollaboratorPool(pm as any), { buildRoleContext: async () => null } as any);
+    host._brainstormManager = { cancelSession: vi.fn(), clearSession: vi.fn() };
+    const conversations = new Map(['work', 'other', 'replacement'].map(id => [id, { id, messages: [] as any[] }]));
+    host._panelStates.get('sidebar').currentConversationId = 'work';
+    host._conversationManager.getConversation = (id: string) => conversations.get(id);
+    host._conversationManager.createNewConversation = () => conversations.get('replacement');
+    host._conversationManager.deleteConversation = (id: string) => conversations.delete(id);
+    host._conversationManager.getAllConversations = () => [...conversations.values()];
+    const persist = host._conversationManager.addMessageToConversation.getMockImplementation();
+    host._conversationManager.addMessageToConversation.mockImplementation((...args: any[]) => {
+      const message = persist(...args);
+      conversations.get(args[0])?.messages.push(message);
+      return message;
+    });
+    return { ...h, host, pm, conversations };
+  }
+
+  it('carries design, review and revision across three turns with Claude, Codex and Gemini', async () => {
+    const h = await collaborationHarness();
+    let claudeTurns = 0;
+    let codexTurns = 0;
+    h.pm.streamFactories.set('claude-code', (_id, prompt) => (async function* () {
+      if (++claudeTurns === 2) { expect(prompt).toContain('REQUIRE_EMPTY_INPUT_CHECK'); }
+      yield { type: 'text', content: claudeTurns === 1 ? 'PARSER_DESIGN' : 'PARSER_REVISION' };
+      yield { type: 'done' };
+    })());
+    h.pm.streamFactories.set('openai-codex', (_id, prompt) => (async function* () {
+      if (++codexTurns === 1) { expect(prompt).toContain('PARSER_DESIGN'); }
+      else { expect(prompt).toContain('GEMINI_VERIFIED'); }
+      yield { type: 'text', content: codexTurns === 1 ? 'REQUIRE_EMPTY_INPUT_CHECK' : 'FINAL_HANDOFF' };
+      yield { type: 'done' };
+    })());
+    h.pm.streamFactories.set('google-gemini', (_id, prompt) => (async function* () {
+      expect(prompt).toContain('PARSER_REVISION');
+      yield { type: 'text', content: 'GEMINI_VERIFIED' }; yield { type: 'done' };
+    })());
+    try {
+      await send(h, '@claude design a parser, then @codex review it');
+      await send(h, '@claude implement the review feedback, then @gemini review the revision');
+      await send(h, '@codex summarize the decisions and remaining checks');
+      expect(h.pm.sendCalls.map(c => c.providerId)).toEqual(['claude-code', 'openai-codex', 'claude-code', 'google-gemini', 'openai-codex']);
+      const answers = h.conversations.get('work')!.messages.filter(m => m.role === 'assistant');
+      expect(answers).toHaveLength(3);
+      expect(answers.map(m => m.participants)).toEqual([
+        ['claude-code', 'openai-codex'], ['claude-code', 'google-gemini'], ['openai-codex'],
+      ]);
+      expect(answers[2].content).toContain('FINAL_HANDOFF');
+      expect(new Set(h.pm.sendCalls.map(c => c.panelId)).size).toBe(5);
+      expect(h.pm.disposedChildren).toHaveLength(5);
+    } finally { await h.host._agentInitPromise; h.dispose(); }
+  });
+
+  it.each(['switchConversation', 'deleteConversation', 'cancelRequest'] as const)('%s stops old assignments before a fresh conversation turn', async type => {
+    const h = await collaborationHarness();
+    let started!: () => void;
+    const active = new Promise<void>(resolve => { started = resolve; });
+    let release!: () => void;
+    const stalled = new Promise<void>(resolve => { release = resolve; });
+    h.pm.streamFactories.set('claude-code', () => (async function* () {
+      yield { type: 'text', content: 'OLD_PARTIAL' };
+      started(); await stalled;
+      yield { type: 'text', content: 'OLD_LATE_RESULT' }; yield { type: 'done' };
+    })());
+    h.pm.setProviderChunks('openai-codex', [{ type: 'text', content: 'NEW_ANSWER' }, { type: 'done' }]);
+    let old: Promise<void> | undefined;
+    try {
+      old = send(h, '@claude explain the parser, then @codex review it');
+      await active;
+      await h.host._handleMessage({ type, panelId: 'sidebar', payload: { id: type === 'switchConversation' ? 'other' : 'work' } });
+      await old;
+      const boundary = h.sidebarMessages.length;
+      await send(h, '@codex explain the cache');
+      release();
+      await Promise.resolve();
+      expect(h.pm.sendCalls.map(c => c.providerId)).toEqual(['claude-code', 'openai-codex']);
+      expect(h.persistedCalls.filter(c => c[1] === 'assistant')).toHaveLength(1);
+      expect(h.persistedCalls.find(c => c[1] === 'assistant')?.[2]).toContain('NEW_ANSWER');
+      expect(JSON.stringify(h.sidebarMessages.slice(boundary))).not.toContain('OLD_LATE_RESULT');
+      expect(h.host._runningPanels.has('sidebar')).toBe(false);
+    } finally { release(); await old; await h.host._agentInitPromise; h.dispose(); }
+  });
+
+  it.each(['text', 'error', 'closed'] as const)('ignores a superseded plain provider’s late %s while the replacement turn is active', async late => {
+    clearMockConfig();
+    const h = createHarness(); const host = h.provider as any;
+    host._providerManager.getAllProviderIds = () => [];
+    const closeCanvas = vi.spyOn(host, '_endCanvasTurn');
+    let startOld!: () => void; const oldStarted = new Promise<void>(r => { startOld = r; });
+    let releaseOld!: () => void; const oldWait = new Promise<void>(r => { releaseOld = r; });
+    let startNew!: () => void; const newStarted = new Promise<void>(r => { startNew = r; });
+    let releaseNew!: () => void; const newWait = new Promise<void>(r => { releaseNew = r; });
+    let calls = 0;
+    host._providerManager.sendMessage.mockImplementation(async function* () {
+      if (++calls === 1) {
+        startOld(); await oldWait;
+        if (late === 'error') { throw new Error('STALE_FAILURE'); }
+        if (late === 'closed') { return; }
+        yield { type: 'text', content: 'STALE_ANSWER' };
+      } else {
+        startNew(); await newWait;
+        yield { type: 'text', content: 'CURRENT_ANSWER' };
+      }
+      yield { type: 'done' };
+    });
+    let first: Promise<void> | undefined; let second: Promise<void> | undefined;
+    try {
+      first = send(h, 'Explain the parser'); await oldStarted;
+      second = send(h, 'Actually, explain the cache'); await newStarted;
+      const boundary = h.sidebarMessages.length;
+      const closedBefore = closeCanvas.mock.calls.length;
+      releaseOld(); await first;
+      expect(closeCanvas.mock.calls).toHaveLength(closedBefore);
+      expect(host._runningPanels.has('sidebar')).toBe(true);
+      expect(JSON.stringify(h.sidebarMessages.slice(boundary))).not.toContain('STALE_');
+      expect(h.persistedCalls.filter(c => c[1] === 'assistant')).toHaveLength(0);
+      releaseNew(); await second;
+      expect(getAssistantPersistCall(h)[2]).toBe('CURRENT_ANSWER');
+    } finally { releaseOld(); releaseNew(); await first; await second; await host._agentInitPromise; h.dispose(); }
+  });
+
+  it('suppresses a late plain-provider error after switching chats without sending a new message', async () => {
+    clearMockConfig();
+    const h = createHarness(); const host = h.provider as any;
+    Object.assign(host._providerManager, { getAllProviderIds: () => [], clearSession: vi.fn() });
+    host._brainstormManager = { cancelSession: vi.fn(), clearSession: vi.fn() };
+    const otherConversation = { id: 'other', messages: [] };
+    host._conversationManager.getConversation = () => otherConversation;
+    let started!: () => void; const active = new Promise<void>(r => { started = r; });
+    let release!: () => void; const stalled = new Promise<void>(r => { release = r; });
+    host._providerManager.sendMessage.mockImplementation(async function* () {
+      started(); await stalled; throw new Error('OLD_CONVERSATION_FAILURE');
+    });
+    let sending: Promise<void> | undefined;
+    try {
+      sending = send(h, 'Explain the parser'); await active;
+      await host._handleMessage({ type: 'switchConversation', panelId: 'sidebar', payload: { id: 'other' } });
+      const boundary = h.sidebarMessages.length;
+      release(); await sending;
+      expect(JSON.stringify(h.sidebarMessages.slice(boundary))).not.toContain('OLD_CONVERSATION_FAILURE');
+      expect(h.persistedCalls.filter(c => c[1] === 'assistant')).toHaveLength(0);
+      expect(host._runningPanels.has('sidebar')).toBe(false);
+    } finally { release(); await sending; await host._agentInitPromise; h.dispose(); }
+  });
+});
+
+// PC-10: drive real host streaming and an actual conversation store through a
+// fork. A detached prefix must not inherit the superseded provider's tail.
+describe('conversation fork while a provider response is completing', () => {
+  it.each(['text', 'error'] as const)('keeps the old %s tail out of both the fork and its fresh response', async tail => {
+    clearMockConfig();
+    const { ConversationManager } = await import('../../src/managers/ConversationManager');
+    const h = createHarness(); const host = h.provider as any;
+    const store = new Map<string, unknown>();
+    const manager = new ConversationManager({ globalState: {
+      get: (key: string) => store.get(key),
+      update: async (key: string, value: unknown) => { store.set(key, JSON.parse(JSON.stringify(value))); },
+    } } as any);
+    const original = manager.getCurrentConversation()!;
+    manager.addMessageToConversation(original.id, 'user', 'Original retry requirement');
+    manager.addMessageToConversation(original.id, 'assistant', 'Use retryBaseMs=73');
+    host._conversationManager = manager;
+    host._panelStates.get('sidebar').currentConversationId = original.id;
+    Object.assign(host._providerManager, { getAllProviderIds: () => [], clearSession: vi.fn() });
+    host._brainstormManager = { cancelSession: vi.fn(), clearSession: vi.fn() };
+    host._compactionManager.resetUsage = vi.fn();
+    let ready!: () => void; const started = new Promise<void>(r => { ready = r; });
+    let release!: () => void; const delayed = new Promise<void>(r => { release = r; });
+    let calls = 0;
+    host._providerManager.sendMessage.mockImplementation(async function* () {
+      if (++calls === 1) {
+        yield { type: 'text', content: 'Review in progress' };
+        ready(); await delayed;
+        if (tail === 'error') { throw new Error('STALE_FORK_FAILURE'); }
+        yield { type: 'text', content: 'STALE_FORK_ANSWER' };
+      } else { yield { type: 'text', content: 'BRANCH_ALTERNATE_REQUIREMENT' }; }
+      yield { type: 'done' };
+    });
+    let sending: Promise<void> | undefined;
+    try {
+      sending = send(h, 'Review original retry behavior'); await started;
+      const before = JSON.stringify(original);
+      const anchor = original.messages.at(-1)!;
+      await host._handleMessage({ type: 'forkConversation', panelId: 'sidebar', payload: { messageId: anchor.id, conversationId: original.id } });
+      const branchId = host._panelStates.get('sidebar').currentConversationId;
+      expect(branchId).not.toBe(original.id);
+      const branch = manager.getConversation(branchId)!;
+      expect(branch.messages).toEqual(original.messages);
+      const boundary = h.sidebarMessages.length;
+      await send(h, 'Use bounded jitter on this branch');
+      release(); await sending;
+      expect(JSON.stringify(original)).toBe(before);
+      expect(branch.messages.at(-1)!.content).toBe('BRANCH_ALTERNATE_REQUIREMENT');
+      expect(branch.messages).toHaveLength(5);
+      expect(JSON.stringify(h.sidebarMessages.slice(boundary))).not.toContain('STALE_FORK_');
+      expect(host._runningPanels.has('sidebar')).toBe(false);
+    } finally { release(); await sending; await host._agentInitPromise; h.dispose(); }
+  });
+});
+
+// PC-11: imported history must replace native history without inheriting a late provider tail.
+describe('conversation import while a provider response is completing', () => {
+  it.each(['text', 'error'] as const)('keeps the old %s tail out of both the import and its fresh response', async tail => {
+    clearMockConfig();
+    const { ConversationManager } = await import('../../src/managers/ConversationManager');
+    const h = createHarness(); const host = h.provider as any;
+    const store = new Map<string, unknown>();
+    const manager = new ConversationManager({ globalState: {
+      get: (key: string) => store.get(key),
+      update: async (key: string, value: unknown) => { store.set(key, JSON.parse(JSON.stringify(value))); },
+    } } as any);
+    const original = manager.getCurrentConversation()!;
+    manager.addMessageToConversation(original.id, 'user', 'Original retry requirement');
+    manager.addMessageToConversation(original.id, 'assistant', 'Use retryBaseMs=73');
+    host._conversationManager = manager;
+    host._panelStates.get('sidebar').currentConversationId = original.id;
+    Object.assign(host._providerManager, { getAllProviderIds: () => [], clearSession: vi.fn() });
+    host._brainstormManager = { cancelSession: vi.fn(), clearSession: vi.fn() };
+    host._compactionManager.resetUsage = vi.fn();
+    let ready!: () => void; const started = new Promise<void>(r => { ready = r; });
+    let release!: () => void; const delayed = new Promise<void>(r => { release = r; });
+    let calls = 0;
+    host._providerManager.sendMessage.mockImplementation(async function* () {
+      if (++calls === 1) {
+        yield { type: 'text', content: 'Review in progress' };
+        ready(); await delayed;
+        if (tail === 'error') { throw new Error('STALE_IMPORT_FAILURE'); }
+        yield { type: 'text', content: 'STALE_IMPORT_ANSWER' };
+      } else { yield { type: 'text', content: 'IMPORTED_HISTORY_CONTINUATION' }; }
+      yield { type: 'done' };
+    });
+    const oldOpen = (vscode.window as any).showOpenDialog;
+    const oldFs = (vscode.workspace as any).fs;
+    (vscode.window as any).showOpenDialog = vi.fn(async () => [vscode.Uri.file('/owned/import.json')]);
+    (vscode.workspace as any).fs = { readFile: vi.fn(async () => Buffer.from(JSON.stringify({ messages: [
+      { role: 'user', content: 'IMPORTED_REQUEST timeoutMs=913' }, { role: 'assistant', content: 'IMPORTED_ANSWER timeoutMs=913' },
+    ] }))) };
+    let sending: Promise<void> | undefined;
+    try {
+      sending = send(h, 'Review original retry behavior'); await started;
+      await host._handleMessage({ type: 'importFromFile', panelId: 'sidebar', payload: { requestId: 'active-import', conversationId: original.id } });
+      expect(original.messages.at(-1)!.content).toBe('Review in progress');
+      const before = JSON.stringify(original);
+      const branchId = host._panelStates.get('sidebar').currentConversationId;
+      expect(branchId).not.toBe(original.id);
+      const branch = manager.getConversation(branchId)!;
+      expect(branch.messages.map(message => message.content)).toEqual(['IMPORTED_REQUEST timeoutMs=913', 'IMPORTED_ANSWER timeoutMs=913']);
+      expect(host._providerManager.clearSession).toHaveBeenCalledWith('sidebar', { allProviders: true });
+      const boundary = h.sidebarMessages.length;
+      await send(h, 'Continue the imported timeout requirement');
+      release(); await sending;
+      expect(JSON.stringify(original)).toBe(before);
+      expect(branch.messages.at(-1)!.content).toBe('IMPORTED_HISTORY_CONTINUATION');
+      expect(branch.messages).toHaveLength(4);
+      expect(JSON.stringify(h.sidebarMessages.slice(boundary))).not.toContain('STALE_IMPORT_');
+      expect(host._runningPanels.has('sidebar')).toBe(false);
+    } finally {
+      release(); await sending; await host._agentInitPromise; h.dispose();
+      (vscode.window as any).showOpenDialog = oldOpen; (vscode.workspace as any).fs = oldFs;
+    }
+  });
+});
+
+// PC-12: capabilities describe execution evidence, not just visible controls.
+describe('PC-12 truthful tool and plan capabilities through the actual host', () => {
+  let h: Harness;
+  beforeEach(() => { clearMockConfig(); h = createHarness(); });
+  afterEach(() => { h.dispose(); vi.restoreAllMocks(); clearMockConfig(); });
+
+  it.each(['ollama', 'localai'] as const)('%s proposals never request execution approval or claim file effects', async provider => {
+    const host = h.provider as any;
+    h.setCapabilities({ toolCallsAreProposals: true, emitsToolResults: false, planMode: 'none' });
+    const suspend = host._providerManager.suspendRequest = vi.fn(() => true);
+    host._providerManager.resumeRequest = vi.fn();
+    const permission = vi.spyOn(host, 'requestPermissionInline').mockResolvedValue(true);
+    const modified = vi.spyOn(host, '_onFileModifiedByMysti').mockImplementation(() => {});
+    const badge = vi.spyOn(host, '_onToolUseDetected').mockImplementation(() => {});
+    const learned = vi.spyOn(host, '_trackToolUseForMemory').mockImplementation(() => {});
+    h.setStream([
+      { type: 'tool_use', toolCall: { id: 'proposal', name: 'Edit', input: { file_path: '/src/canary.ts', old_string: 'old', new_string: 'new' }, status: 'running', fileChange: { filePath: '/src/canary.ts', changeType: 'modified' } as any } },
+      { type: 'text', content: 'Suggested change only; no tool was executed.' }, { type: 'done' },
+    ]);
+    await host._handleSendMessage({ content: 'Suggest a patch without applying it', context: [], settings: { ...SETTINGS, provider, mode: 'ask-before-edit', accessLevel: 'ask-permission' } }, 'sidebar');
+    expect(permission).not.toHaveBeenCalled(); expect(suspend).not.toHaveBeenCalled();
+    expect(modified).not.toHaveBeenCalled(); expect(badge).not.toHaveBeenCalled(); expect(learned).not.toHaveBeenCalled();
+    expect(getAssistantPersistCall(h)[6].toolCalls).toEqual([expect.objectContaining({ id: 'proposal', status: 'proposed', proposalOnly: true })]);
+    expect(h.sidebarMessages.find(m => m.type === 'toolUse')?.payload).toMatchObject({ status: 'proposed', proposalOnly: true });
+    expect(h.sidebarMessages.some(m => m.type === 'toolResult')).toBe(false);
+  });
+
+  it('keeps proposal provenance despite a bogus result and a later capability refresh', async () => {
+    const host = h.provider as any;
+    h.setCapabilities({ toolCallsAreProposals: true, emitsToolResults: false, planMode: 'none' });
+    host._providerManager.sendMessage.mockImplementation(async function* () {
+      yield { type: 'tool_use', toolCall: { id: 'suggestion', name: 'Edit', input: { old_string: 'old', new_string: 'new' }, status: 'completed' } };
+      h.setCapabilities({ supportsNativeApproval: true, emitsToolResults: true, planMode: 'native' });
+      yield { type: 'tool_result', toolCall: { id: 'suggestion', name: 'Edit', input: {}, output: 'Injected execution claim', status: 'completed' } };
+      yield { type: 'text', content: 'A proposal.' }; yield { type: 'done' };
+    });
+    await send(h);
+    expect(getAssistantPersistCall(h)[6].toolCalls).toEqual([expect.objectContaining({ id: 'suggestion', status: 'proposed', proposalOnly: true })]);
+    expect(getAssistantPersistCall(h)[6].toolCalls[0].output).toBeUndefined();
+    expect(h.sidebarMessages.some(m => m.type === 'toolResult')).toBe(false);
+  });
+
+  it('does not allow a native tool event to bypass approval by declaring itself a proposal', async () => {
+    const host = h.provider as any;
+    h.setCapabilities({ supportsNativeApproval: false, toolCallsAreProposals: false });
+    host._providerManager.suspendRequest = vi.fn(() => true);
+    host._providerManager.resumeRequest = vi.fn();
+    const permission = vi.spyOn(host, 'requestPermissionInline').mockResolvedValue(true);
+    h.setStream([{ type: 'tool_use', toolCall: { id: 'native', name: 'Bash', input: { command: 'controlled fixture' }, status: 'running', proposalOnly: true } }, { type: 'done' }]);
+    await host._handleSendMessage({ content: 'Run the controlled command', context: [], settings: { ...SETTINGS, mode: 'ask-before-edit', accessLevel: 'ask-permission' } }, 'sidebar');
+    expect(permission).toHaveBeenCalledOnce();
+    expect(getAssistantPersistCall(h)[6].toolCalls[0]).toMatchObject({ status: 'unconfirmed' });
+    expect(getAssistantPersistCall(h)[6].toolCalls[0].proposalOnly).not.toBe(true);
+  });
+
+  it.each(['minimax', 'openrouter'] as const)('%s planMode:none suppresses detected plan cards while retaining useful questions', async provider => {
+    const host = h.provider as any;
+    h.setCapabilities({ planMode: 'none' });
+    const plan = { id: 'p', title: 'Apply patch', summary: 'Patch', approach: 'Patch it', pros: [], cons: [], complexity: 'low', icon: 'code', color: 'blue' };
+    const classify = vi.spyOn(host._planOptionManager, 'classifyResponse').mockResolvedValue({ questions: [], planOptions: [plan] });
+    const plans = vi.spyOn(host, '_handleDetectedPlanOptions').mockResolvedValue(undefined);
+    const questions = vi.spyOn(host, '_handleDetectedQuestions').mockResolvedValue(undefined);
+    const message = { id: 'response', role: 'assistant', content: 'Two possible changes.', timestamp: 1, provider };
+    expect(await host._detectAndSendPlanOptions(message, 'sidebar')).toBe(false);
+    expect(plans).not.toHaveBeenCalled();
+    classify.mockResolvedValue({ questions: [{ id: 'q', question: 'Which behavior?', options: [{ label: 'Open only', description: 'Keep open' }, { label: 'All', description: 'Keep all' }] }], planOptions: [plan] });
+    expect(await host._detectAndSendPlanOptions(message, 'sidebar')).toBe(true);
+    expect(questions).toHaveBeenCalledOnce(); expect(plans).not.toHaveBeenCalled();
+  });
+
+  it.each(['none', 'detected'])('does not present a native approval-to-execute plan for planMode:%s', async planMode => {
+    h.setCapabilities({ planMode });
+    h.setStream([{ type: 'text', content: '# Suggested plan\nChange the filter.' }, { type: 'exit_plan_mode', planFilePath: null }, { type: 'done' }]);
+    const native = vi.spyOn(h.provider as any, '_handleExitPlanMode').mockResolvedValue(undefined);
+    await send(h);
+    expect(native).not.toHaveBeenCalled();
+    expect(h.sidebarMessages.filter(m => m.type === 'responseComplete')).toHaveLength(1);
+  });
+});
+
+describe('PC-12 legacy mention proposal semantics', () => {
+  it('lets an actual proposal-only adapter display a suggestion without suspending children or requesting execution authority', async () => {
+    clearMockConfig(); const h = createHarness(), host = h.provider as any;
+    try {
+      h.setCapabilities({ toolCallsAreProposals: true });
+      host._providerManager.suspendRequest = vi.fn(() => true);
+      host._providerManager.resumeRequest = vi.fn();
+      host.requestPermissionInline = vi.fn(async () => true);
+      const allowed = await host._gateSubAgentToolUse({ agentId: 'ollama', toolCall: { id: 'suggest', name: 'Edit', input: { old_string: 'x', new_string: 'y' }, status: 'proposed', proposalOnly: true } }, { ...SETTINGS, mode: 'ask-before-edit', accessLevel: 'ask-permission' }, 'sidebar');
+      expect(allowed).toBe(true);
+      expect(host.requestPermissionInline).not.toHaveBeenCalled();
+      expect(host._providerManager.suspendRequest).not.toHaveBeenCalled();
+    } finally { h.dispose(); }
+  });
+});
+
+describe('PC-12 coordinator delegation write evidence', () => {
+  it.each([
+    { proposalOnly: true, status: 'proposed', wrote: false },
+    { proposalOnly: false, status: 'proposed', wrote: false },
+    { proposalOnly: false, status: 'running', wrote: true },
+  ])('distinguishes proposals from potentially executed writes: %j', async evidence => {
+    clearMockConfig(); const h = createHarness(), host = h.provider as any;
+    try {
+      const trace = vi.fn();
+      host._collaboratorPool.dispatch = async function* (specs: any[]) {
+        const base = { collaboratorId: specs[0].collaboratorId, agentId: specs[0].agentId };
+        yield { ...base, type: 'collab_tool_use', toolCall: { id: 'edit', name: 'Edit', input: { old_string: 'x', new_string: 'y' }, status: evidence.status, proposalOnly: evidence.proposalOnly } };
+        yield { ...base, type: 'collab_complete', responseText: 'Review complete.', hasError: false };
+      };
+      const [result] = await host._runMystiDelegations([{ collaboratorId: 'review', agentId: 'ollama', task: 'Review the filter', readOnly: true, trace }], SETTINGS, 'sidebar', 'capability-review', 'sidebar', () => false);
+      expect(result).toMatchObject({ text: 'Review complete.', hasError: false, wrote: evidence.wrote });
+      expect(trace).toHaveBeenCalledWith(expect.objectContaining({ type: 'tool_use' }));
+    } finally { h.dispose(); }
+  });
+});
+
+describe('provider text revisions across live messages and history', () => {
+  let h: Harness;
+  beforeEach(() => { clearMockConfig(); h = createHarness(); });
+  afterEach(() => { h.dispose(); });
+  it.each(['done', 'error'] as const)('persists corrected text/thinking and retained tool evidence after %s', async terminal => {
+    h.setStream([
+      { type: 'text', content: 'Draft', provisional: true },
+      { type: 'tool_use', toolCall: { id: 'revision-tool', name: 'Read', input: {}, status: 'running' } },
+      { type: 'tool_result', toolCall: { id: 'revision-tool', name: 'Read', input: {}, status: 'completed', output: 'Owned evidence' } },
+      { type: 'thinking', content: 'Old thought' },
+      { type: 'thinking', content: 'New thought', replace: { start: 0, end: 11 } },
+      { type: 'text', content: 'Correct', replace: { start: 0, end: 5 } },
+      { type: 'text', content: ' tail' },
+      { type: terminal, ...(terminal === 'error' ? { content: 'Owned interruption' } : {}) },
+      ...(terminal === 'error' ? [{ type: 'done' } as StreamChunk] : []),
+    ]);
+    await send(h);
+    const [, , content, , , thinking, extras] = getAssistantPersistCall(h);
+    expect(content).toBe('Correct tail'); expect(thinking).toEqual({ style: 'streamed', content: 'New thought' });
+    expect(extras.toolCalls).toEqual([expect.objectContaining({ id: 'revision-tool', output: 'Owned evidence', status: 'completed' })]);
+    expect(extras.segments.filter((s: any) => s.type === 'text').map((s: any) => s.content).join('')).toBe(content);
+    expect(extras.segments.filter((s: any) => s.type === 'thinking').map((s: any) => s.content).join('')).toBe('New thought');
+    const revisions = h.sidebarMessages.filter(m => m.type === 'responseChunk' && m.payload.revision);
+    expect(revisions).toHaveLength(2); expect(revisions[1].payload.revision.segments).toEqual([
+      { type: 'text', content: 'Correct' }, { type: 'tool', toolCallId: 'revision-tool' }, { type: 'thinking', content: 'New thought' },
+    ]);
+  });
+  it('persists complete retraction and does not execute revised or provisional text actions', async () => {
+    const host = h.provider as any;
+    const actions = vi.spyOn(host._channelBridge, 'detectMarkers');
+    h.setStream([
+      { type: 'text', content: '<<<MYSTI_CONNECT:slack>>>', provisional: true },
+      { type: 'text', content: '<<<MYSTI_CONNECT:gmail>>>', replace: { start: 0, end: 25 } },
+      { type: 'text', content: '', replace: { start: 0, end: 25 } },
+      { type: 'text', content: 'Fresh answer' }, { type: 'done' },
+    ]);
+    await send(h);
+    expect(getAssistantPersistCall(h)[2]).toBe('Fresh answer');
+    expect(actions.mock.calls.map(c => c[1])).toEqual(['Fresh answer']);
+    expect(h.sidebarMessages.some(m => m.type === 'connectionCard')).toBe(false);
+  });
+});
+
+
+describe('provider commentary remains transient', () => {
+  it.each(['done', 'error'] as const)('posts progress without persisting or executing it after %s', async terminal => {
+    clearMockConfig(); const h = createHarness(), host = h.provider as any;
+    try {
+      const actions = vi.spyOn(host._channelBridge, 'detectMarkers');
+      h.setStream([{ type: 'progress', content: '<<<MYSTI_CONNECT:slack>>>' },
+        { type: 'text', content: 'Actual answer' }, { type: 'progress', content: 'Finishing' },
+        { type: terminal, ...(terminal === 'error' ? { content: 'Owned failure' } : {}) }]);
+      await send(h);
+      const saved = getAssistantPersistCall(h);
+      expect(saved[2]).toBe('Actual answer'); expect(saved[5]).toBeUndefined();
+      expect(saved[6].segments).toEqual([{ type: 'text', content: 'Actual answer' }]);
+      expect(actions.mock.calls.map(c => c[1])).toEqual(['Actual answer']);
+      expect(h.sidebarMessages.filter(m => m.type === 'responseChunk' && m.payload.type === 'progress').map(m => m.payload.content))
+        .toEqual(['<<<MYSTI_CONNECT:slack>>>', 'Finishing']);
+      expect(h.sidebarMessages.some(m => m.type === 'connectionCard')).toBe(false);
+    } finally { h.dispose(); }
+  });
+  it('does not fabricate a partial answer when only progress preceded an error', async () => {
+    clearMockConfig(); const h = createHarness();
+    try {
+      h.setStream([{ type: 'progress', content: 'Looking at files' }, { type: 'error', content: 'Owned failure' }]);
+      await send(h); expect(h.persistedCalls.filter(c => c[1] === 'assistant')).toEqual([]);
+      expect(h.sidebarMessages.some(m => m.type === 'responseComplete')).toBe(false);
+    } finally { h.dispose(); }
   });
 });

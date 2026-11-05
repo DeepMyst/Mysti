@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
 import { ChatViewProvider } from '../../src/providers/ChatViewProvider';
 import { PermissionManager } from '../../src/managers/PermissionManager';
+import { SlashCommandManager } from '../../src/managers/SlashCommandManager';
 import { PendingPlanStore } from '../../src/chat/PendingPlanStore';
 import { DelayedChannelTurns } from '../../src/chat/DelayedChannelTurns';
 import { SubAgentQuestionBroker } from '../../src/chat/SubAgentQuestionBroker';
@@ -32,6 +33,8 @@ function createHarness() {
   const learned = vi.fn();
   const panels = new Map(['a', 'b'].map(id => [id, { id, currentConversationId: `conversation-${id}` }]));
   const jobs = new Map([['job-a', { id: 'job-a', panelId: 'a' }]]);
+  // The real manager retains record identity until a conversation is deleted.
+  const conversations = new Map(['conversation-a', 'conversation-b', 'other'].map(id => [id, { id, messages: [] }]));
   const provider = Object.assign(Object.create(ChatViewProvider.prototype), {
     _modelCliUpgrades: new Map(),
     _extensionUri: vscode.Uri.file('/mock'),
@@ -43,6 +46,7 @@ function createHarness() {
     _backgroundJobManager: {
       get: (id: string) => jobs.get(id),
       listRunning: (panelId: string) => [...jobs.values()].filter(job => job.panelId === panelId),
+      listAll: () => [...jobs.values()],
     },
     _mystiAbortControllers: new Map(),
     _mystiActiveDelegationRuns: new Map(),
@@ -59,6 +63,7 @@ function createHarness() {
     _stoppedCompactions: new Set(),
     _panelAutonomyLevel: new Map(),
     _mystiRunGen: new Map(),
+    _brainstormPreparations: new Map(),
     _vtNonces: new Map(),
     _vtScanners: new Map(),
     _providerManager: { cancelRequest: vi.fn(), clearSession: vi.fn(), getAllProviderIds: () => [], getAllProviders: () => [] },
@@ -67,20 +72,22 @@ function createHarness() {
     _sessionManager: { cancelPanel: vi.fn() },
     _mentionRouter: { cancelSubAgents: vi.fn() },
     _compactionManager: { resetUsage: vi.fn() },
-    _lifecycleManager: { removeSession: vi.fn() },
+    _lifecycleManager: { removeSession: vi.fn(), markIdle: vi.fn() },
     _conversationManager: {
       createNewConversation: () => ({ id: 'new' }),
       getCurrentConversation: () => ({ id: 'conversation-a' }),
-      getConversation: (id: string) => id === 'other' ? { id } : null,
-      getAllConversations: () => [], deleteConversation: vi.fn(),
+      getConversation: (id: string) => conversations.get(id) ?? null,
+      getAllConversations: () => [...conversations.values()],
+      deleteConversation: vi.fn((id: string) => conversations.delete(id)),
       forkConversation: (_id: string, messageId: string) => messageId === 'valid' ? { id: 'fork' } : null,
     },
     _contextManager: { clearPanelContext: vi.fn() },
+    _editorContextTracker: { focusPanel: vi.fn(), dispose: vi.fn() },
     _channelBridge: { clearPanel: vi.fn(), clearQueuedMessages: vi.fn() },
     _visualTestManager: { disposePanel: vi.fn(async () => undefined) },
     _sendInitialState: vi.fn(),
     _tryPreSpawnPersistentProcess: vi.fn(),
-    _engagementManager: { trackConversationStarted: () => [] },
+    _engagementManager: { trackConversationStarted: () => [], trackSlashCommandUsed: () => [] },
     _emitBadgeUnlocks: vi.fn(),
     _autonomousManager: { isActive: () => false },
     _memoryManager: { learnFromPermissionDecision: learned },
@@ -105,6 +112,66 @@ describe('chat permission ownership and cancellation', () => {
     h = createHarness();
   });
   afterEach(() => { h.permissions.dispose(); h.provider._delayedChannelTurns.dispose(); clearMockConfig(); });
+
+  it('Stop releases busy ownership immediately even when a cancelled stream has not returned', async () => {
+    const host = h.provider as any;
+    host._runningPanels.add('a');
+    host._runningPanels.add('b');
+    await host._handleMessage({ type: 'cancelRequest', panelId: 'a' });
+    expect(host._runningPanels.has('a')).toBe(false);
+    expect(host._runningPanels.has('b')).toBe(true);
+    expect(host._lifecycleManager.markIdle).toHaveBeenCalledWith('a');
+    expect(h.posted.filter(p => p.message.type === 'requestCancelled').map(p => p.panelId)).toEqual(['a']);
+  });
+
+  it.each([{ command: 'clear' }, { commandId: 'cmd:clear' }])('public clear creates a fresh owned chat while preserving history and sibling work: %j', async command => {
+    const host = h.provider as any;
+    const original = { id: 'conversation-a', messages: [{ id: 'u-a', role: 'user', content: 'Keep this original history.' }] };
+    host._providerManager.getProvider = () => undefined;
+    const sibling = { id: 'conversation-b', messages: [{ id: 'u-b', role: 'user', content: 'Other task.' }] };
+    const history = new Map([[original.id, original], [sibling.id, sibling]]);
+    host._conversationManager.getConversation = (id: string) => history.get(id);
+    host._conversationManager.createNewConversation = vi.fn(() => {
+      const fresh = { id: 'clear-new', messages: [] }; history.set(fresh.id, fresh); return fresh;
+    });
+    host._slashCommandManager = new SlashCommandManager({
+      providerManager: host._providerManager, contextManager: host._contextManager,
+      conversationManager: host._conversationManager, compactionManager: host._compactionManager,
+      memoryManager: host._memoryManager, brainstormManager: host._brainstormManager,
+    });
+    const foreground = h.request('a'), other = h.request('b');
+    const request = { type: 'executeSlashCommand', panelId: 'a', payload: { ...command, requestId: 'clear-once' } };
+    await host._handleMessage(request);
+    await host._handleMessage(request);
+    expect(h.posted.filter(p => p.message.type === 'slashCommandCompleted' && (p.message.payload as any)?.success === false)).toEqual([]);
+    expect(host._conversationManager.createNewConversation).toHaveBeenCalledTimes(1);
+    expect(h.panels.get('a')!.currentConversationId).toBe('clear-new');
+    expect(h.panels.get('b')!.currentConversationId).toBe('conversation-b');
+    expect(history.get(original.id)).toEqual(original);
+    expect(history.get(sibling.id)).toEqual(sibling);
+    expect(host._providerManager.clearSession).toHaveBeenCalledWith('a', { allProviders: true });
+    expect(h.posted.filter(p => p.message.type === 'conversationChanged')).toEqual([
+      { panelId: 'a', message: { type: 'conversationChanged', payload: { id: 'clear-new', messages: [] } } },
+    ]);
+    expect(await foreground.result).toBe(false);
+    expect(h.permissions.getPendingRequest(other.id)).toBeDefined();
+    await h.reply('b', other.id, 'deny');
+  });
+
+  it.each(['conversation', 'panel', 'turn'])('a delayed new-chat reset cannot erase replacement %s work', async replacement => {
+    const host = h.provider as any;
+    let release!: () => void;
+    host._dictationManager = { cancelPanel: () => new Promise<void>(resolve => { release = resolve; }) };
+    const create = vi.spyOn(host._conversationManager, 'createNewConversation');
+    const reset = host._handleMessage({ type: 'newConversation', panelId: 'a' });
+    if (replacement === 'conversation') h.panels.get('a')!.currentConversationId = 'replacement';
+    if (replacement === 'panel') h.panels.set('a', { id: 'a', currentConversationId: 'replacement' });
+    if (replacement === 'turn') host._mystiRunGen.set('a', 1);
+    release(); await reset;
+    expect(create).not.toHaveBeenCalled();
+    expect(host._providerManager.cancelRequest).not.toHaveBeenCalled();
+    expect(h.posted).toEqual([]);
+  });
 
   it.each(['false', 'reject', 'throw', 'replace'] as const)('denies an undelivered card when posting returns %s', async failure => {
     // Exercise the actual transport wrapper rather than the message collector.
@@ -190,6 +257,26 @@ describe('chat permission ownership and cancellation', () => {
     }
     expect(h.permissions.getPendingRequest(gate.id)).toBeUndefined();
     expect(await gate.result).toBe(false);
+  });
+
+  it.each(['switch', 'delete', 'fork', 'clear'] as const)('stops every foreground collaboration on conversation %s', async action => {
+    const host = h.provider as any;
+    host._mystiOrchestrator = { cancelPanel: vi.fn() };
+    if (action === 'fork') { h.provider._forkConversation('a', 'valid'); }
+    else {
+      await h.provider._handleMessage({
+        type: action === 'switch' ? 'switchConversation' : action === 'delete' ? 'deleteConversation' : 'clearSession',
+        panelId: 'a', payload: { id: action === 'switch' ? 'other' : 'conversation-a' },
+      });
+    }
+    expect(host._cancelledPanels.has('a')).toBe(true);
+    expect(host._brainstormManager.cancelSession).toHaveBeenCalledWith('a');
+    expect(host._brainstormManager.clearSession).toHaveBeenCalledWith('a');
+    expect(host._collaborationManager.cancelPanel).toHaveBeenCalledWith('a');
+    expect(host._sessionManager.cancelPanel).toHaveBeenCalledWith('a');
+    expect(host._mystiOrchestrator.cancelPanel).toHaveBeenCalledWith('a');
+    expect(host._mentionRouter.cancelSubAgents).toHaveBeenCalledWith('a', []);
+    expect(host._providerManager.clearSession).toHaveBeenCalledWith('a', { allProviders: true });
   });
 
   it('preserves current gates after an unknown switch, unrelated deletion or failed fork', async () => {

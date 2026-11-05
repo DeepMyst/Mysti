@@ -35,6 +35,8 @@ interface AgentSessionState {
   lastKnownPid: number | null;
   trackedChildPids: Set<number>;
   idleTimer: NodeJS.Timeout | null;
+  /** Invalidates work suspended in an asynchronous process-tree probe. */
+  activityRevision: number;
 }
 
 interface LifecycleConfig {
@@ -51,6 +53,7 @@ export class AgentLifecycleManager {
   private _processCheckInterval: NodeJS.Timeout | null = null;
   private _configDisposable: vscode.Disposable;
   private _eventCallbacks: ((event: LifecycleEvent) => void)[] = [];
+  private _childScans = new WeakMap<AgentSessionState, { revision: number; promise: Promise<number[] | null> }>();
 
   constructor(_context: vscode.ExtensionContext) {
     this._config = this._loadConfig();
@@ -88,6 +91,7 @@ export class AgentLifecycleManager {
       existing.providerId = providerId;
       existing.sessionId = sessionId;
       existing.lastActivityTimestamp = Date.now();
+      existing.activityRevision++;
       console.log(`[Mysti] AgentLifecycleManager: Session updated for panel ${panelId}`);
       return;
     }
@@ -102,6 +106,7 @@ export class AgentLifecycleManager {
       lastKnownPid: null,
       trackedChildPids: new Set(),
       idleTimer: null,
+      activityRevision: 0,
     };
 
     this._sessions.set(panelId, session);
@@ -113,6 +118,7 @@ export class AgentLifecycleManager {
     const session = this._sessions.get(panelId);
     if (!session) { return; }
     session.lastActivityTimestamp = Date.now();
+    session.activityRevision++;
     this._resetIdleTimer(session);
   }
 
@@ -121,6 +127,7 @@ export class AgentLifecycleManager {
     if (!session) { return; }
     session.status = 'busy';
     session.lastActivityTimestamp = Date.now();
+    session.activityRevision++;
     this._clearIdleTimer(session);
   }
 
@@ -129,6 +136,7 @@ export class AgentLifecycleManager {
     if (!session) { return; }
     session.status = 'idle';
     session.lastActivityTimestamp = Date.now();
+    session.activityRevision++;
     this._startIdleTimer(session);
     this._emitEvent('session-idle', panelId, session.providerId);
   }
@@ -157,8 +165,19 @@ export class AgentLifecycleManager {
       return { success: false, blocked: false, reason: 'Session not found' };
     }
 
+    if (!force && session.status !== 'idle') {
+      const reason = 'An agent turn is still active. Stop it before shutting down.';
+      this._emitEvent('shutdown-blocked', panelId, session.providerId, reason);
+      return { success: false, blocked: true, reason };
+    }
+    const revision = session.activityRevision;
+    const status = session.status;
+
     if (!force && this._config.protectActiveChildren) {
       const childPids = await this._scanChildren(session);
+      if (childPids === null || !this._isCurrent(session, revision) || session.status !== status) {
+        return { success: false, blocked: false, reason: 'Session changed while checking shutdown.' };
+      }
       if (childPids.length > 0) {
         this._emitEvent('shutdown-blocked', panelId, session.providerId, `${childPids.length} active child process(es)`, childPids);
         return { success: false, blocked: true, reason: 'Active child processes detected', childPids };
@@ -167,8 +186,10 @@ export class AgentLifecycleManager {
 
     session.status = 'shutting-down';
     this._clearIdleTimer(session);
-    this._emitEvent('session-shutdown', panelId, session.providerId);
+    // A listener can synchronously register the next session. Remove this one
+    // first so a late delete cannot erase that replacement.
     this._sessions.delete(panelId);
+    this._emitEvent('session-shutdown', panelId, session.providerId);
 
     console.log(`[Mysti] AgentLifecycleManager: Session shut down for panel ${panelId} (force: ${force})`);
     return { success: true, blocked: false };
@@ -181,23 +202,33 @@ export class AgentLifecycleManager {
     }
   }
 
-  registerProcessPid(panelId: string, pid: number): void {
-    const session = this._sessions.get(panelId);
+  registerProcessPid(panelId: string, pid: number, providerId?: ProviderType): void {
+    let session = this._sessions.get(panelId);
+    // Process registration precedes the CLI's first session_active event. Keep
+    // that first PID and owner so an idle shutdown can protect native children.
+    if (providerId && (!session || session.providerId !== providerId)) {
+      if (session) { this.removeSession(panelId); }
+      this.registerSession(panelId, providerId, null);
+      session = this._sessions.get(panelId);
+    }
     if (!session) { return; }
     session.lastKnownPid = pid;
+    session.activityRevision++;
   }
 
-  clearProcessPid(panelId: string): void {
+  clearProcessPid(panelId: string, expectedPid?: number): void {
     const session = this._sessions.get(panelId);
     if (!session) { return; }
+    if (expectedPid !== undefined && session.lastKnownPid !== expectedPid) { return; }
     session.lastKnownPid = null;
+    session.activityRevision++;
   }
 
   async hasActiveChildren(panelId: string): Promise<boolean> {
     const session = this._sessions.get(panelId);
     if (!session) { return false; }
     const children = await this._scanChildren(session);
-    return children.length > 0;
+    return children !== null && children.length > 0;
   }
 
   onLifecycleEvent(callback: (event: LifecycleEvent) => void): vscode.Disposable {
@@ -246,15 +277,20 @@ export class AgentLifecycleManager {
 
   private async _handleIdleTimeout(session: AgentSessionState): Promise<void> {
     // Session may have been removed or reactivated while timer was pending
-    if (!this._sessions.has(session.panelId) || session.status !== 'idle') {
+    if (!this._config.enabled || this._sessions.get(session.panelId) !== session || session.status !== 'idle') {
       return;
     }
+    const revision = session.activityRevision;
 
     if (this._config.protectActiveChildren && this._config.processTreeTracking) {
       const childPids = await this._scanChildren(session);
+      if (childPids === null || !this._config.enabled || !this._isCurrent(session, revision) || session.status !== 'idle') {
+        return;
+      }
       if (childPids.length > 0) {
         console.log(`[Mysti] AgentLifecycleManager: Idle timeout blocked for ${session.panelId} — ${childPids.length} active children`);
         this._emitEvent('shutdown-blocked', session.panelId, session.providerId, `${childPids.length} active child process(es)`, childPids);
+        if (!this._isCurrent(session, revision) || session.status !== 'idle') { return; }
         // Reschedule check in 30s
         session.idleTimer = setTimeout(async () => {
           session.idleTimer = null;
@@ -265,14 +301,32 @@ export class AgentLifecycleManager {
     }
 
     console.log(`[Mysti] AgentLifecycleManager: Session expired for ${session.panelId} (idle timeout)`);
-    this._emitEvent('session-expired', session.panelId, session.providerId);
     this._sessions.delete(session.panelId);
+    this._clearIdleTimer(session);
+    this._emitEvent('session-expired', session.panelId, session.providerId);
   }
 
   // ---- Private: Process Tree Scanning ----
 
-  private async _scanChildren(session: AgentSessionState): Promise<number[]> {
+  private async _scanChildren(session: AgentSessionState): Promise<number[] | null> {
     if (!this._config.processTreeTracking) { return []; }
+    const revision = session.activityRevision;
+    const pending = this._childScans.get(session);
+    if (pending?.revision === revision) { return pending.promise; }
+    // An idle timeout and the periodic child observer can query together. They
+    // share one snapshot so a newer observer cannot invalidate the only expiry
+    // timer or overwrite a newer child list with an older result.
+    const promise = this._probeChildren(session, revision);
+    this._childScans.set(session, { revision, promise });
+    try {
+      return await promise;
+    } finally {
+      if (this._childScans.get(session)?.promise === promise) { this._childScans.delete(session); }
+    }
+  }
+
+  private async _probeChildren(session: AgentSessionState, revision: number): Promise<number[] | null> {
+    const isCurrent = () => this._isCurrent(session, revision);
 
     const allChildPids: number[] = [];
 
@@ -284,6 +338,7 @@ export class AgentLifecycleManager {
       } catch {
         // pgrep/wmic may fail, treat as no children
       }
+      if (!isCurrent()) { return null; }
     }
 
     // Check if tracked child PIDs are still alive
@@ -296,6 +351,7 @@ export class AgentLifecycleManager {
       } catch {
         // Process check failed, assume dead
       }
+      if (!isCurrent()) { return null; }
     }
 
     // Snapshot the PRIOR child state BEFORE replacing the set (B16): reading
@@ -337,6 +393,10 @@ export class AgentLifecycleManager {
   }
 
   // ---- Private: Helpers ----
+
+  private _isCurrent(session: AgentSessionState, revision: number): boolean {
+    return this._sessions.get(session.panelId) === session && session.activityRevision === revision;
+  }
 
   private _emitEvent(
     type: LifecycleEventType,

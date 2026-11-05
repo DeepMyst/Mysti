@@ -30,7 +30,7 @@
  */
 
 import type { GatewayCompletion } from '../types';
-import type { GatewayChatParams } from './DeepMystGatewayClient';
+import { resolveGatewayMessages, type GatewayChatParams } from './DeepMystGatewayClient';
 import { applyCacheBreakpoints, readCacheTokens } from './PromptCache';
 import { createAbortScope } from '../utils/abortScope';
 import { ToolCallAccumulator, type AccumulatedToolCall, type ToolCallDelta } from '../utils/toolCallAccumulator';
@@ -162,7 +162,7 @@ export class OpenRouterClient {
             // Anthropic models nothing is cached without a breakpoint — so this
             // was full input price, N times per turn. No-op for models that cache
             // automatically. See src/services/PromptCache.ts.
-            messages: applyCacheBreakpoints(params.messages, params.model),
+            messages: applyCacheBreakpoints(resolveGatewayMessages(params, abortScope.signal), params.model),
             max_tokens: params.maxTokens ?? 2048,
             stream: true,
             // Ask OpenRouter to emit a final usage frame (prompt/completion tokens).
@@ -294,13 +294,6 @@ export class OpenRouterClient {
 
   private async _doChatWithRetry(params: GatewayChatParams, key: string): Promise<GatewayCompletion> {
     const timeoutMs = params.timeoutMs ?? 60_000;
-    const body = {
-      model: params.model,
-      messages: params.messages,
-      max_tokens: params.maxTokens ?? 1024,
-      stream: false,
-    };
-
     for (let attempt = 0; attempt <= this._maxRetries; attempt++) {
       const abortScope = createAbortScope([params.signal], timeoutMs);
       let res: Response | undefined;
@@ -315,7 +308,12 @@ export class OpenRouterClient {
             'HTTP-Referer': this._referer,
             'X-Title': this._appTitle,
           },
-          body: JSON.stringify(body),
+          body: JSON.stringify({
+            model: params.model,
+            messages: resolveGatewayMessages(params, abortScope.signal),
+            max_tokens: params.maxTokens ?? 1024,
+            stream: false,
+          }),
           signal: abortScope.signal,
         });
 

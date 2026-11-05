@@ -131,4 +131,130 @@ describe('AgentLifecycleManager child tracking (B16)', () => {
     expect(had).toBe(false);
     expect(getChildPids).not.toHaveBeenCalled();
   });
+
+  const deferredScan = () => {
+    let resolve!: (children: number[]) => void;
+    getChildPids.mockImplementationOnce(() => new Promise<number[]>(done => { resolve = done; }));
+    return (children: number[] = []) => resolve(children);
+  };
+  const idleSession = () => {
+    manager.registerSession('panel', 'openai-codex', 'old-thread');
+    manager.registerProcessPid('panel', 1000);
+    manager.markIdle('panel');
+  };
+
+  it.each(['busy', 'busy-then-idle', 'touch', 'replace'] as const)(
+    'an idle expiry scan cannot expire a session after %s activity', async action => {
+      vi.spyOn(Date, 'now').mockReturnValue(5000); // Activity can share one millisecond.
+      idleSession();
+      const events: LifecycleEvent[] = [];
+      manager.onLifecycleEvent(event => events.push(event));
+      const release = deferredScan();
+      const expired = (manager as any)._handleIdleTimeout((manager as any)._sessions.get('panel'));
+      if (action === 'replace') {
+        manager.removeSession('panel');
+        manager.registerSession('panel', 'claude-code', 'new-thread');
+        manager.markIdle('panel');
+      } else if (action === 'touch') manager.touchSession('panel');
+      else {
+        manager.markBusy('panel');
+        if (action === 'busy-then-idle') manager.markIdle('panel');
+      }
+      release(); await expired;
+      expect(manager.getSession('panel')).toMatchObject({ sessionId: action === 'replace' ? 'new-thread' : 'old-thread' });
+      expect(events.filter(event => event.type === 'session-expired')).toEqual([]);
+    },
+  );
+
+  it.each(['busy', 'replace'] as const)('delayed explicit shutdown abandons a %s successor', async action => {
+    idleSession();
+    const events: LifecycleEvent[] = [];
+    manager.onLifecycleEvent(event => events.push(event));
+    const release = deferredScan();
+    const shutdown = manager.requestShutdown('panel');
+    if (action === 'replace') {
+      manager.removeSession('panel');
+      manager.registerSession('panel', 'claude-code', 'new-thread');
+    } else manager.markBusy('panel');
+    release();
+    expect(await shutdown).toMatchObject({ success: false });
+    expect(manager.getSession('panel')).not.toBeNull();
+    expect(events.filter(event => event.type === 'session-shutdown')).toEqual([]);
+  });
+
+  it('nonforce shutdown blocks an active turn without scanning or killing it; force targets that same turn', async () => {
+    idleSession(); manager.markBusy('panel');
+    const events: LifecycleEvent[] = [];
+    manager.onLifecycleEvent(event => events.push(event));
+    expect(await manager.requestShutdown('panel')).toMatchObject({ success: false, blocked: true, reason: expect.stringMatching(/stop/i) });
+    expect(getChildPids).not.toHaveBeenCalled();
+    expect(manager.getSession('panel')?.status).toBe('busy');
+    expect(await manager.requestShutdown('panel', true)).toEqual({ success: true, blocked: false });
+    expect(events.filter(event => event.type === 'session-shutdown')).toHaveLength(1);
+  });
+
+  it.each(['shutdown', 'expiry'] as const)('%s callbacks cannot erase a synchronously registered replacement', async action => {
+    idleSession();
+    getChildPids.mockResolvedValue([]);
+    manager.onLifecycleEvent(event => {
+      if (event.type === (action === 'shutdown' ? 'session-shutdown' : 'session-expired')) {
+        manager.registerSession('panel', 'claude-code', 'replacement-thread');
+        manager.markBusy('panel');
+      }
+    });
+    if (action === 'shutdown') await manager.requestShutdown('panel', true);
+    else await (manager as any)._handleIdleTimeout((manager as any)._sessions.get('panel'));
+    expect(manager.getSession('panel')).toMatchObject({ sessionId: 'replacement-thread', status: 'busy' });
+  });
+
+  it('a late child scan cannot attach old PIDs or publish activity for a replacement runtime', async () => {
+    idleSession();
+    const events: LifecycleEvent[] = [];
+    manager.onLifecycleEvent(event => events.push(event));
+    const release = deferredScan();
+    const scan = manager.hasActiveChildren('panel');
+    manager.registerSession('panel', 'claude-code', 'new-thread');
+    manager.registerProcessPid('panel', 3000);
+    release([2000]); await scan;
+    expect(manager.getSession('panel')).toMatchObject({ providerId: 'claude-code', childPids: [] });
+    expect(events.filter(event => event.type === 'children-detected')).toEqual([]);
+  });
+
+  it('an overlapping child observer cannot consume the only idle expiry decision', async () => {
+    idleSession();
+    const release = deferredScan();
+    const expired = (manager as any)._handleIdleTimeout((manager as any)._sessions.get('panel'));
+    const observed = manager.hasActiveChildren('panel');
+    expect(getChildPids).toHaveBeenCalledOnce();
+    release(); await Promise.all([expired, observed]);
+    expect(manager.getSession('panel')).toBeNull();
+  });
+
+  it('retains a runtime PID registered before its first native session event and preserves provider attribution', async () => {
+    const events: LifecycleEvent[] = [];
+    manager.onLifecycleEvent(event => events.push(event));
+    manager.registerProcessPid('fresh', 8080, 'openai-codex');
+    manager.registerSession('fresh', 'openai-codex', 'native-thread');
+    manager.markIdle('fresh');
+    getChildPids.mockResolvedValue([8081]);
+    expect(await manager.requestShutdown('fresh')).toMatchObject({ success: false, blocked: true, childPids: [8081] });
+    expect(getChildPids).toHaveBeenCalledExactlyOnceWith(8080);
+    expect(events.filter(event => event.type === 'session-started')).toEqual([
+      expect.objectContaining({ panelId: 'fresh', providerId: 'openai-codex' }),
+    ]);
+    expect(manager.getSession('fresh')).toMatchObject({ providerId: 'openai-codex', sessionId: 'native-thread' });
+  });
+
+  it.each(['busy', 'children'] as const)('direct shutdown publishes exactly one blocked event for %s', async reason => {
+    idleSession();
+    if (reason === 'busy') manager.markBusy('panel');
+    else getChildPids.mockResolvedValue([2000]);
+    const events: LifecycleEvent[] = [];
+    manager.onLifecycleEvent(event => events.push(event));
+    const result = await manager.requestShutdown('panel');
+    expect(result.blocked).toBe(true);
+    expect(events.filter(event => event.type === 'shutdown-blocked')).toEqual([
+      expect.objectContaining({ panelId: 'panel', providerId: 'openai-codex', detail: expect.any(String) }),
+    ]);
+  });
 });

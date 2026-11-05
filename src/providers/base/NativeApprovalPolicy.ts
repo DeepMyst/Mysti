@@ -43,3 +43,11 @@ export function allowsUnrestrictedNativeTools(settings: ApprovalSettings): boole
   return ['Write', 'Edit', 'Delete', 'Bash', 'WebFetch', 'Agent', 'UnknownTool']
     .every(toolName => !shouldGateToolUse(settings, toolName));
 }
+
+/** Notifications cannot suspend execution until a user approves. Refuse
+ * unsupported authority before spawning a noninteractive CLI rather than
+ * displaying a permission dialog after its tool may already have run. */
+export function assertNonInteractivePermissionSupport(provider: string, settings: ApprovalSettings): void {
+  if (isReadOnly(settings) || allowsUnrestrictedNativeTools(settings)) { return; }
+  throw new Error(`${provider} cannot request approval before executing tools through this CLI transport. Choose Read Only or plan mode, use an agent with native approvals, or explicitly select Edit Automatically with Full Access.`);
+}

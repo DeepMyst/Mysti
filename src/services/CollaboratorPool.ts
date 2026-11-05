@@ -13,7 +13,7 @@
 
 import { classifyToolAction, shouldGateToolUse } from '../utils/permissionClassifier';
 import { SUBAGENT_TIMEOUT_MS, SUBAGENT_MAX_RETRIES, SUBAGENT_QUESTION_TIMEOUT_MS } from '../constants';
-import type { NativeApprovalHandler, NativeApprovalRequest } from '../providers/base/IProvider';
+import type { NativeApprovalHandler, NativeApprovalRequest, ProviderInputResolver } from '../providers/base/IProvider';
 import { hasUsageSignal, normalizeUsage, type UsageConvention } from './TokenAccounting';
 import type {
   ContextItem,
@@ -29,6 +29,18 @@ import type {
 
 /** One dispatch attempt; `usage` only when the child measured something. */
 type AttemptOutcome = { responseText: string; hasError: boolean; failure?: CollaboratorFailure; usage?: UsageStats };
+type CancellableDispatchOptions = CollaboratorDispatchOptions & { signal: AbortSignal };
+
+/** Explicit model selection rejections require a different model or entitlement.
+ * Keep temporary capacity/network failures eligible for the normal retry.
+ */
+function modelUnavailable(message: string | undefined): boolean {
+  if (!message) { return false; }
+  return /\bmodel_not_found\b/i.test(message)
+    || /\b(?:unknown|invalid|unsupported) model\s*:/i.test(message)
+    || /\bmodel(?:\s+["'][^"'\r\n]{1,120}["'])?(?:\s+from --model flag)?\s+(?:is not available|is not supported|does not exist|was not found)\b/i.test(message)
+    || /\bmodel\s+[\w./:-]{1,120}\s+(?:is not supported|does not exist|was not found)\b/i.test(message);
+}
 
 /**
  * Default max collaborators dispatched at once. Overridable per-run via
@@ -51,7 +63,8 @@ export interface PoolProviderManager {
     settings: Settings,
     conversation: Conversation | null,
     persona?: unknown,
-    panelId?: string
+    panelId?: string,
+    resolveInput?: ProviderInputResolver
   ): AsyncGenerator<StreamChunk>;
   cancelRequest(panelId: string): void;
   disposePersistentProcessForProvider?(providerId: string, panelId: string): void;
@@ -65,7 +78,7 @@ export interface PoolProviderManager {
   } | null>;
   getProviderDefaultModel(providerId: string): string;
   getProviderInstance?(providerId: string): {
-    capabilities: { supportsNativeApproval?: boolean; emitsUsage?: boolean; usageConvention?: UsageConvention };
+    capabilities: { supportsNativeApproval?: boolean; toolCallsAreProposals?: boolean; emitsUsage?: boolean; usageConvention?: UsageConvention };
   } | undefined;
   setNativeApprovalHandlerForPanel?(panelId: string, handler: NativeApprovalHandler): { dispose(): void };
 }
@@ -101,6 +114,8 @@ export class CollaboratorPool {
   private _providerManager: PoolProviderManager;
   /** runId -> set of live child panel ids, for cancel fan-out. */
   private _activeChildPanels: Map<string, Set<string>> = new Map();
+  /** Includes queued lanes and lanes awaiting UI input, which have no live process. */
+  private _dispatchControllers = new Map<string, Set<Map<string, AbortController>>>();
   /**
    * runId -> childPanelId -> agentId for EVERY child ever dispatched in the run
    * (not pruned on completion, unlike _activeChildPanels). Lets disposeRun()
@@ -140,22 +155,40 @@ export class CollaboratorPool {
       return;
     }
     const cap = Math.max(1, options.maxConcurrent ?? COLLAB_DEFAULT_MAX_CONCURRENT);
-    this._activeChildPanels.set(options.runId, new Set());
+    if (!this._activeChildPanels.has(options.runId)) {
+      this._activeChildPanels.set(options.runId, new Set());
+    }
+    const controllers = new Map(specs.map(spec => [spec.collaboratorId, new AbortController()]));
+    let dispatches = this._dispatchControllers.get(options.runId);
+    if (!dispatches) { dispatches = new Set(); this._dispatchControllers.set(options.runId, dispatches); }
+    dispatches.add(controllers);
+    if (this._closedRuns.has(options.runId)) {
+      for (const controller of controllers.values()) { controller.abort(); }
+    }
 
     try {
-      const thunks = specs.map(spec => () => this._runCollaborator(spec, options));
+      const thunks = specs.map(spec => () => this._runCollaborator(spec, {
+        ...options, signal: controllers.get(spec.collaboratorId)!.signal,
+      }));
       yield* this._boundedMerge(thunks, cap);
     } finally {
-      // Consumer break / normal completion: tear down any child still running.
-      this.cancelRun(options.runId);
+      // Abort pending UI/probe awaits as well as provider reads on consumer break.
+      for (const controller of controllers.values()) { controller.abort(); }
+      dispatches.delete(controllers);
+      if (!dispatches.size) { this._dispatchControllers.delete(options.runId); }
+      for (const collaboratorId of controllers.keys()) { this.cancelCollaborator(options.runId, collaboratorId); }
+      if (!this._activeChildPanels.get(options.runId)?.size) { this._activeChildPanels.delete(options.runId); }
     }
   }
 
   /**
    * Cancel every live child of a run (fan-out). Safe to call repeatedly; also
-   * invoked from dispatch's finally so a consumer `break` cleans up.
+   * settles queued lanes and pending provider/UI waits.
    */
   public cancelRun(runId: string): void {
+    for (const dispatch of this._dispatchControllers.get(runId) ?? []) {
+      for (const controller of dispatch.values()) { controller.abort(); }
+    }
     const panels = this._activeChildPanels.get(runId);
     if (!panels) {
       return;
@@ -179,10 +212,13 @@ export class CollaboratorPool {
    * every panel derived for the collaborator, retries included, since a retry
    * runs under a `-retryN` suffix and cancelling only the base id orphans it.
    *
-   * Returns the number of child panels cancelled (0 when the collaborator has
-   * already landed, which is not an error).
+   * Returns the number of child panels cancelled (0 for a queued lane, a
+   * question awaiting input, or a collaborator that has already landed).
    */
   public cancelCollaborator(runId: string, collaboratorId: string): number {
+    for (const dispatch of this._dispatchControllers.get(runId) ?? []) {
+      dispatch.get(collaboratorId)?.abort();
+    }
     const panels = this._activeChildPanels.get(runId);
     if (!panels) { return 0; }
     const base = `-collab-${runId}-${collaboratorId}`;
@@ -290,7 +326,7 @@ export class CollaboratorPool {
       // instead of spawning an uncancellable orphan process.
       for (const entry of active.values()) {
         try {
-          void entry.it.return?.(undefined);
+          void Promise.resolve(entry.it.return?.(undefined)).catch(() => { /* best-effort teardown */ });
         } catch {
           /* best-effort teardown */
         }
@@ -307,7 +343,7 @@ export class CollaboratorPool {
 
   private async *_runCollaborator(
     spec: CollaboratorSpec,
-    options: CollaboratorDispatchOptions
+    options: CancellableDispatchOptions
   ): AsyncGenerator<CollaboratorChunk> {
     const base = {
       collaboratorId: spec.collaboratorId,
@@ -317,13 +353,43 @@ export class CollaboratorPool {
     };
 
     yield { ...base, type: 'collab_started' };
+    if (this._isCancelled(options)) {
+      yield { ...base, type: 'collab_complete', responseText: '', hasError: true, failure: 'cancelled' };
+      return;
+    }
 
     // --- Availability pre-check: never dispatch a missing/unauthed CLI ---
     let status: Awaited<ReturnType<PoolProviderManager['getProviderStatus']>> = null;
+    let readinessTimer: ReturnType<typeof setTimeout> | undefined;
+    let readinessTimedOut = false;
+    const readinessTimeoutMs = Math.min(30_000, spec.timeoutMs ?? SUBAGENT_TIMEOUT_MS);
     try {
-      status = await this._providerManager.getProviderStatus(spec.agentId);
+      status = await this._awaitWithCancellation(() => Promise.race([
+        this._providerManager.getProviderStatus(spec.agentId),
+        new Promise<never>((_resolve, reject) => {
+          readinessTimer = setTimeout(() => {
+            readinessTimedOut = true;
+            reject(new Error('Provider readiness check timed out.'));
+          }, readinessTimeoutMs);
+        }),
+      ]), options.signal);
     } catch (err) {
+      if (this._isCancelled(options)) {
+        yield { ...base, type: 'collab_complete', responseText: '', hasError: true, failure: 'cancelled' };
+        return;
+      }
+      if (readinessTimedOut) {
+        yield { ...base, type: 'collab_error', content: 'Provider readiness check timed out.', hasError: true, failure: 'timeout' };
+        yield { ...base, type: 'collab_complete', responseText: '', hasError: true, failure: 'timeout' };
+        return;
+      }
       console.warn(`[Mysti] CollaboratorPool: status probe failed for ${spec.agentId}:`, err);
+    } finally {
+      if (readinessTimer) { clearTimeout(readinessTimer); }
+    }
+    if (this._isCancelled(options)) {
+      yield { ...base, type: 'collab_complete', responseText: '', hasError: true, failure: 'cancelled' };
+      return;
     }
     if (status && !status.found) {
       yield {
@@ -361,13 +427,16 @@ export class CollaboratorPool {
 
   private async *_dispatchWithRetry(
     spec: CollaboratorSpec,
-    options: CollaboratorDispatchOptions,
+    options: CancellableDispatchOptions,
     base: Pick<CollaboratorChunk, 'collaboratorId' | 'agentId' | 'role' | 'label'>
   ): AsyncGenerator<CollaboratorChunk, AttemptOutcome> {
     let attempt = 0;
     let lastFailure: CollaboratorFailure | undefined;
 
     while (attempt <= SUBAGENT_MAX_RETRIES) {
+      if (this._isCancelled(options)) {
+        return { responseText: '', hasError: true, failure: 'cancelled' };
+      }
       if (attempt > 0) {
         const prevPanelId = this._childPanelId(options, spec, attempt - 1);
         this._forgetChild(options.runId, prevPanelId);
@@ -379,7 +448,7 @@ export class CollaboratorPool {
       // a child that was parked at a gate when Stop hit resumes here on the
       // 'crashed' retry path and would otherwise spawn a fresh child for a
       // dead run.
-      if (this._closedRuns.has(options.runId)) {
+      if (this._isCancelled(options)) {
         return { responseText: '', hasError: true, failure: 'cancelled' };
       }
 
@@ -432,13 +501,17 @@ export class CollaboratorPool {
       const outcome = yield* this._streamOnce(spec, options, base, childPanelId, childSettings);
       this._forgetChild(options.runId, childPanelId);
 
+      if (this._isCancelled(options)) {
+        return { ...outcome, hasError: true, failure: 'cancelled' };
+      }
+
       if (!outcome.hasError) {
         return outcome;
       }
       lastFailure = outcome.failure;
-      // Denials and cancellations are terminal — retrying would re-trigger the
-      // same forbidden action or fight a user cancel.
-      if (outcome.failure === 'denied' || outcome.failure === 'cancelled') {
+      // These need a user action before retrying can help.
+      if (outcome.failure === 'denied' || outcome.failure === 'cancelled'
+        || outcome.failure === 'not-authenticated' || outcome.failure === 'model-unavailable') {
         return outcome;
       }
       // Plan 18 (1.3/M4b): so is any attempt where a gated write was already
@@ -459,7 +532,7 @@ export class CollaboratorPool {
    */
   private async *_streamOnce(
     spec: CollaboratorSpec,
-    options: CollaboratorDispatchOptions,
+    options: CancellableDispatchOptions,
     base: Pick<CollaboratorChunk, 'collaboratorId' | 'agentId' | 'role' | 'label'>,
     childPanelId: string,
     childSettings: Settings
@@ -479,20 +552,26 @@ export class CollaboratorPool {
 
     try {
       nativeApprovals = this._registerNativeApprovals(spec, options, childPanelId);
+      const proposalsOnly = this._providerManager.getProviderInstance?.(spec.agentId)?.capabilities.toolCallsAreProposals === true;
+      const resolveInput = this._inputResolver(spec, options);
+      const input = resolveInput();
+      if (!input) { return { responseText, hasError: true, failure: 'cancelled' }; }
       const stream = this._providerManager.sendMessageToProvider(
         spec.agentId,
-        spec.prompt,
-        this._collectContext(spec),
+        input.content,
+        input.context,
         childSettings,
         options.conversation ?? null,
         undefined,
-        childPanelId
+        childPanelId,
+        resolveInput
       );
 
       // Race each pull against the deadline so a provider that ignores cancel
       // still terminates the attempt (the legacy MentionRouter loop only checks
       // a flag at the top of each iteration and hangs on such a provider).
-      for await (const chunk of this._withDeadline(stream, timeoutMs, onTimeout)) {
+      for await (const chunk of this._withDeadline(stream, timeoutMs, onTimeout, options.signal)) {
+        if (this._isCancelled(options)) { return { responseText, hasError: true, failure: 'cancelled' }; }
         if (nativeApprovals?.denied.length || nativeApprovals?.cancelled) { break; }
         if (chunk.type === 'text' && chunk.content) {
           responseText += chunk.content;
@@ -504,14 +583,14 @@ export class CollaboratorPool {
         } else if (chunk.type === 'tool_use' && chunk.toolCall) {
           // Native providers have already awaited the registered pre-execution
           // gate. Their subsequent tool notification must not ask a second time.
-          const allowed = nativeApprovals ? true : yield* this._gateToolUse(spec, options, base, childPanelId, chunk.toolCall);
+          const allowed = proposalsOnly || nativeApprovals ? true : yield* this._gateToolUse(spec, options, base, childPanelId, chunk.toolCall);
           if (!allowed) {
             hasError = true;
             failure = 'denied';
             break;
           }
-          yield { ...base, type: 'collab_tool_use', toolCall: chunk.toolCall };
-        } else if (chunk.type === 'tool_result' && chunk.toolCall) {
+          yield { ...base, type: 'collab_tool_use', toolCall: this._toolEvidence(chunk.toolCall, proposalsOnly) };
+        } else if (chunk.type === 'tool_result' && chunk.toolCall && !proposalsOnly) {
           yield { ...base, type: 'collab_tool_result', toolCall: chunk.toolCall };
         } else if (chunk.type === 'ask_user_question' && chunk.askUserQuestion) {
           nativeApprovals?.dispose();
@@ -531,7 +610,7 @@ export class CollaboratorPool {
           break;
         } else if (chunk.type === 'error') {
           hasError = true;
-          failure = 'stream-error';
+          failure = modelUnavailable(chunk.content) ? 'model-unavailable' : 'stream-error';
           yield { ...base, type: 'collab_error', failure, content: chunk.content, hasError: true };
           break;
         } else if (chunk.type === 'done' && chunk.usage) {
@@ -541,12 +620,15 @@ export class CollaboratorPool {
         // stream ending, not a keyword — just let the loop finish.
       }
     } catch (err) {
+      if (this._isCancelled(options)) { return { responseText, hasError: true, failure: 'cancelled' }; }
       hasError = true;
       failure = timedOut ? 'timeout' : 'crashed';
       yield { ...base, type: 'collab_error', failure, content: err instanceof Error ? err.message : 'Unknown error', hasError: true };
     } finally {
       nativeApprovals?.dispose();
     }
+
+    if (this._isCancelled(options)) { return { responseText, hasError: true, failure: 'cancelled' }; }
 
     if (nativeApprovals?.denied.length) {
       hasError = true;
@@ -596,7 +678,8 @@ export class CollaboratorPool {
   private async *_withDeadline(
     stream: AsyncGenerator<StreamChunk>,
     deadlineMs: number,
-    onTimeout: () => void
+    onTimeout: () => void,
+    signal: AbortSignal,
   ): AsyncGenerator<StreamChunk> {
     const TIMEOUT = Symbol('timeout');
     const it = stream[Symbol.asyncIterator]();
@@ -620,7 +703,7 @@ export class CollaboratorPool {
         });
         let raced: IteratorResult<StreamChunk> | typeof TIMEOUT;
         try {
-          raced = await Promise.race([it.next(), timeoutP]);
+          raced = await this._awaitWithCancellation(() => Promise.race([it.next(), timeoutP]), signal);
         } finally {
           if (timer) {
             clearTimeout(timer);
@@ -655,7 +738,7 @@ export class CollaboratorPool {
   /** Native requests already block the issuing backend; no process signals are needed. */
   private _registerNativeApprovals(
     spec: CollaboratorSpec,
-    options: CollaboratorDispatchOptions,
+    options: CancellableDispatchOptions,
     childPanelId: string,
   ): NativeChildApprovalScope | undefined {
     if (!this._providerManager.getProviderInstance?.(spec.agentId)?.capabilities.supportsNativeApproval) { return undefined; }
@@ -664,7 +747,7 @@ export class CollaboratorPool {
     let active = true;
     const scope: NativeChildApprovalScope = { denied: [], cancelled: false, dispose: () => {} };
     const registration = register.call(this._providerManager, childPanelId, async request => {
-      const current = () => active && !request.signal.aborted && !this._closedRuns.has(options.runId)
+      const current = () => active && !this._isCancelled(options) && !request.signal.aborted
         && !!this._activeChildPanels.get(options.runId)?.has(childPanelId);
       if (!current()) { scope.cancelled = true; return 'cancelled'; }
       if (request.panelId !== childPanelId || request.providerId !== spec.agentId) { return false; }
@@ -747,6 +830,20 @@ export class CollaboratorPool {
     });
   }
 
+  /** Normalize display provenance from the dispatched adapter, not model data. */
+  private _toolEvidence(tool: NonNullable<StreamChunk['toolCall']>, proposalsOnly: boolean): NonNullable<StreamChunk['toolCall']> {
+    const evidence = { ...tool };
+    if (proposalsOnly) {
+      evidence.proposalOnly = true;
+      evidence.status = 'proposed';
+      delete evidence.output;
+    } else {
+      delete evidence.proposalOnly;
+      if (evidence.status === 'proposed') { evidence.status = 'running'; }
+    }
+    return evidence;
+  }
+
   /**
    * Permission gate for a collaborator tool_use. Returns whether to re-emit the
    * tool_use (i.e. let it proceed). Read operations always pass. For read-only
@@ -756,7 +853,7 @@ export class CollaboratorPool {
    */
   private async *_gateToolUse(
     spec: CollaboratorSpec,
-    options: CollaboratorDispatchOptions,
+    options: CancellableDispatchOptions,
     base: Pick<CollaboratorChunk, 'collaboratorId' | 'agentId' | 'role' | 'label'>,
     childPanelId: string,
     toolCall: NonNullable<StreamChunk['toolCall']>
@@ -795,13 +892,19 @@ export class CollaboratorPool {
     let approved = false;
     if (options.onGate) {
       try {
-        approved = await options.onGate(spec, toolCall);
+        approved = await this._awaitWithCancellation(() => options.onGate!(spec, toolCall), options.signal);
       } catch (err) {
+        if (this._isCancelled(options)) { throw err; }
         console.warn(`[Mysti] CollaboratorPool: gate hook threw for ${childPanelId}:`, err);
         approved = false;
       }
     }
 
+    if (this._isCancelled(options)) {
+      this._forgetChild(options.runId, childPanelId);
+      this._providerManager.cancelRequest(childPanelId);
+      return false;
+    }
     if (approved) {
       // Plan 18 (1.3/M4b): record that a gated non-read action was APPROVED on
       // this child — if the attempt later crashes/times out, retrying the
@@ -832,7 +935,7 @@ export class CollaboratorPool {
    */
   private async *_relayQuestion(
     spec: CollaboratorSpec,
-    options: CollaboratorDispatchOptions,
+    options: CancellableDispatchOptions,
     base: Pick<CollaboratorChunk, 'collaboratorId' | 'agentId' | 'role' | 'label'>,
     childPanelId: string,
     childSettings: Settings,
@@ -857,11 +960,20 @@ export class CollaboratorPool {
     this._forgetChild(options.runId, childPanelId);
     this._providerManager.cancelRequest(childPanelId);
 
-    const userResponse = await Promise.race([
-      options.onQuestion(spec.agentId, questionChunk.askUserQuestion),
-      new Promise<null>(resolve => setTimeout(() => resolve(null), SUBAGENT_QUESTION_TIMEOUT_MS)),
-    ]);
+    let questionTimer: ReturnType<typeof setTimeout> | undefined;
+    let userResponse;
+    try {
+      userResponse = await this._awaitWithCancellation(() => Promise.race([
+        options.onQuestion!(spec.agentId, questionChunk.askUserQuestion!),
+        new Promise<null>(resolve => { questionTimer = setTimeout(() => resolve(null), SUBAGENT_QUESTION_TIMEOUT_MS); }),
+      ]), options.signal);
+    } finally {
+      if (questionTimer) { clearTimeout(questionTimer); }
+    }
 
+    if (this._isCancelled(options)) {
+      return { responseText, hasError: true, failure: 'cancelled' };
+    }
     if (!userResponse) {
       const skip = '\n[Question timed out — skipped]\n';
       responseText += skip;
@@ -872,12 +984,12 @@ export class CollaboratorPool {
     // Plan 18 Stop race: this generator was parked awaiting the user's answer
     // — if disposeRun reclaimed the run meanwhile, do not spawn a follow-up
     // child for a dead run.
-    if (this._closedRuns.has(options.runId)) {
+    if (this._isCancelled(options)) {
       return { responseText, hasError: true, failure: 'cancelled' };
     }
 
     const answerText = this._formatAnswers(userResponse.answers);
-    const followUpPrompt = `${spec.prompt}\n\n---\n\nUser answered your questions:\n${answerText}\n\nPlease continue.`;
+    const answerSuffix = `\n\n---\n\nUser answered your questions:\n${answerText}\n\nPlease continue.`;
     const followUpPanelId = `${childPanelId}-followup`;
     this._rememberChild(options.runId, followUpPanelId);
     // Plan 18 (H2): follow-up children must be reclaimable at end-of-run too —
@@ -889,16 +1001,22 @@ export class CollaboratorPool {
     let usage: UsageStats | undefined;
     let nativeApprovals: NativeChildApprovalScope | undefined;
     let followUpTimedOut = false;
+    const priorTextLength = responseText.length;
     try {
       nativeApprovals = this._registerNativeApprovals(spec, options, followUpPanelId);
+      const proposalsOnly = this._providerManager.getProviderInstance?.(spec.agentId)?.capabilities.toolCallsAreProposals === true;
+      const resolveInput = this._inputResolver(spec, options, answerSuffix);
+      const input = resolveInput();
+      if (!input) { return { responseText, hasError: true, failure: 'cancelled' }; }
       const followUpStream = this._providerManager.sendMessageToProvider(
         spec.agentId,
-        followUpPrompt,
-        this._collectContext(spec),
+        input.content,
+        input.context,
         childSettings,
         options.conversation ?? null,
         undefined,
-        followUpPanelId
+        followUpPanelId,
+        resolveInput
       );
       // Plan 18 (1.3/M4a): same deadline discipline as the primary stream — a
       // hung follow-up otherwise parks the collaborator until run teardown.
@@ -906,7 +1024,8 @@ export class CollaboratorPool {
       for await (const chunk of this._withDeadline(followUpStream, followUpDeadlineMs, () => {
         followUpTimedOut = true;
         this._providerManager.cancelRequest(followUpPanelId);
-      })) {
+      }, options.signal)) {
+        if (this._isCancelled(options)) { return { responseText, hasError: true, failure: 'cancelled' }; }
         if (nativeApprovals?.denied.length || nativeApprovals?.cancelled) { break; }
         if (chunk.type === 'text' && chunk.content) {
           responseText += chunk.content;
@@ -914,13 +1033,17 @@ export class CollaboratorPool {
         } else if (chunk.type === 'thinking' && chunk.content) {
           yield { ...base, type: 'collab_thinking', content: chunk.content };
         } else if (chunk.type === 'tool_use' && chunk.toolCall) {
-          const allowed = nativeApprovals ? true : yield* this._gateToolUse(spec, options, base, followUpPanelId, chunk.toolCall);
+          const allowed = proposalsOnly || nativeApprovals ? true : yield* this._gateToolUse(spec, options, base, followUpPanelId, chunk.toolCall);
           if (!allowed) { hasError = true; failure = 'denied'; break; }
-          yield { ...base, type: 'collab_tool_use', toolCall: chunk.toolCall };
-        } else if (chunk.type === 'tool_result' && chunk.toolCall) {
+          yield { ...base, type: 'collab_tool_use', toolCall: this._toolEvidence(chunk.toolCall, proposalsOnly) };
+        } else if (chunk.type === 'tool_result' && chunk.toolCall && !proposalsOnly) {
           yield { ...base, type: 'collab_tool_result', toolCall: chunk.toolCall };
+        } else if (chunk.type === 'auth_error') {
+          hasError = true; failure = 'not-authenticated';
+          yield { ...base, type: 'collab_error', failure, content: chunk.content || 'Authentication required', hasError: true };
+          break;
         } else if (chunk.type === 'error') {
-          hasError = true; failure = 'stream-error';
+          hasError = true; failure = modelUnavailable(chunk.content) ? 'model-unavailable' : 'stream-error';
           yield { ...base, type: 'collab_error', failure, content: chunk.content, hasError: true };
           break;
         } else if (chunk.type === 'done' && chunk.usage) {
@@ -932,12 +1055,15 @@ export class CollaboratorPool {
         yield { ...base, type: 'collab_error', failure, content: 'Follow-up response timed out.', hasError: true };
       }
     } catch (err) {
+      if (this._isCancelled(options)) { return { responseText, hasError: true, failure: 'cancelled' }; }
       hasError = true; failure = 'crashed';
       yield { ...base, type: 'collab_error', failure, content: err instanceof Error ? err.message : 'Unknown error', hasError: true };
     } finally {
       nativeApprovals?.dispose();
       this._forgetChild(options.runId, followUpPanelId);
     }
+
+    if (this._isCancelled(options)) { return { responseText, hasError: true, failure: 'cancelled' }; }
 
     if (nativeApprovals?.denied.length) {
       hasError = true;
@@ -951,12 +1077,52 @@ export class CollaboratorPool {
       failure = 'cancelled';
     }
 
+    if (!hasError && !responseText.slice(priorTextLength).trim()) {
+      hasError = true;
+      failure = 'empty-response';
+      yield { ...base, type: 'collab_error', failure, content: 'Collaborator returned no answer after your reply.', hasError: true };
+    }
+
     return { responseText, hasError, failure, ...(usage ? { usage } : {}) };
   }
 
   // ===========================================================================
   // Helpers
   // ===========================================================================
+
+  private _isCancelled(options: CancellableDispatchOptions): boolean {
+    return options.signal.aborted || this._closedRuns.has(options.runId) || options.isCancelled?.() === true;
+  }
+
+  /** Resolve after pool waits and again after the provider's own preparation. */
+  private _inputResolver(spec: CollaboratorSpec, options: CancellableDispatchOptions, suffix = ''): ProviderInputResolver {
+    return () => {
+      if (this._isCancelled(options)) { return undefined; }
+      const content = (spec.resolvePrompt?.() ?? spec.prompt) + suffix;
+      if (this._isCancelled(options)) { return undefined; }
+      return { content, context: this._collectContext(spec) };
+    };
+  }
+
+  /** A process cancel cannot settle a hung read, status probe, or unanswered UI card. */
+  private async _awaitWithCancellation<T>(operation: () => Promise<T>, signal: AbortSignal): Promise<T> {
+    signal.throwIfAborted();
+    let onAbort: (() => void) | undefined;
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      onAbort = () => reject(signal.reason);
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
+    try {
+      const result = await Promise.race([Promise.resolve().then(() => {
+        signal.throwIfAborted();
+        return operation();
+      }), cancelled]);
+      signal.throwIfAborted();
+      return result;
+    } finally {
+      if (onAbort) { signal.removeEventListener('abort', onAbort); }
+    }
+  }
 
   private _childPanelId(options: CollaboratorDispatchOptions, spec: CollaboratorSpec, attempt: number): string {
     const suffix = attempt > 0 ? `-retry${attempt}` : '';

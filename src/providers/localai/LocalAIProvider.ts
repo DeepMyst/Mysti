@@ -24,6 +24,7 @@ import type {
   AuthConfig,
   ProviderCapabilities,
   PersonaConfig,
+  ProviderInputResolver,
 } from '../base/IProvider';
 import type {
   Settings,
@@ -108,6 +109,7 @@ export class LocalAIProvider extends BaseCliProvider {
     supportsStreaming: true,
     supportsThinking: false,
     supportsToolUse: true,
+    toolCallsAreProposals: true,
     supportsSessions: false,
     supportsImages: false,
     supportsAutoInstall: false,
@@ -332,6 +334,11 @@ export class LocalAIProvider extends BaseCliProvider {
     return undefined;
   }
 
+  protected override _getEffectiveModel(settings: Settings): string {
+    return settings.routedModel || settings.model
+      || vscode.workspace.getConfiguration('mysti').get<string>('localaiModel', '') || this.config.defaultModel;
+  }
+
   // --- Message Sending (OpenAI-compatible HTTP API with SSE streaming) ---
 
   async *sendMessage(
@@ -344,7 +351,9 @@ export class LocalAIProvider extends BaseCliProvider {
     _providerManager?: unknown,
     agentConfig?: AgentConfiguration,
     attachments?: Attachment[],
+    resolveInput?: ProviderInputResolver,
   ): AsyncGenerator<StreamChunk> {
+    if (resolveInput && !resolveInput()) { return; }
     const session = this._getSession(panelId) as LocalAISessionState;
     const config = vscode.workspace.getConfiguration('mysti');
 
@@ -353,21 +362,34 @@ export class LocalAIProvider extends BaseCliProvider {
     // Model precedence: effective/routed model FIRST (so the Mysti coordinator's
     // tier-routing / routedModel is honored, not silently dropped), then the
     // user-configured provider model, then the provider default.
-    const model = this._getEffectiveModel(settings) || config.get<string>('localaiModel', '') || this.config.defaultModel;
+    const model = this._getEffectiveModel(settings);
     const temperature = config.get<number>('localaiTemperature', 0.7);
     const maxTokens = config.get<number>('localaiMaxTokens', 0);
     const apiKey = this._getApiKey();
     const timeout = config.get<number>('localaiRequestTimeout', 120000);
 
     // Set up cancellation
-    session.abortController = new AbortController();
-    const timeoutId = setTimeout(() => session.abortController?.abort(), timeout);
+    const requestController = new AbortController();
+    session.abortController = requestController;
+    let requestUsage: LocalAISessionState['lastUsageStats'] = null;
+    session.lastUsageStats = null;
+    const timeoutId = setTimeout(() => requestController.abort(), timeout);
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let dispatched = false;
 
     try {
-      // Build prompt using inherited method
-      const fullPrompt = await this.buildPromptAsync(
+      const render = resolveInput ? await this.preparePromptRenderer(
+        conversation, settings, persona, agentConfig, attachments,
+      ) : undefined;
+      let fullPrompt = render ? '' : await this.buildPromptAsync(
         content, context, conversation, settings, persona, agentConfig, attachments,
       );
+      if (resolveInput && render) {
+        if (requestController.signal.aborted || session.abortController !== requestController) { return; }
+        const input = resolveInput();
+        if (!input || requestController.signal.aborted || session.abortController !== requestController) { return; }
+        fullPrompt = render(input.content, input.context);
+      }
 
       // Build OpenAI-compatible request body
       const body: Record<string, unknown> = {
@@ -394,11 +416,12 @@ export class LocalAIProvider extends BaseCliProvider {
 
       console.log(`[Mysti] LocalAI: Sending request to ${endpoint}/v1/chat/completions with model ${model}`);
 
+      dispatched = true;
       const response = await fetch(`${endpoint}/v1/chat/completions`, {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
-        signal: session.abortController.signal,
+        signal: requestController.signal,
       });
 
       if (!response.ok) {
@@ -415,13 +438,16 @@ export class LocalAIProvider extends BaseCliProvider {
       }
 
       // Read SSE stream (OpenAI format: "data: {...}\n\n")
-      const reader = response.body.getReader();
+      reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
       let totalOutputTokens = 0;
+      let sawTerminal = false;
 
       while (true) {
+        requestController.signal.throwIfAborted();
         const { done, value } = await reader.read();
+        requestController.signal.throwIfAborted();
         if (done) { break; }
 
         buffer += decoder.decode(value, { stream: true });
@@ -429,6 +455,8 @@ export class LocalAIProvider extends BaseCliProvider {
         buffer = lines.pop()!;
 
         for (const line of lines) {
+          // Stop can arrive at a yield while later records are already buffered.
+          requestController.signal.throwIfAborted();
           const trimmed = line.trim();
           if (!trimmed) { continue; }
 
@@ -438,13 +466,29 @@ export class LocalAIProvider extends BaseCliProvider {
           const data = trimmed.slice(6); // Remove "data: " prefix
 
           if (data === '[DONE]') {
+            sawTerminal = true;
             continue;
           }
 
           try {
             const chunk = JSON.parse(data);
+            // Usage may arrive separately with an empty choices array.
+            if (chunk.usage) {
+              requestUsage = {
+                input_tokens: chunk.usage.prompt_tokens || 0,
+                output_tokens: chunk.usage.completion_tokens || 0,
+              };
+              // Preserve the legacy accessor for the current request without
+              // sharing the terminal usage between overlapping invocations.
+              if (session.abortController === requestController) {
+                session.lastUsageStats = requestUsage;
+              }
+            }
             const choice = chunk.choices?.[0];
             if (!choice) { continue; }
+            if (typeof choice.finish_reason === 'string' && choice.finish_reason.length > 0) {
+              sawTerminal = true;
+            }
 
             const delta = choice.delta;
 
@@ -458,10 +502,10 @@ export class LocalAIProvider extends BaseCliProvider {
             // Tool-card resolution strategy (Plan 02 Phase 3): LocalAI never
             // executes tools, so no tool_result is EVER emitted — and we must
             // NOT fabricate one. The manifest declares emitsToolResults: false
-            // and the webview auto-resolves running tool cards for such
-            // providers when the response completes.
+            // and every request remains an unexecuted proposal.
             if (delta?.tool_calls && Array.isArray(delta.tool_calls)) {
               for (const toolCall of delta.tool_calls) {
+                requestController.signal.throwIfAborted();
                 const fn = toolCall.function;
                 if (fn?.name) {
                   yield {
@@ -470,36 +514,41 @@ export class LocalAIProvider extends BaseCliProvider {
                       id: toolCall.id || `localai-tool-${Date.now()}`,
                       name: fn.name,
                       input: fn.arguments ? JSON.parse(fn.arguments) : {},
-                      status: 'running',
+                      status: 'proposed',
+                      proposalOnly: true,
                       kind: toolKind(fn.name),
                     }
                   };
                 }
               }
             }
-
-            // Capture usage from the final chunk if available
-            if (chunk.usage) {
-              session.lastUsageStats = {
-                input_tokens: chunk.usage.prompt_tokens || 0,
-                output_tokens: chunk.usage.completion_tokens || 0,
-              };
-            }
           } catch (parseErr) {
+            // Cancellation inside a parsed record is not malformed SSE.
+            requestController.signal.throwIfAborted();
             console.log('[Mysti] LocalAI: Failed to parse SSE data:', data.substring(0, 200));
           }
         }
       }
 
+      // EOF alone does not establish completion. Keep any partial answer and
+      // settle the request, but make a truncated response visible to the user.
+      if (!sawTerminal) {
+        yield { type: 'error', content: 'LocalAI response ended before completion; the answer may be incomplete.' };
+      }
+      requestController.signal.throwIfAborted();
+
       // Use captured usage or estimate from token count
       // The fallback COUNTS streamed deltas — it is an estimate, not a report.
       // Flag it so ledgers/telemetry never absorb it as a measured figure.
-      const usage = session.lastUsageStats
+      const usage = requestUsage
         || { input_tokens: 0, output_tokens: totalOutputTokens, estimated: true };
-      session.lastUsageStats = null;
+      if (session.lastUsageStats === requestUsage) {
+        session.lastUsageStats = null;
+      }
       yield { type: 'done', usage };
 
     } catch (error) {
+      if (resolveInput && !dispatched && (requestController.signal.aborted || session.abortController !== requestController)) { return; }
       if (error instanceof Error && error.name === 'AbortError') {
         yield { type: 'error', content: 'Request cancelled or timed out' };
       } else {
@@ -508,20 +557,28 @@ export class LocalAIProvider extends BaseCliProvider {
       yield { type: 'done' };
     } finally {
       clearTimeout(timeoutId);
+      if (session.lastUsageStats === requestUsage) {
+        session.lastUsageStats = null;
+      }
       // Plan 18 (2.4 audit): abort on the way out — generator abandonment
       // otherwise leaks the SSE connection. No-op if already finished.
-      session.abortController?.abort();
-      session.abortController = null;
+      requestController.abort();
+      await reader?.cancel().catch(() => {});
+      reader?.releaseLock();
+      if (session.abortController === requestController) {
+        session.abortController = null;
+      }
     }
   }
 
   // --- Cancellation ---
 
   cancelCurrentRequest(panelId?: string): void {
-    if (panelId) {
-      const session = this._panelSessions.get(panelId) as LocalAISessionState | undefined;
+    const sessions = panelId ? [this._panelSessions.get(panelId)] : [...this._panelSessions.values()];
+    for (const state of sessions) {
+      const session = state as LocalAISessionState | undefined;
       if (session?.abortController) {
-        console.log('[Mysti] LocalAI: Cancelling request for panel:', panelId);
+        console.log('[Mysti] LocalAI: Cancelling request for panel:', session.panelId);
         session.abortController.abort();
         session.abortController = null;
       }
@@ -537,16 +594,19 @@ export class LocalAIProvider extends BaseCliProvider {
   }
 
   clearSession(panelId?: string): void {
+    this.cancelCurrentRequest(panelId);
     super.clearSession(panelId);
-    if (panelId) {
-      const session = this._panelSessions.get(panelId) as LocalAISessionState | undefined;
+    const sessions = panelId ? [this._panelSessions.get(panelId)] : [...this._panelSessions.values()];
+    for (const state of sessions) {
+      const session = state as LocalAISessionState | undefined;
       if (session) {
         session.lastUsageStats = null;
-        if (session.abortController) {
-          session.abortController.abort();
-          session.abortController = null;
-        }
       }
     }
+  }
+
+  dispose(): void {
+    this.cancelCurrentRequest();
+    super.dispose();
   }
 }

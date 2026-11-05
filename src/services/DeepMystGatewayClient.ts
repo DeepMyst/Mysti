@@ -72,7 +72,14 @@ export interface GatewayStreamEvent {
   toolCalls?: AccumulatedToolCall[];
 }
 
-export interface GatewayChatParams {
+export interface GatewayDispatchOptions {
+  /** Resolve transient context after waits, once per actual request attempt. */
+  resolveMessages?: () => GatewayChatMessage[];
+  /** A late ownership check; AbortSignal still cancels queued/in-flight work. */
+  isCancelled?: () => boolean;
+}
+
+export interface GatewayChatParams extends GatewayDispatchOptions {
   model: string;
   messages: GatewayChatMessage[];
   maxTokens?: number;
@@ -87,6 +94,18 @@ export interface GatewayChatParams {
   timeoutMs?: number;
   /** Plan 19 P4: OpenAI-style function tools; when present the model may emit tool_calls. */
   tools?: unknown[];
+}
+
+/** Keep canonical messages untouched; only the outgoing body uses this snapshot. */
+export function resolveGatewayMessages(params: GatewayChatParams, signal: AbortSignal): GatewayChatMessage[] {
+  const checkCancelled = () => {
+    signal.throwIfAborted();
+    if (params.isCancelled?.()) { throw new Error('Request cancelled before dispatch'); }
+  };
+  checkCancelled();
+  const messages = params.resolveMessages ? params.resolveMessages() : params.messages;
+  checkCancelled();
+  return messages;
 }
 
 export class DeepMystGatewayClient {
@@ -126,13 +145,6 @@ export class DeepMystGatewayClient {
     const timeoutMs = params.timeoutMs ?? 60_000;
     const abortScope = createAbortScope([params.signal], timeoutMs);
 
-    const body = {
-      model: params.model,
-      messages: applyCacheBreakpoints(params.messages, params.model),
-      max_tokens: params.maxTokens ?? 1024,
-      stream: false,
-    };
-
     try {
       abortScope.signal.throwIfAborted();
       const res = await fetch(`${this._baseUrl()}/v1/chat/completions`, {
@@ -142,7 +154,12 @@ export class DeepMystGatewayClient {
           'Content-Type': 'application/json',
           Accept: 'application/json',
         },
-        body: JSON.stringify(body),
+        body: JSON.stringify({
+          model: params.model,
+          messages: applyCacheBreakpoints(resolveGatewayMessages(params, abortScope.signal), params.model),
+          max_tokens: params.maxTokens ?? 1024,
+          stream: false,
+        }),
         signal: abortScope.signal,
       });
 
@@ -224,7 +241,7 @@ export class DeepMystGatewayClient {
             // Explicit prompt-cache breakpoints on the stable prefix — the ReAct
             // loop re-sends the system prompt on every round-trip and Anthropic
             // models cache nothing without one. See src/services/PromptCache.ts.
-            messages: applyCacheBreakpoints(params.messages, params.model),
+            messages: applyCacheBreakpoints(resolveGatewayMessages(params, abortScope.signal), params.model),
             max_tokens: params.maxTokens ?? 2048,
             stream: true,
             stream_options: { include_usage: true },

@@ -71,6 +71,113 @@ describe('all provider installation screens', () => {
     expect(await page.locator('#install-provider-modal').isVisible()).toBe(true);
     expect(await page.locator('.install-method-terminal-btn').count()).toBeGreaterThan(0);
   });
+  it.skipIf(CHROMIUM_UNAVAILABLE)('runs diagnostics from its real button and renders binary paths and errors as text', async () => {
+    await fire('showWizard', { panelId: 'sidebar', providers: [], npmAvailable: true });
+    await page.locator('.wizard-diagnose-btn').click();
+    expect((await posted()).filter(message => message.type === 'runDiagnostics')).toEqual([
+      expect.objectContaining({ panelId: 'sidebar' }),
+    ]);
+    expect(await page.locator('.wizard-diagnose-btn').isDisabled()).toBe(true);
+    const binaryPath = '/tmp/CLI & tools/<img src=x onerror="window.diagnosticInjection=true">/codex';
+    const shell = '<img src=x onerror="window.diagnosticInjection=true">';
+    const npmPath = '/tmp/Node & tools/<img src=x>/bin/npm';
+    const npmPrefix = '/tmp/npm <script>bad()</script> prefix';
+    const error = '<b>Version probe failed & can retry</b>';
+    await fire('diagnosticsResult', {
+      timestamp: Date.now(), platform: { os: 'darwin', arch: 'arm64', shell, hasNvm: false },
+      nodeStatus: { available: true, version: 'v22.23.3', meetsMinimum: true },
+      npmStatus: { available: true, version: '10.9.4', path: npmPath, prefix: npmPrefix, canWriteGlobalDir: true },
+      networkReachable: true,
+      providers: [{ id: 'openai-codex', installed: true, authenticated: false, version: '0.159.3', path: binaryPath, error }],
+      recommendations: ['Authenticate when ready.'],
+    });
+    const panel = page.locator('#diagnostics-panel');
+    expect(await panel.isVisible()).toBe(true);
+    expect(await panel.locator('img, script, b').count()).toBe(0);
+    expect(await panel.innerText()).toContain(shell);
+    expect(await panel.innerText()).toContain(error);
+    expect(await panel.locator('.diagnostics-provider-path').innerText()).toBe(binaryPath);
+    expect(await panel.locator('.diagnostics-provider-path').getAttribute('title')).toBe(binaryPath);
+    expect(await panel.locator('.diagnostics-npm-path').innerText()).toBe(npmPath);
+    expect(await panel.locator('.diagnostics-npm-prefix').innerText()).toBe(npmPrefix);
+    expect(await panel.locator('.diagnostics-npm-path').getAttribute('title')).toBe(npmPath);
+    const pathBox = await panel.locator('.diagnostics-provider-path').boundingBox();
+    expect(pathBox!.x).toBeGreaterThanOrEqual(0);
+    expect(pathBox!.x + pathBox!.width).toBeLessThanOrEqual(320);
+    expect(await page.locator('.wizard-diagnose-btn').isEnabled()).toBe(true);
+    expect((await posted()).some(message => ['startProviderSetup', 'openTerminal', 'authConfirm'].includes(message.type))).toBe(false);
+  });
+  for (const manual of [false, true]) {
+    it.skipIf(CHROMIUM_UNAVAILABLE)(`${manual ? 'manual update instructions' : 'normal CLI update'} escape paths and submit only provider identity`, async () => {
+      const hostilePath = '/tmp/CLI <img src=x onerror="window.updateInjection=true">';
+      const command = manual ? '' : `npm install -g --prefix '${hostilePath}' @openai/codex@0.159.3`;
+      const reason = manual ? `Cannot safely update the selected binary at ${hostilePath}. Update this installation manually.` : undefined;
+      await fire('cliUpdatesAvailable', { updates: [{
+        providerId: 'openai-codex', providerLabel: 'Codex', packageName: '@openai/codex',
+        installed: '0.150.0', latest: '0.159.3', command, manualUpdateReason: reason,
+      }] });
+      const card = page.locator('#update-notices .update-card-cli');
+      expect(await card.isVisible()).toBe(true);
+      expect(await card.locator('img, script').count()).toBe(0);
+      expect(await card.locator('.update-text').innerText()).toContain(manual ? reason! : command);
+      const button = card.locator('[data-action="run-update"]');
+      expect(await button.innerText()).toBe(manual ? 'Update instructions' : 'Update');
+      if (manual) { expect(await card.locator('.update-cmd').count()).toBe(0); }
+      await button.click();
+      expect((await posted()).filter(message => message.type === 'runCliUpdate')).toEqual([
+        expect.objectContaining({ payload: { provider: 'openai-codex' } }),
+      ]);
+    });
+  }
+  it.skipIf(CHROMIUM_UNAVAILABLE)('shows the Node-compatible update target separately from the newer published release', async () => {
+    const requiredNode = '>=24 <img src=x onerror="window.updateInjection=true">';
+    await fire('cliUpdatesAvailable', { updates: [{
+      providerId: 'openai-codex', providerLabel: 'Codex', packageName: '@openai/codex',
+      installed: '0.159.3', latest: '0.170.0', installable: '0.162.0', blockedByNodeEngine: true,
+      requiredNode, command: "npm install -g --prefix '/tmp/selected Codex' @openai/codex@0.162.0",
+    }] });
+    const card = page.locator('#update-notices .update-card-cli');
+    expect(await card.locator('.update-agent').innerText()).toBe('0.159.3 → 0.162.0');
+    expect(await card.locator('.update-compatibility').innerText()).toBe(`0.170.0 requires Node ${requiredNode}; this update installs 0.162.0.`);
+    expect(await card.locator('img, script').count()).toBe(0);
+    expect(await card.locator('.update-cmd').innerText()).toContain('@openai/codex@0.162.0');
+    await card.locator('[data-action="run-update"]').click();
+    expect((await posted()).filter(message => message.type === 'runCliUpdate')).toEqual([
+      expect.objectContaining({ payload: { provider: 'openai-codex' } }),
+    ]);
+  });
+  it.skipIf(CHROMIUM_UNAVAILABLE)('removes a completed CLI update only on a refreshed update list and preserves unrelated model notices', async () => {
+    await fire('newModelsAvailable', { models: [{
+      providerId: 'claude-code', providerLabel: 'Claude', modelId: 'test-new-model', name: 'Available Claude model',
+    }] });
+    await fire('cliUpdatesAvailable', { updates: [{
+      providerId: 'openai-codex', providerLabel: 'Codex', packageName: '@openai/codex',
+      installed: '0.159.3', latest: '0.162.0', installable: '0.162.0', blockedByNodeEngine: false,
+      command: "npm install -g --prefix '/tmp/selected Codex' @openai/codex@0.162.0",
+    }] });
+    await page.locator('#update-notices [data-action="next-notice"]').click();
+    const cliCard = page.locator('#update-notices .update-card-cli[data-provider="openai-codex"]');
+    expect(await cliCard.isVisible()).toBe(true);
+    const requestId = await open('ollama');
+    await fire('providerInstallInfo', { ...infos.find(info => info.providerId === 'ollama'), requestId });
+    await page.locator('#install-refresh-btn').click();
+    expect((await posted()).some(message => message.type === 'refreshProviderDetection')).toBe(true);
+    await fire('providerAvailability', { providerAvailability: { 'openai-codex': { available: true, authenticated: true } } });
+    await fire('wizardStatus', { providers: [{ providerId: 'openai-codex', installed: true, authenticated: true, cliVersion: '0.162.0' }], npmAvailable: true });
+    // Availability and setup status do not replace the separately maintained
+    // update catalogue. The host must publish the refreshed list explicitly.
+    expect(await cliCard.count()).toBe(1);
+    await fire('cliUpdatesAvailable', { updates: [] });
+    await fire('providerDetectionComplete', {});
+    await page.locator('#install-close-btn').click();
+    expect(await cliCard.count()).toBe(0);
+    const modelCard = page.locator('#update-notices .update-card[data-kind="model"]');
+    expect(await modelCard.isVisible()).toBe(true);
+    expect(await modelCard.getAttribute('data-model')).toBe('test-new-model');
+    expect(await modelCard.locator('.update-title').innerText()).toBe('Available Claude model');
+    expect(await modelCard.locator('[data-action="next-notice"]').count()).toBe(0);
+    expect((await posted()).some(message => ['runCliUpdate', 'selectAnnouncedModel', 'dismissModelAnnouncement'].includes(message.type))).toBe(false);
+  });
   it.skipIf(CHROMIUM_UNAVAILABLE)('a completion timer cannot close a newly opened dialog for the same provider', async () => {
     await page.clock.install();
     await open('claude-code'); await fire('providerInstallInfo', infos[0]);

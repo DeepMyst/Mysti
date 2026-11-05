@@ -30,6 +30,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as vscode from 'vscode';
 
 // The real PlanOptionManager constructs a ResponseClassifier, which spawns warm
 // Claude CLI processes — never acceptable in a unit test run.
@@ -46,6 +47,7 @@ import { PermissionManager } from '../../src/managers/PermissionManager';
 import { clearMockConfig, setMockConfig, Uri } from '../helpers/mockVscode';
 import type { WebviewMessage, Settings } from '../../src/types';
 import { createModelRegistryStub } from '../helpers/modelRegistryStub';
+import { ProviderRegistry } from '../../src/providers/ProviderRegistry';
 
 // A catalog shaped like the real one in the way that matters: each provider
 // owns ids the others do not, and Ollama mirrors another vendor's id verbatim.
@@ -277,6 +279,95 @@ describe('the model a panel reports is the model it runs', () => {
   });
 
   describe('a model change reaches the webview (defect 2)', () => {
+    it.each(['chat', 'hub'])('does not relay a stale %s model selection to the paired view', async surface => {
+      selectAgent(h, 'claude-code');
+      const host = h.provider as any;
+      const hubMessages: any[] = [];
+      const hubWebview = { postMessage: async (message: unknown) => { hubMessages.push(message); return true; } };
+      host._hub = { originPanelId: 'sidebar', panel: { webview: hubWebview },
+        loadedFor: { panelId: 'sidebar', conversationId: h.panelState.currentConversationId ?? null } };
+      const state = host._extensionContext.globalState;
+      const original = state.update.bind(state);
+      let release!: () => void;
+      const saving = new Promise<void>(resolve => { release = resolve; });
+      vi.spyOn(state, 'update').mockImplementationOnce(async (key: string, value: unknown) => {
+        await original(key, value); await saving;
+      });
+      const change = (model: string) => surface === 'chat'
+        ? host._receivePanelMessage({ type: 'updateSettings', payload: { model } }, 'sidebar', h.panelState.webview)
+        : host._receiveHubMessage({ type: 'updateSettings', payload: { model } }, hubWebview);
+      const old = change('claude-opus-5');
+      await change('claude-sonnet-5');
+      release(); await old;
+      const relayed = (surface === 'chat' ? hubMessages : h.messages)
+        .filter(message => message.type === 'settingsSync' && message.payload.model).map(message => message.payload.model);
+      expect(relayed).toEqual(['claude-sonnet-5']);
+    });
+
+    it('keeps the newest model when an older selection finishes saving later', async () => {
+      selectAgent(h, 'claude-code');
+      const host = h.provider as any;
+      const state = host._extensionContext.globalState;
+      const original = state.update.bind(state);
+      let release!: () => void;
+      const saving = new Promise<void>(resolve => { release = resolve; });
+      vi.spyOn(state, 'update').mockImplementationOnce(async (key: string, value: unknown) => {
+        await original(key, value); await saving;
+      });
+      const old = host._handleUpdateSettings({ model: 'claude-opus-5' }, 'sidebar');
+      await host._handleUpdateSettings({ model: 'claude-sonnet-5' }, 'sidebar');
+      release(); await old;
+      expect(host._getPanelModel('sidebar')).toBe('claude-sonnet-5');
+      expect(h.messages.filter(message => message.type === 'modelChanged').at(-1)?.payload.model).toBe('claude-sonnet-5');
+    });
+
+    it('does not apply an old provider model after the user switched agents', async () => {
+      selectAgent(h, 'claude-code');
+      const host = h.provider as any;
+      const state = host._extensionContext.globalState;
+      const original = state.update.bind(state);
+      let release!: () => void;
+      const saving = new Promise<void>(resolve => { release = resolve; });
+      vi.spyOn(state, 'update').mockImplementationOnce(async (key: string, value: unknown) => {
+        await original(key, value); await saving;
+      });
+      const old = host._handleUpdateSettings({ model: 'claude-opus-5', customModel: 'claude-opus-5' }, 'sidebar');
+      await host._handleUpdateSettings({ provider: 'openai-codex', model: 'gpt-6-astra' }, 'sidebar');
+      release(); await old;
+      expect(host._getPanelProvider('sidebar')).toBe('openai-codex');
+      expect(host._getPanelModel('sidebar')).toBe('gpt-6-astra');
+      expect(vscode.workspace.getConfiguration('mysti').get('codexModel', '')).not.toBe('claude-opus-5');
+    });
+
+    it('does not apply a pending model save to a replacement conversation', async () => {
+      selectAgent(h, 'claude-code');
+      const host = h.provider as any;
+      h.panelState.currentConversationId = 'original';
+      let release!: () => void;
+      vi.spyOn(host._extensionContext.globalState, 'update').mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
+      const old = host._handleUpdateSettings({ model: 'claude-opus-5' }, 'sidebar');
+      h.panelState.currentConversationId = 'replacement';
+      h.panelState.settingsOverrides.model = 'claude-sonnet-5';
+      h.messages.length = 0;
+      release(); await old;
+      expect(host._getPanelModel('sidebar')).toBe('claude-sonnet-5');
+      expect(h.messages.filter(message => message.type === 'modelChanged')).toHaveLength(0);
+    });
+
+    it('drops a custom-model dialog result after changing conversations on the same provider', async () => {
+      selectAgent(h, 'claude-code');
+      const host = h.provider as any;
+      h.panelState.currentConversationId = 'original';
+      let answer!: (value: string) => void;
+      vi.spyOn(vscode.window, 'showInputBox').mockImplementationOnce(() => new Promise<string>(resolve => { answer = resolve; }));
+      const pending = host._handleCustomModel('sidebar');
+      h.panelState.currentConversationId = 'replacement';
+      h.panelState.settingsOverrides.model = 'claude-sonnet-5';
+      answer('custom-from-old-conversation'); await pending;
+      expect(host._getPanelModel('sidebar')).toBe('claude-sonnet-5');
+      expect(vscode.workspace.getConfiguration('mysti').get('claudeCodeModel', '')).not.toBe('custom-from-old-conversation');
+    });
+
     it('/model posts modelChanged, so the webview stops re-sending the old id', async () => {
       setMockConfig('defaultModel', 'qwen3-coder');
       selectAgent(h, 'openai-codex');
@@ -339,6 +430,32 @@ describe('the model a panel reports is the model it runs', () => {
 
       const changed = h.messages.filter(m => m.type === 'modelChanged');
       expect(changed[0].payload.customModel).toBe('gpt-6-astra');
+    });
+
+    it('acknowledges a custom Copilot model owned by another catalog through customModel and runs that override', async () => {
+      const registry = new ProviderRegistry({ subscriptions: [], globalState: { get: () => undefined }, secrets: {} } as any);
+      try {
+        const host = h.provider as any;
+        host._providerManager.getProviders.mockImplementation(() => registry.getAll().map(entry => entry.config));
+        host._providerManager.getProvider.mockImplementation((id: string) => registry.get(id)?.config);
+        host._providerManager.getModels.mockImplementation((id: string) => registry.get(id)?.config.models || []);
+        host._providerManager.getProviderInstance.mockImplementation((id: string) => registry.get(id));
+        vi.spyOn(host, '_tryPreSpawnPersistentProcess').mockImplementation(() => undefined);
+        // The shared configuration stub records writes without reflecting them
+        // on reads. This journey needs VS Code's settled write/read contract.
+        vi.spyOn(vscode.workspace.getConfiguration('mysti'), 'update').mockImplementation(async (key: string, value: unknown) => { setMockConfig(key, value); });
+        selectAgent(h, 'github-copilot');
+        h.panelState.settingsOverrides.model = 'auto';
+        vi.spyOn(vscode.window, 'showInputBox').mockResolvedValueOnce('gpt-5.4');
+        expect(host._modelOwner('gpt-5.4', 'github-copilot')).toBeDefined();
+        expect(registry.get('github-copilot')!.config.models.some(model => model.id === 'gpt-5.4')).toBe(false);
+        await host._handleCustomModel('sidebar');
+        const changes = h.messages.filter(message => message.type === 'modelChanged');
+        expect(changes).toHaveLength(1);
+        expect(changes[0].payload).toEqual({ provider: 'github-copilot', model: 'auto', customModel: 'gpt-5.4' });
+        expect(vscode.workspace.getConfiguration('mysti').get('copilotModel')).toBe('gpt-5.4');
+        expect(registry.get('github-copilot')!.getEffectiveModelForSettings({ provider: 'github-copilot', model: changes[0].payload.model } as Settings)).toBe('gpt-5.4');
+      } finally { registry.dispose(); }
     });
 
     it('does not report a custom model the provider never runs', async () => {

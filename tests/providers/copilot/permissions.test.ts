@@ -58,57 +58,21 @@ describe('Copilot permission flag mapping', () => {
     expect(args).not.toContain('--deny-tool');
   });
 
-  /**
-   * Ask-tier is the case Copilot CLI 1.0 changed.
-   *
-   * On 0.0.x the stream was plain text: no tool_use chunk ever reached Mysti's
-   * gate, so there was nothing to approve and the only safe answer was to deny
-   * shell and write outright — which also meant those tools were unusable in
-   * ask-tier. 1.0's `--output-format json` carries tool.execution_start, so
-   * Copilot is now gated the same way every other backend is.
-   */
-  describe('ask-tier depends on whether the CLI can report tool events', () => {
-    const askTier = [
-      { mode: 'default' as const, accessLevel: 'ask-permission' as const },
-      { mode: 'ask-before-edit' as const, accessLevel: 'ask-permission' as const },
-      { mode: 'ask-before-edit' as const, accessLevel: 'full-access' as const },
-      { mode: 'edit-automatically' as const, accessLevel: 'ask-permission' as const },
-    ];
-
-    it.each(askTier)(
-      'Copilot 1.0+: gated by Mysti for mode=$mode access=$accessLevel',
-      ({ mode, accessLevel }) => {
-        pinVersion(provider, '1.0.83');
-        const args = provider.buildCliArgs(s({ mode, accessLevel }), createCopilotSession());
-        // The CLI stops prompting (it cannot, through a pipe); Mysti's
-        // stream-level gate approves each tool instead.
-        expect(args).toContain('--allow-all-tools');
-        expect(args).not.toContain('--deny-tool');
-        expect(args.join(' ')).toContain('--output-format json');
-      },
-    );
-
-    it.each(askTier)(
-      'Copilot 0.0.x: still fails closed for mode=$mode access=$accessLevel',
-      ({ mode, accessLevel }) => {
-        pinVersion(provider, '0.0.372');
-        const args = provider.buildCliArgs(s({ mode, accessLevel }), createCopilotSession());
-        expect(args).toContain('--deny-tool');
-        expect(args).toContain('shell');
-        expect(args).toContain('write');
-        expect(args).not.toContain('--allow-all-tools');
-        // 0.0.x has no --output-format; passing it aborts the run.
-        expect(args).not.toContain('--output-format');
-      },
-    );
-
-    /**
-     * An unprobed version must not silently drop a current install onto the
-     * ungated plain-text path — that would leave shell and write unusable.
-     */
-    it('assumes the current CLI when the version is unknown', () => {
+  describe('Ask needs a native approval channel on every CLI version', () => {
+    for (const version of ['0.0.372', '1.0.83', null]) {
+      it.each([
+        { mode: 'default' as const, accessLevel: 'ask-permission' as const },
+        { mode: 'ask-before-edit' as const, accessLevel: 'ask-permission' as const },
+        { mode: 'ask-before-edit' as const, accessLevel: 'full-access' as const },
+        { mode: 'edit-automatically' as const, accessLevel: 'ask-permission' as const },
+      ])(`version ${version}: rejects mode=$mode access=$accessLevel before dispatch`, ({ mode, accessLevel }) => {
+        pinVersion(provider, version);
+        expect(() => provider.buildCliArgs(s({ mode, accessLevel }), createCopilotSession())).toThrow(/native approvals/);
+      });
+    }
+    it('unknown version still uses modern JSON for an explicitly unrestricted turn', () => {
       pinVersion(provider, null);
-      const args = provider.buildCliArgs(s({ accessLevel: 'ask-permission' }), createCopilotSession());
+      const args = provider.buildCliArgs(s({ accessLevel: 'full-access' }), createCopilotSession());
       expect(args.join(' ')).toContain('--output-format json');
       expect(args).toContain('--allow-all-tools');
     });

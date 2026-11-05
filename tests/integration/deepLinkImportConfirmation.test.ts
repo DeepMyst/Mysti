@@ -86,6 +86,15 @@ describe('deep-link import asks before importing (P-3)', () => {
     expect(String(info.mock.calls[0][0])).toContain(FAKE.title);
   });
 
+  it('shows the actual bounded-link import diagnostic after opening its conversation', async () => {
+    vi.spyOn(window, 'showWarningMessage').mockResolvedValue(SHAREABLE_IMPORT_CONFIRM as never);
+    const info = vi.spyOn(window, 'showInformationMessage').mockResolvedValue(undefined as never);
+    const d = { ...deps(), getLastImportDiagnostic: () => 'Only bounded readable text was kept.' };
+    await handleShareableImportLink('abc', d);
+    expect(d.onImported).toHaveBeenCalledWith(FAKE);
+    expect(String(info.mock.calls[0][0])).toContain('Only bounded readable text was kept.');
+  });
+
   it('a confirmed but unparseable link reports an error and never calls onImported', async () => {
     vi.spyOn(window, 'showWarningMessage').mockResolvedValue(SHAREABLE_IMPORT_CONFIRM as never);
     const error = vi.spyOn(window, 'showErrorMessage').mockResolvedValue(undefined as never);

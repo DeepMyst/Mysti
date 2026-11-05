@@ -59,7 +59,7 @@ describe('actions menu across the real provider catalog', () => {
       await menu(); expect(await page.locator('#toolbar-persona-name').textContent()).toBe('Reviewer');
       await page.click('#toolbar-persona-clear');
       expect((await posted()).at(-1)).toMatchObject({ type: 'updateAgentConfig', payload: { personaId: null } });
-      const levels = entry.capabilities.effortLevels || [];
+      const levels = entry.capabilities.effortLevelsByModel?.[entry.defaultModel] ?? entry.capabilities.effortLevels ?? [];
       expect(await page.locator('#tools-menu [data-effort-control]').isVisible()).toBe(levels.length > 0);
       if (levels.length > 1) {
         await page.locator('#tools-menu input[type="range"]').focus(); await page.keyboard.press('Home'); await page.keyboard.press('End');
@@ -98,6 +98,28 @@ describe('actions menu across the real provider catalog', () => {
         await page.click('.attachment-remove');
         expect(await page.locator('.attachment-preview-item').count()).toBe(0);
         await fire('fileAttachmentSelected', { attachments: [attachment] });
+        // Providers without Ask need an explicit choice supported by their
+        // current transport; selecting that choice must preserve the draft.
+        if (entry.capabilities.supportsAskPermission === false) {
+          const readOnly = entry.capabilities.supportsReadOnly !== false;
+          if (readOnly) {
+            await page.click('#composer-mode-plan');
+          } else {
+            expect(await page.locator('#composer-mode-plan').isVisible()).toBe(false);
+            await page.click('#composer-mode-choose');
+            expect(await page.locator('#behavior-popup .mode-option:enabled').evaluateAll(nodes =>
+              nodes.map(node => node.getAttribute('data-mode')))).toEqual(['full']);
+            expect((await posted()).filter(m => m.type === 'sendMessage')).toEqual([]);
+            await page.click('#behavior-popup .mode-option[data-mode="full"]');
+          }
+          expect((await posted()).findLast(m => m.type === 'updateSettings')).toMatchObject({
+            payload: readOnly ? { mode: 'quick-plan', accessLevel: 'read-only' }
+              : { mode: 'edit-automatically', accessLevel: 'full-access' },
+          });
+          expect(await page.inputValue('#message-input')).toBe('Handle errors and preserve retries.');
+          expect(await page.locator('.attachment-preview-item').count()).toBe(1);
+          expect((await posted()).filter(m => m.type === 'sendMessage')).toEqual([]);
+        }
         await page.click('#send-btn');
         expect((await posted()).findLast(m => m.type === 'sendMessage')).toMatchObject({ payload: { attachments: [attachment] } });
       }

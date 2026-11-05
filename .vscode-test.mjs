@@ -12,15 +12,36 @@
  */
 import { defineConfig } from '@vscode/test-cli';
 import { fileURLToPath } from 'node:url';
-import { mkdirSync, mkdtempSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, existsSync, unlinkSync } from 'node:fs';
+import { join, isAbsolute, relative, sep } from 'node:path';
 
 const version = process.env.MYSTI_TEST_VSCODE_VERSION || 'stable';
 const profiles = fileURLToPath(new URL('./.vscode-test/profiles/', import.meta.url));
 mkdirSync(profiles, { recursive: true });
 // Each run gets fresh editor state and a fresh DevToolsActivePort file. Keep
 // the profile's logs under the ignored test directory for failure diagnosis.
-const userDataDir = mkdtempSync(join(profiles, `${version}-`));
+const ownedProfile = process.env.MYSTI_TEST_OWNED_PROFILE;
+let userDataDir;
+if (ownedProfile) {
+  // Opt-in restart tests may reuse only a prepared, explicitly owned profile.
+  // Never point the integration editor at a developer's existing VS Code data.
+  const profile = realpathSync(ownedProfile);
+  const rel = relative(realpathSync(profiles), profile);
+  if (!isAbsolute(ownedProfile) || !rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    throw new Error('Reusable test profile must be an owned child of .vscode-test/profiles');
+  }
+  const marker = JSON.parse(readFileSync(join(profile, '.mysti-test-owned.json'), 'utf8'));
+  if (marker.case !== 'PC-08' || marker.profile !== profile || process.env.MYSTI_PC08 !== '1') {
+    throw new Error('Reusable profile requires the matching PC-08 ownership marker');
+  }
+  userDataDir = profile;
+  // The next Electron instance writes its own port. A stale endpoint from the
+  // previous real shutdown must never attach the test to another editor.
+  const oldPort = join(profile, 'DevToolsActivePort');
+  if (existsSync(oldPort)) unlinkSync(oldPort);
+} else {
+  userDataDir = mkdtempSync(join(profiles, `${version}-`));
+}
 
 export default defineConfig({
   files: 'out-vscode-test/**/*.test.js',

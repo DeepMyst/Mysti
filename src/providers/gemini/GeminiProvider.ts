@@ -15,7 +15,9 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import type { ChildProcess } from 'child_process';
 import { BaseCliProvider, type PanelSessionState } from '../base/BaseCliProvider';
+import { assertNonInteractivePermissionSupport } from '../base/NativeApprovalPolicy';
 import type {
   CliDiscoveryResult,
   AuthConfig,
@@ -127,6 +129,7 @@ export class GeminiProvider extends BaseCliProvider {
   };
 
   readonly capabilities: ProviderCapabilities = {
+    supportsAskPermission: false,
     supportsStreaming: true,
     supportsThinking: false, // Gemini doesn't expose thinking tokens like Claude
     supportsToolUse: true,
@@ -362,6 +365,7 @@ export class GeminiProvider extends BaseCliProvider {
    * Maps Mysti settings to Gemini CLI sandbox/yolo modes
    */
   private _addPermissionFlags(args: string[], settings: Settings): void {
+    assertNonInteractivePermissionSupport(this.displayName, settings);
     const { mode, accessLevel } = settings;
 
     // Plan modes or read-only → the CLI's documented read-only mode.
@@ -389,10 +393,7 @@ export class GeminiProvider extends BaseCliProvider {
       return;
     }
 
-    // All other combinations: bypass CLI permissions to prevent stdin hang.
-    // The stream-level tool-use gate in ChatViewProvider handles permission prompts.
-    args.push('--yolo');
-    console.log(`[Mysti] Gemini: Bypassing CLI permissions (stream gate handles UI prompts) [mode=${mode}, access=${accessLevel}]`);
+    // Unsupported Ask combinations were rejected before any process starts.
   }
 
   /**
@@ -474,6 +475,37 @@ export class GeminiProvider extends BaseCliProvider {
   }
 
   /**
+   * Keep Base's redaction, stream lifecycle and authentication classification,
+   * then explain the specific service-side client rejection without a login action.
+   */
+  protected override async *processStream(stderrRef: { output: string }, session: PanelSessionState): AsyncGenerator<StreamChunk> {
+    for await (const chunk of super.processStream(stderrRef, session)) {
+      yield this._explainUnsupportedClient(chunk);
+    }
+  }
+
+  protected override handleError(error: unknown, proc?: ChildProcess): StreamChunk {
+    return this._explainUnsupportedClient(super.handleError(error, proc));
+  }
+
+  private _explainUnsupportedClient(chunk: StreamChunk): StreamChunk {
+    if ((chunk.type !== 'error' && chunk.type !== 'auth_error') || typeof chunk.content !== 'string') {
+      return chunk;
+    }
+    // Require both the native error class and exact quoted reason code; ordinary
+    // eligibility failures, invalid credentials and prose mentioning the code keep
+    // their existing handling. Accept Node's inspected object and JSON spelling.
+    if (!/\bIneligibleTierError\b/.test(chunk.content)
+      || !/\breasonCode["']?\s*:\s*(["'])UNSUPPORTED_CLIENT\1/.test(chunk.content)) {
+      return chunk;
+    }
+    return {
+      type: 'error',
+      content: 'Google rejected this Gemini CLI as unsupported for Gemini Code Assist for individuals (UNSUPPORTED_CLIENT). The service recommends migrating to Antigravity: https://antigravity.google'
+    };
+  }
+
+  /**
    * Parse Gemini CLI stream-json output format
    * Event types: init, message, tool_use, tool_result, error, result
    */
@@ -528,10 +560,8 @@ export class GeminiProvider extends BaseCliProvider {
 
           // Normalize native Gemini tool names (write_file, replace,
           // run_shell_command, ...) to the canonical names used by the
-          // permission gate and the webview renderer. The stream-level gate
-          // is the sole enforcement point (the CLI runs with --yolo), so raw
-          // names that the classifier doesn't recognize would otherwise be
-          // gated as unknown instead of classified correctly.
+          // action classifier and webview renderer. These notifications do
+          // not hold execution; unsupported Ask modes are rejected pre-spawn.
           const canonicalName = normalizeToolName(toolName);
 
           // Track active tool call

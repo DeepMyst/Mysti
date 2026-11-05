@@ -321,6 +321,24 @@ export const EventEmitter = class<T = unknown> {
   }
 };
 
+/** Cancellation used by native credential prompts; listeners observe one abort. */
+export class CancellationTokenSource {
+  private _cancelled = false;
+  private readonly _emitter = new EventEmitter<void>();
+  readonly token: { readonly isCancellationRequested: boolean; onCancellationRequested: typeof this._emitter.event };
+  constructor() {
+    const owner = this;
+    this.token = {
+      get isCancellationRequested() { return owner._cancelled; },
+      onCancellationRequested: this._emitter.event,
+    };
+  }
+  cancel(): void {
+    if (!this._cancelled) { this._cancelled = true; this._emitter.fire(undefined); }
+  }
+  dispose(): void { this._emitter.dispose(); }
+}
+
 /**
  * vscode.Disposable mock — a real class so `new vscode.Disposable(fn)` works
  * (used by AgentLifecycleManager.onLifecycleEvent) while keeping the static
@@ -363,6 +381,7 @@ export default {
   Uri,
   commands,
   EventEmitter,
+  CancellationTokenSource,
   Disposable,
   TreeItemCollapsibleState,
   ConfigurationTarget,

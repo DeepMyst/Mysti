@@ -35,8 +35,12 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import type { Browser, Page } from 'playwright';
+import { ProviderRegistry } from '../../src/providers/ProviderRegistry';
+import { buildProviderManifestPayload } from '../../src/providers/base/ProviderManifest';
 
 const ROOT = path.resolve(__dirname, '../..');
+const fixtureRegistry = new ProviderRegistry({ subscriptions: [], globalState: { get: () => undefined }, secrets: {} } as any);
+const fixtureManifest = buildProviderManifestPayload(fixtureRegistry);
 let browser: Browser | undefined;
 let page: Page | undefined;
 let tmpDir: string | undefined;
@@ -148,6 +152,7 @@ async function boot(): Promise<void> {
   await send({
     type: 'initialState',
     payload: {
+      providerManifest: fixtureManifest,
       settings: {
         provider: 'claude-code', model: '', mode: 'ask-before-edit',
         thinkingLevel: 'none', effortLevel: 'high', accessLevel: 'ask-permission',
@@ -183,13 +188,13 @@ async function newPanelPage(): Promise<import('playwright').Page> {
   const file = path.join(dir, 'chat.html');
   fs.writeFileSync(file, composeHtml(), 'utf8');
   await pg.goto(`file://${file}`, { waitUntil: 'load' });
-  await pg.evaluate(() => {
+  await pg.evaluate(providerManifest => {
     window.dispatchEvent(new MessageEvent('message', { data: { type: 'initialState', payload: {
       settings: { provider: 'claude-code', model: '', mode: 'ask-before-edit', thinkingLevel: 'none',
         effortLevel: 'high', accessLevel: 'ask-permission', contextMode: 'auto', autonomousMode: false },
-      messages: [], context: [], conversations: [],
+      providerManifest, messages: [], context: [], conversations: [],
     } } }));
-  });
+  }, fixtureManifest);
   return pg;
 }
 
@@ -224,6 +229,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await browser?.close();
+  fixtureRegistry.dispose();
   if (tmpDir) { fs.rmSync(tmpDir, { recursive: true, force: true }); }
   // Each fresh panel page brought its own multi-MB document; without this they
   // accumulated one per test, every run.
@@ -587,18 +593,18 @@ describe('Plan 28 Phase 5 — the chrome diet and the palette', () => {
   }, 20000);
 
   it.skipIf(CHROMIUM_UNAVAILABLE)('keeps slash and actions beside the compact composer controls', async () => {
-    // Actions, agent/model, trust, context and spend. Spend is correctly
-    // absent until there is a saving to report, so four show at rest. The
+    // Actions, agent, model, trust, context and slash. Spend is correctly
+    // absent until there is a saving to report. The
     // agent map pill is not at rest on this page: the Runs dock tests above
     // left a background job and an @openai-codex sub-agent in this chat, which
     // it rightly counts. A quiet chat, and one where the main agent works
     // alone, keep it hidden; Plan 32's block asserts that on its own page.
-    expect(await visible('.input-status-line > *:not(.status-spacer):not(#agent-map-pill)')).toBe(5);
-    for (const id of ['agent-select-btn', 'context-usage', 'behavior-indicator', 'tools-menu-btn', 'slash-cmd-btn']) {
+    expect(await visible('.input-status-line > *:not(.status-spacer):not(#agent-map-pill)')).toBe(6);
+    for (const id of ['agent-select-btn', 'model-pill', 'context-usage', 'behavior-indicator', 'tools-menu-btn', 'slash-cmd-btn']) {
       expect(await page!.$eval(`#${id}`, (e) => getComputedStyle(e).display), id).not.toBe('none');
     }
-    // Model + effort are back as one pill (tested below); with no model list
-    // on this page it hides itself. Actions now has its own visible trigger.
+    // The actual registry manifest supplies the model/effort pill, even before
+    // a separate discovered model list arrives. Actions has its own trigger.
 
   }, 20000);
 
@@ -701,7 +707,7 @@ describe('Second opinion respondent identity', () => {
       expect(await pg.locator('.second-opinion-item[data-agent="claude-code"]').count()).toBe(1);
       await pg.locator('.second-opinion-item[data-agent="claude-code"]').click();
       const sent = await pg.evaluate(() => (window as unknown as { __posted: Array<{type: string; payload?: {content: string}}> }).__posted.find(m => m.type === 'sendMessage'));
-      expect(sent?.payload?.content).toBe('@claude-code Which retry failures need tests?');
+      expect(sent?.payload).toMatchObject({ content: 'Which retry failures need tests?', secondOpinion: { provider: 'claude-code', messageId: 'q' } });
       await receive('messageAdded', { id: 'restored', role: 'assistant', provider: 'openai-codex', content: 'Saved answer' });
       expect(await pg.locator('[data-id="restored"]').getAttribute('data-provider')).toBe('openai-codex');
     } finally { await pg.context().close(); }
@@ -711,22 +717,20 @@ describe('Second opinion respondent identity', () => {
 describe('Plan 28 Phase 6 — a team is a verb', () => {
   it.skipIf(CHROMIUM_UNAVAILABLE)('finds the question an answer was answering', async () => {
     await page!.evaluate(() => {
-      document.getElementById('messages')!.insertAdjacentHTML('beforeend',
-        '<div class="message user"><div class="message-content">is the retry budget per-request?</div></div>' +
-        '<div class="message assistant" data-provider="claude-code" id="probe-answer">' +
-        '<div class="message-content">Per session.</div></div>');
+      window.dispatchEvent(new MessageEvent('message', { data: { type: 'conversationChanged', payload: { id: 'opinion-probe', messages: [] } } }));
+      window.dispatchEvent(new MessageEvent('message', { data: { type: 'messageAdded', payload: {
+        id: 'probe-question', role: 'user', content: 'is the retry budget per-request?',
+      } } }));
+      window.dispatchEvent(new MessageEvent('message', { data: { type: 'responseComplete', payload: {
+        message: { id: 'probe-answer', role: 'assistant', provider: 'claude-code', content: 'Per session.' },
+        usage: { input_tokens: 12, output_tokens: 4 },
+      } } }));
+      document.querySelector('[data-id="probe-answer"]')!.id = 'probe-answer';
     });
     expect(await page!.$('#probe-answer')).not.toBeNull();
   }, 20000);
 
-  it.skipIf(CHROMIUM_UNAVAILABLE)('asks a DIFFERENT agent the same question, through the mention path', async () => {
-    // Build the footer action directly on the probe answer — renderMessageFooter
-    // is what responseComplete calls, and it always appends this action now.
-    await page!.evaluate(() => {
-      const el = document.getElementById('probe-answer')!;
-      el.insertAdjacentHTML('beforeend',
-        '<div class="message-footer"><span class="message-footer-action" data-second-opinion="1">Second opinion</span></div>');
-    });
+  it.skipIf(CHROMIUM_UNAVAILABLE)('asks a DIFFERENT agent the same question using its original source identity', async () => {
     // A not-installed agent would only answer with an install card.
     await page!.evaluate(() => {
       document.querySelector('#agent-menu .agent-menu-item[data-agent="cursor"]')?.classList.add('disabled');
@@ -758,13 +762,13 @@ describe('Plan 28 Phase 6 — a team is a verb', () => {
     expect(await page!.textContent('.second-opinion-note')).toContain('does not merge');
 
     await clearPosted();
+    const respondent = await page!.locator('.second-opinion-item').first().getAttribute('data-agent');
     await page!.click('.second-opinion-item');
     const sends = (await posted()).filter((m) => m.type === 'sendMessage');
     expect(sends.length).toBe(1);
     const content = (sends[0].payload as { content: string }).content;
-    // Straight down the existing @-mention route, carrying the original question.
-    expect(content.startsWith('@')).toBe(true);
-    expect(content).toContain('is the retry budget per-request?');
+    expect(content).toBe('is the retry budget per-request?');
+    expect(sends[0].payload).toMatchObject({ secondOpinion: { provider: respondent, messageId: 'probe-question' } });
   }, 20000);
 
   it.skipIf(CHROMIUM_UNAVAILABLE)('drove all of that without throwing', async () => {
@@ -930,7 +934,7 @@ describe('the composer shows model, effort and prompt cache the way Claude does'
       providers: [{ name: 'claude-code', models: [
         { id: 'claude-opus-5-5', name: 'Opus 5.5' }, { id: 'claude-sonnet-5', name: 'Sonnet 5' }] }],
       providerManifest: { schemaVersion: 1, providers: [{ id: 'claude-code',
-        capabilities: { effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'], effortDefault: 'high' } }] },
+        capabilities: { modelSelection: 'full', effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'], effortDefault: 'high' } }] },
       messages: [], context: [], conversations: [],
     } });
   }, 60000);
@@ -1724,13 +1728,13 @@ describe('Plan 32 — the agent map', () => {
     const segments = () => pg!.$$eval('.input-status-line > *:not(.status-spacer)',
       (els) => els.filter((e) => getComputedStyle(e).display !== 'none').length);
     expect((await pill()).display).toBe('none');
-    expect(await segments()).toBe(5);
+    expect(await segments()).toBe(6);
     // The main agent alone is an ordinary chat, working or done.
     await receive({ type: 'responseStarted', payload: { provider: 'claude-code' } });
     expect((await pill()).display).toBe('none');
     await receive({ type: 'responseComplete', payload: { message: { role: 'assistant', content: 'ok' } } });
     expect((await pill()).display).toBe('none');
-    expect(await segments()).toBe(5);
+    expect(await segments()).toBe(6);
   }, 20000);
 
   it.skipIf(CHROMIUM_UNAVAILABLE)('shows the pill after a delegation, and the pill opens the map', async () => {

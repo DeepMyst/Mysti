@@ -12,8 +12,8 @@ if (process.env.MYSTI_LIVE_PROVIDERS === '1') {
     let browser: Browser;
     before(async () => {
       const config = vscode.workspace.getConfiguration('mysti');
-      await config.update('claudeCodePath', path.join(os.homedir(), '.local/bin/claude'), vscode.ConfigurationTarget.Global);
-      await config.update('codexPath', 'codex', vscode.ConfigurationTarget.Global);
+      await config.update('claudeCodePath', process.env.MYSTI_LIVE_CLAUDE_PATH || path.join(os.homedir(), '.local/bin/claude'), vscode.ConfigurationTarget.Global);
+      await config.update('codexPath', process.env.MYSTI_LIVE_CODEX_PATH || 'codex', vscode.ConfigurationTarget.Global);
       await config.update('defaultMode', 'ask-before-edit', vscode.ConfigurationTarget.Global);
       await config.update('accessLevel', 'ask-permission', vscode.ConfigurationTarget.Global);
       await config.update('autoContext', false, vscode.ConfigurationTarget.Global);
@@ -30,7 +30,7 @@ if (process.env.MYSTI_LIVE_PROVIDERS === '1') {
           for (const page of context.pages()) {
             for (const frame of page.frames()) {
               try {
-                if (await frame.locator('#message-input').count()) { await page.bringToFront(); return frame; }
+                if (await frame.locator('#message-input').isVisible() && await frame.locator('#init-loading-overlay').isHidden()) { await page.bringToFront(); return frame; }
               } catch { /* editor webviews detach while tabs are opening */ }
             }
           }
@@ -43,12 +43,18 @@ if (process.env.MYSTI_LIVE_PROVIDERS === '1') {
       it(`${provider}: completes two turns and enforces Deny / Allow from real permission cards`, async () => {
         for (const tab of vscode.window.tabGroups.all.flatMap(group => group.tabs).filter(tab => tab.input instanceof vscode.TabInputWebview && tab.label !== 'Mysti Canvas')) { await vscode.window.tabGroups.close(tab); }
         const config = vscode.workspace.getConfiguration('mysti');
+        await config.update('defaultAgent', provider, vscode.ConfigurationTarget.Global);
         await config.update('defaultProvider', provider, vscode.ConfigurationTarget.Global);
         await config.update('defaultModel', provider === 'claude-code' ? 'claude-sonnet-4-6' : 'gpt-5.6-sol', vscode.ConfigurationTarget.Global);
         await vscode.commands.executeCommand('mysti.openInNewTab');
         const frame = await chat();
         const skip = frame.locator('.wizard-skip-btn');
         if (await skip.isVisible()) { await skip.click(); }
+        // An already-open host may retain panel overrides. Select the actual
+        // agent through its menu and assert it before any account-backed call.
+        await frame.locator('#agent-select-btn').click();
+        await frame.locator(`#agent-menu [data-agent="${provider}"]`).click();
+        assert.match(await frame.locator('#agent-name').innerText(), provider === 'claude-code' ? /Claude/i : /Codex/i);
         const send = async (prompt: string) => {
           await frame.locator('#message-input').fill(prompt);
           await frame.locator('#send-btn').click();

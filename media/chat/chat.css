@@ -253,6 +253,19 @@
     .history-item-info {
       flex: 1;
       min-width: 0;
+      padding: 0;
+      border: none;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      text-align: start;
+      cursor: pointer;
+    }
+
+    .history-item-info:focus-visible,
+    .history-item-delete:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 3px;
     }
 
     .history-item-title {
@@ -293,7 +306,8 @@
       background: var(--vscode-toolbar-hoverBackground);
     }
 
-    .history-item:hover .history-item-delete {
+    .history-item:hover .history-item-delete,
+    .history-item:focus-within .history-item-delete {
       opacity: 1;
     }
 
@@ -328,6 +342,10 @@
     }
 
     .settings-panel.hidden {
+      display: none;
+    }
+
+    .settings-panel .hidden {
       display: none;
     }
 
@@ -1661,7 +1679,8 @@
       gap: 3px;
     }
 
-    .message:hover .message-copy-btn {
+    .message:hover .message-copy-btn,
+    .message-copy-btn:focus-visible {
       opacity: 1;
     }
 
@@ -1694,8 +1713,16 @@
       flex-shrink: 0;
     }
 
-    .message:hover .message-rewind-btn {
+    .message:hover .message-rewind-btn,
+    .message-rewind-btn:focus-visible,
+    .message-rewind-btn[aria-expanded="true"] {
       opacity: 1;
+    }
+
+    .message-rewind-btn:focus-visible,
+    .rewind-menu-item:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder, #007fd4);
+      outline-offset: 1px;
     }
 
     .message-rewind-btn:hover {
@@ -1708,6 +1735,10 @@
       position: fixed;
       z-index: 10000;
       min-width: 220px;
+      max-width: calc(100vw - 16px);
+      max-height: calc(100vh - 16px);
+      box-sizing: border-box;
+      overflow: auto;
       padding: 4px;
       background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
       color: var(--vscode-menu-foreground, var(--vscode-editorWidget-foreground));
@@ -1727,7 +1758,8 @@
       padding: 7px 10px;
       border-radius: 4px;
       font-size: 12px;
-      white-space: nowrap;
+      white-space: normal;
+      overflow-wrap: anywhere;
     }
 
     .rewind-menu-item:hover:not(.disabled) {
@@ -1878,6 +1910,23 @@
       font-family: var(--vscode-editor-font-family);
       font-size: 12px;
     }
+
+    .message-code-block { position: relative; }
+    .message-content .message-code-block > pre { padding-top: 32px; }
+    .message-code-copy {
+      position: absolute;
+      top: 4px;
+      right: 4px;
+      padding: 3px 6px;
+      border: 1px solid var(--vscode-input-border);
+      border-radius: 4px;
+      color: var(--vscode-foreground);
+      background: var(--vscode-textCodeBlock-background);
+      cursor: pointer;
+      font-size: 11px;
+    }
+    .message-code-copy:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
+    .file-edit-proposal-more > summary { cursor: pointer; padding: 6px 10px; }
 
     .thinking-block {
       padding: 4px 0;
@@ -2812,6 +2861,20 @@
     }
     .runs-badge.hidden { display: none; }
 
+    .unsent-messages { display: none; width: 100%; max-height: 180px; overflow-y: auto; gap: 6px; padding-bottom: 6px; }
+    .unsent-messages.has-items { display: flex; flex-direction: column; }
+    .unsent-message {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+      border: 1px solid var(--mysti-border); border-radius: 4px; padding: 6px;
+      background: var(--mysti-surface); color: var(--mysti-fg); font-size: 11px;
+    }
+    .unsent-message-text { flex: 1 1 160px; min-width: 0; max-height: 4.5em; overflow: auto; overflow-wrap: anywhere; }
+    .unsent-message button {
+      border: 1px solid var(--mysti-border); border-radius: 3px; padding: 3px 6px;
+      background: var(--mysti-surface); color: var(--mysti-fg); cursor: pointer;
+    }
+    .unsent-message button:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
+
     .queued-messages {
       display: none;
       width: 100%;
@@ -2842,6 +2905,11 @@
       text-overflow: ellipsis;
       white-space: nowrap;
       max-width: 220px;
+    }
+    .queued-chip-target {
+      flex: none;
+      font-size: 10px;
+      color: var(--mysti-fg);
     }
     .queued-chip-remove {
       background: none;
@@ -2913,8 +2981,22 @@
       transition: opacity 0.15s;
     }
 
-    .attachment-preview-item:hover .attachment-remove {
+    .attachment-preview-item:hover .attachment-remove,
+    .attachment-preview-item:focus-within .attachment-remove,
+    .attachment-preview-item.is-reading .attachment-remove {
       opacity: 1;
+    }
+
+    .attachment-reading {
+      position: absolute;
+      top: 16px;
+      left: 2px;
+      right: 2px;
+      font-size: 9px;
+      line-height: 16px;
+      text-align: center;
+      background: var(--vscode-input-background);
+      color: var(--vscode-descriptionForeground);
     }
 
     .attachment-preview-item .attachment-name {
@@ -3748,6 +3830,12 @@
     .subagent-tool-icon {
       font-size: 10px;
       flex-shrink: 0;
+    }
+
+    .subagent-tool-status {
+      color: var(--vscode-descriptionForeground);
+      font-size: 10px;
+      white-space: nowrap;
     }
 
     .subagent-tool-icon.completed {
@@ -4769,6 +4857,59 @@
     }
 
     /* Hide chevron and show spinner when running */
+    .mode-option:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+
+    #mode-capability-hint {
+      max-width: 300px;
+      padding: 8px 12px;
+      white-space: normal;
+    }
+
+    .composer-mode-notice {
+      margin: 0 12px 8px;
+      padding: 10px 12px;
+      border: 1px solid var(--vscode-inputValidation-infoBorder, var(--vscode-focusBorder));
+      border-radius: 6px;
+      color: var(--vscode-foreground);
+      font-size: 12px;
+      line-height: 1.5;
+      overflow-wrap: anywhere;
+    }
+
+    .composer-mode-notice.hidden,
+    #composer-mode-plan.hidden {
+      display: none;
+    }
+
+    .composer-mode-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .composer-mode-actions button {
+      padding: 4px 8px;
+      border: 1px solid var(--vscode-button-border, transparent);
+      border-radius: 4px;
+      background: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+      font: inherit;
+      cursor: pointer;
+    }
+
+    .composer-mode-actions button:hover {
+      background: var(--vscode-button-secondaryHoverBackground);
+    }
+
+    .tool-call.proposed .tool-call-status,
+    .tool-call.unconfirmed .tool-call-status {
+      color: var(--vscode-descriptionForeground);
+    }
+
     .tool-call.running .tool-call-chevron {
       display: none;
     }
@@ -6004,6 +6145,22 @@
 
     .plan-execute-btn.keep-planning:hover {
       background: var(--vscode-list-hoverBackground);
+    }
+
+    .plan-execute-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .plan-execution-hint {
+      margin-top: 8px;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--vscode-descriptionForeground);
+    }
+
+    .plan-execution-hint.hidden {
+      display: none;
     }
 
     /* Custom instructions section */
@@ -7414,7 +7571,9 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      z-index: 100000;
+      /* Authentication and retry controls must remain actionable above the
+         onboarding wizard that launched them. */
+      z-index: 100001;
     }
 
     .setup-overlay.hidden {
@@ -8499,6 +8658,15 @@
 
     .diagnostics-row .value {
       font-weight: 500;
+    }
+
+    .diagnostics-provider-path,
+    .diagnostics-npm-path,
+    .diagnostics-npm-prefix {
+      min-width: 0;
+      max-width: 75%;
+      overflow-wrap: anywhere;
+      text-align: right;
     }
 
     .diagnostics-row .value.ok {
@@ -10641,3 +10809,10 @@
 .collaboration-output, .collaboration-card .mysti-node-activity { padding: 0 12px 12px; }
 .collaboration-output:empty, .collaboration-card .mysti-node-activity:empty { display: none; }
 @media (max-width: 420px) { .collaboration-card summary { flex-wrap: wrap; } }
+/* Transient provider commentary stays separate from answer and thinking text. */
+.response-progress {
+  padding: 8px 16px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+  overflow-wrap: anywhere;
+}

@@ -134,6 +134,47 @@ describe('persistent process ownership and turn cleanup', () => {
     expect(fallback).not.toHaveBeenCalled();
   });
 
+  it('registers the persistent runtime before prompt submission and releases only its own handle on close', async () => {
+    const { provider, prompt, session } = harness();
+    const first = fakeProcess();
+    const replacement = fakeProcess();
+    vi.mocked(spawn).mockReturnValueOnce(first.proc).mockReturnValueOnce(replacement.proc);
+    const tracked = new Map<string, ChildProcess>();
+    const tracker = {
+      registerProcess: vi.fn((panel: string, proc: ChildProcess) => { tracked.set(panel, proc); }),
+      clearProcess: vi.fn((panel: string, proc?: ChildProcess) => {
+        if (tracked.get(panel) === proc) tracked.delete(panel);
+      }),
+    };
+    const building = deferred<void>();
+    const built = deferred<string>();
+    prompt.mockImplementationOnce(() => { building.resolve(); return built.promise; });
+    const oldStream = provider.sendMessage('first', [], {} as Settings, null, undefined, 'panel', tracker);
+    const oldDone = collect(oldStream);
+    await building.promise;
+    try {
+      expect(tracker.registerProcess).toHaveBeenCalledExactlyOnceWith('panel', first.proc, provider.id);
+      expect(first.write).not.toHaveBeenCalled();
+      provider.cancelCurrentRequest('panel');
+      const next = provider.sendMessage('replacement', [], {} as Settings, null, undefined, 'panel', tracker);
+      const reply = next.next();
+      await replacement.written.promise;
+      replacement.stdout.emit('data', Buffer.from(TEXT)); await reply;
+      first.proc.emit('close', null, 'SIGTERM');
+      expect(tracked.get('panel')).toBe(replacement.proc);
+      expect(session().persistentProcess).toBe(replacement.proc);
+      built.resolve('cancelled prompt'); await oldDone;
+      await next.return(undefined);
+      replacement.proc.emit('close', null, 'SIGTERM');
+      expect(tracked.size).toBe(0);
+    } finally {
+      provider.cancelCurrentRequest('panel');
+      built.resolve('cleanup'); await oldDone;
+      provider.dispose();
+      vi.mocked(spawn).mockReset();
+    }
+  });
+
   it('Stop settles a silent read immediately and leaves another panel running', async () => {
     vi.useFakeTimers();
     const { provider, cleanup, send, session } = harness();

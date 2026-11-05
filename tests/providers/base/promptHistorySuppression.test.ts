@@ -46,16 +46,16 @@ describe('D-3 — history suppression is gated on sessionKind, not on a truthy s
     expect((provider as any)._conversationForPrompt(session, CONVERSATION)).toBe(CONVERSATION);
   });
 
-  it('Codex native resume suppresses duplicate prompt history', () => {
+  it('Codex native resume conservatively replays history without an acknowledged native receipt', () => {
     const provider = new TestableCodexProvider();
     const session = createCodexSession();
     expect((provider as any)._conversationForPrompt(session, CONVERSATION)).toBe(CONVERSATION);
     session.sessionId = 'native-thread';
     expect(provider.capabilities.sessionKind).toBe('cli-resume');
-    expect((provider as any)._conversationForPrompt(session, CONVERSATION)).toBeNull();
+    expect((provider as any)._conversationForPrompt(session, CONVERSATION)?.messages).toEqual(CONVERSATION.messages);
   });
 
-  it('is behaviour-neutral for a cli-resume provider (Claude Code still drops history)', () => {
+  it('does not mistake a Claude session ID for proof of ownership of peer history', () => {
     const provider = new TestableClaudeProvider();
     const session = createClaudeSession();
 
@@ -63,6 +63,6 @@ describe('D-3 — history suppression is gated on sessionKind, not on a truthy s
     expect((provider as any)._conversationForPrompt(session, CONVERSATION)).toBe(CONVERSATION);
 
     session.sessionId = 'sess_claude_01';
-    expect((provider as any)._conversationForPrompt(session, CONVERSATION)).toBeNull();
+    expect((provider as any)._conversationForPrompt(session, CONVERSATION)?.messages).toEqual(CONVERSATION.messages);
   });
 });

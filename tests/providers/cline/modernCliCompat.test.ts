@@ -86,12 +86,9 @@ describe('Cline CLI arguments across major versions', () => {
     expect(provider.buildCliArgs(settings(), createClineSession())).toContain('--json');
   });
 
-  it('maps read-only and plan modes onto the right flag for each major', () => {
+  it('rejects unsupported modern read-only and preserves legacy plan mapping', () => {
     withVersion(provider, '3.0.61');
-    const modern = provider.buildCliArgs(settings({ accessLevel: 'read-only' }), createClineSession());
-    expect(modern).toContain('--plan');
-    // Nothing to approve in plan mode, so nothing is auto-approved.
-    expect(modern).not.toContain('--auto-approve');
+    expect(() => provider.buildCliArgs(settings({ accessLevel: 'read-only' }), createClineSession())).toThrow(/Cline 3\.0\.61 cannot use Plan or Read Only safely/);
 
     withVersion(provider, '1.0.8');
     const legacy = provider.buildCliArgs(settings({ mode: 'quick-plan' }), createClineSession());
@@ -148,7 +145,7 @@ describe('Cline 2.x+ stream parsing', () => {
       session,
     );
     expect(chunk).toBeNull();
-    expect(session.lastUsageStats).toEqual({ input_tokens: 95077, output_tokens: 5 });
+    expect(session.lastUsageStats).toEqual({ input_tokens: 95077, output_tokens: 5, normalized: true });
   });
 
   /** `done` repeats the whole answer that was already streamed delta by delta. */

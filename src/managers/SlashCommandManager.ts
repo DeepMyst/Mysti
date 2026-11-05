@@ -122,6 +122,8 @@ export interface SlashCommandCallbacks {
    * provider's supportsNativeCompact capability.
    */
   executeManualCompaction: (panelId: string) => Promise<void>;
+  /** Create a fresh conversation through the host's panel-owned reset path. */
+  clearConversation?: (panelId: string) => Promise<void>;
 }
 
 /**
@@ -646,12 +648,10 @@ export class SlashCommandManager {
 
       // ---- Commands ----
       case 'cmd:clear':
-        this._providerManager.clearSession(panelId);
-        this._conversationManager.createNewConversation();
-        callbacks.postToPanel(panelId, {
-          type: 'sessionCleared',
-          payload: { message: vscode.l10n.t('Session cleared') }
-        });
+        if (!callbacks.clearConversation) {
+          throw new Error('Clearing conversations is unavailable in this window. Reload the window and try again.');
+        }
+        await callbacks.clearConversation(panelId);
         return vscode.l10n.t('Conversation and session cleared');
 
       case 'cmd:help':

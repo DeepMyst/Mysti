@@ -66,6 +66,8 @@ export interface ContextItem {
   content?: string;
   startLine?: number;
   endLine?: number;
+  /** VS Code's zero-based exclusive end column, when captured with a selection. */
+  endCharacter?: number;
   language?: string;
   /**
    * Plan 07: when false, the item stays in the context list (visible in the
@@ -160,6 +162,8 @@ export interface Message {
   participants?: ProviderType[];
   /** Model that produced this message (assistant messages, Plan 02 Phase 3). */
   model?: string;
+  /** Requested model when the backend reported a different model for this turn. */
+  requestedModel?: string;
   /** Ordered render segments for exact stream replay (see MessageSegment). */
   segments?: MessageSegment[];
   /**
@@ -197,7 +201,7 @@ export interface ToolCall {
   name: string;
   input: Record<string, unknown>;
   output?: string;
-  status: 'pending' | 'running' | 'completed' | 'failed';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'proposed' | 'unconfirmed';
   fileChange?: FileChangeInfo;
   /** Semantic kind for provider-agnostic rendering (optional until Phase 3 stamps it) */
   kind?: ToolCallKind;
@@ -208,6 +212,10 @@ export interface ToolCall {
    * calls never carry this flag.
    */
   truncated?: boolean;
+  /** Imported transcript evidence; never grants authority to undo local files. */
+  historicalOnly?: boolean;
+  /** A tool-shaped suggestion from a backend that does not execute tools. */
+  proposalOnly?: boolean;
 }
 
 export interface Conversation {
@@ -481,8 +489,15 @@ export interface CliUpdatePayload {
   providerLabel: string;
   packageName: string;
   installed: string;
+  /** Newest published version, which may require a newer Node runtime. */
   latest: string;
+  /** Version the offered command can install on this machine. */
+  installable: string;
+  blockedByNodeEngine: boolean;
+  requiredNode?: string;
   command: string;
+  /** Explains why this selected installation needs a manual update. */
+  manualUpdateReason?: string;
 }
 
 export interface CliUpdatesAvailableMessage {
@@ -578,6 +593,8 @@ export interface UsageStats {
   output_tokens: number;
   cache_creation_input_tokens?: number;
   cache_read_input_tokens?: number;
+  /** Cost reported by the backend for this record, not a Mysti price estimate. */
+  reportedCostUsd?: number;
   /**
    * True when the provider SYNTHESIZED these figures rather than reporting
    * them (e.g. LocalAI counting SSE deltas when the server omits a usage
@@ -857,11 +874,26 @@ export interface AskUserQuestionData {
 }
 
 export interface StreamChunk {
-  type: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'error' | 'auth_error' | 'done' | 'session_active' | 'ask_user_question' | 'exit_plan_mode' | 'compaction';
+  type: 'text' | 'thinking' | 'progress' | 'tool_use' | 'tool_result' | 'error' | 'auth_error' | 'done' | 'session_active' | 'model_info' | 'ask_user_question' | 'exit_plan_mode' | 'compaction';
+  /** For progress, a transient status snapshot: never answer text, reasoning or a tool action. */
   content?: string;
+  /** Replace this UTF-16 range in the accumulated text/thinking of this turn. */
+  replace?: { start: number; end: number };
+  /** Native provisional text may be displayed, but must not trigger text actions. */
+  provisional?: boolean;
+  /** On session_active, announces revisions before any text in this turn. */
+  textRevisions?: boolean;
   toolCall?: ToolCall;
   sessionId?: string;
+  /** Root response model reported by this request, never a change to user settings. */
+  reportedModel?: string;
   usage?: UsageStats;
+  /**
+   * Latest model-call usage when `usage` contains totals across multiple calls.
+   * Null means latest context is unknown; undefined retains the provider's
+   * existing single-record convention. Never use turn totals as a null fallback.
+   */
+  contextUsage?: UsageStats | null;
   askUserQuestion?: AskUserQuestionData;
   planFilePath?: string | null;
   /** On a `compaction` chunk: what the backend reported (tokens before, summary). */
@@ -956,6 +988,10 @@ export interface BrainstormSession {
    * Includes the synthesis agent, which may not be one of `agents`.
    */
   childPanels?: { panelId: string; providerId: AgentType }[];
+  /** The chat before this run's message; each agent receives it on its first dispatch. */
+  conversation?: Conversation | null;
+  /** Agents that already received `conversation` in this run. */
+  historySentTo?: Set<AgentType>;
 }
 
 // Streaming chunk for brainstorm mode
@@ -969,6 +1005,8 @@ export interface BrainstormStreamChunk {
   content?: string;
   phase?: BrainstormPhase;
   usage?: UsageStats;
+  /** Same latest-call/unknown contract as StreamChunk.contextUsage. */
+  contextUsage?: UsageStats | null;
   discussionRole?: DiscussionRole;
   roundNumber?: number;
   convergence?: ConvergenceMetrics;
@@ -1098,6 +1136,7 @@ export type CollaboratorPattern = 'one-shot' | 'rounds';
 export type CollaboratorFailure =
   | 'not-installed'
   | 'not-authenticated'
+  | 'model-unavailable'
   | 'timeout'
   | 'crashed'
   | 'stream-error'
@@ -1121,6 +1160,8 @@ export interface CollaboratorSpec {
   label?: string;
   /** The fully-assembled prompt for this collaborator. */
   prompt: string;
+  /** Private per-request factory; never persisted or used to change role authority. */
+  resolvePrompt?: () => string;
   /** Access profile — advisory roles pass `read-only`. */
   access: CollaboratorAccess;
   /** Per-collaborator timeout override (ms); defaults to the role/pool default. */
@@ -1188,6 +1229,8 @@ export type CollaboratorGateCallback = (
  * Options for a CollaboratorPool.dispatch run.
  */
 export interface CollaboratorDispatchOptions {
+  /** Whether the originating request no longer owns this dispatch. */
+  isCancelled?: () => boolean;
   /** Base settings; the pool overrides provider/model/accessLevel per spec. */
   settings: Settings;
   /** Parent panel id; derived child panels are `${panelId}-collab-${runId}-${n}`. */
@@ -1301,6 +1344,10 @@ export interface SessionRunInput {
   panelId: string;
   runId: string;
   context?: ContextItem[];
+  /** Private request-local input; automatic context is never stored in the brief/history. */
+  resolveContext?: () => ContextItem[];
+  /** True when the originating turn no longer owns this session. */
+  isCancelled?: () => boolean;
   conversation?: Conversation | null;
   onQuestion?: SubAgentQuestionCallback;
   onGate?: CollaboratorGateCallback;
@@ -1541,7 +1588,11 @@ export interface PlanSelectionResult {
   selectedPlan: PlanOption;
   originalQuery: string;
   messageId: string;          // Reference to assistant message containing options
+  syntheticPlanId?: string;   // Exact host-issued delivery, consumed once
+  conversationId?: string | null;
   executionMode: OperationMode;
+  /** Explicit composer authority at selection; Full must also be active on the host. */
+  executionAccessLevel?: Settings['accessLevel'];
   customInstructions?: string;
 }
 
@@ -1736,6 +1787,8 @@ export interface DiagnosticResult {
   };
   npmStatus: {
     available: boolean;
+    /** Selected npm executable, resolved through the same environment as installation. */
+    path?: string;
     version?: string;
     prefix?: string;
     canWriteGlobalDir: boolean;
@@ -1749,6 +1802,8 @@ export interface DiagnosticResult {
     id: string;
     displayName: string;
     installed: boolean;
+    /** Exact detected/configured executable, or the provider's API endpoint marker. */
+    path?: string;
     version?: string;
     authenticated: boolean;
     error?: string;
@@ -1798,6 +1853,8 @@ export interface SetupCompleteMessage {
   type: 'setupComplete';
   payload: {
     providerId: string;
+    /** Local credentials were detected; a user-requested turn must verify server acceptance. */
+    requiresVerification?: boolean;
   };
 }
 

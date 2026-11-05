@@ -18,6 +18,7 @@ import type { NativeApprovalHandler, PersonaConfig } from '../providers/base/IPr
 import { getProviderDisplayMeta } from '../providers/base/ProviderManifest';
 import type {
   ContextItem,
+  Conversation,
   Settings,
   AgentType,
   AgentConfig,
@@ -232,7 +233,8 @@ export class BrainstormManager {
     query: string,
     context: ContextItem[],
     settings: Settings,
-    panelId?: string
+    panelId?: string,
+    conversation: Conversation | null = null
   ): AsyncGenerator<BrainstormStreamChunk> {
     const sessionId = panelId || 'default';
     if (this._activeRuns.has(sessionId)) {
@@ -246,7 +248,7 @@ export class BrainstormManager {
       // The outer iterator also listens for Stop while provider discovery or
       // a child stream is pending. A cancelled run cannot start another phase.
       for await (const chunk of this._iterateWithSilenceTimeout(
-        this._startBrainstormSession(query, context, settings, sessionId, controller.signal),
+        this._startBrainstormSession(query, context, settings, sessionId, controller.signal, conversation),
         null,
         controller.signal
       )) {
@@ -276,7 +278,8 @@ export class BrainstormManager {
     context: ContextItem[],
     settings: Settings,
     sessionId: string,
-    signal: AbortSignal
+    signal: AbortSignal,
+    conversation: Conversation | null
   ): AsyncGenerator<BrainstormStreamChunk> {
     const brainstormConfig = this._getConfig();
 
@@ -336,7 +339,9 @@ export class BrainstormManager {
       unifiedSolution: null,
       createdAt: Date.now(),
       updatedAt: Date.now(),
-      childPanels: []
+      childPanels: [],
+      conversation,
+      historySentTo: new Set()
     };
 
     this._panelSessions.set(sessionId, session);
@@ -1013,6 +1018,10 @@ export class BrainstormManager {
     controller?.signal.throwIfAborted();
     const parent = controller ? this._nativeApprovals.get(controller) : undefined;
     const childPanelId = this._registerChild(sessionId, agentId);
+    // Each agent sees the earlier chat once per run, on its first dispatch.
+    const session = this._panelSessions.get(sessionId);
+    const conversation = session && !session.historySentTo?.has(agentId) ? session.conversation ?? null : null;
+    session?.historySentTo?.add(agentId);
     let active = true;
     const registration = this._providerManager.setNativeApprovalHandlerForPanel(childPanelId, async request => {
       if (!active || controller?.signal.aborted || request.signal.aborted) { return 'cancelled'; }
@@ -1029,7 +1038,7 @@ export class BrainstormManager {
     try {
       controller?.signal.throwIfAborted();
       yield* this._providerManager.sendMessageToProvider(
-        agentId, prompt, context, this._childSettings(settings, agentId), null, persona, childPanelId
+        agentId, prompt, context, this._childSettings(settings, agentId), conversation, persona, childPanelId
       );
     } finally {
       retire();
@@ -1055,6 +1064,7 @@ export class BrainstormManager {
       const stream = this._sendChildMessage(sessionId, agent.id, query, context, settings, agent.persona);
 
       let agentUsage: import('../types').UsageStats | undefined;
+      let agentContextUsage: import('../types').UsageStats | null | undefined;
       // Providers emit tool_use twice per tool (start/stop pair) — surface
       // each tool invocation once.
       const surfacedToolIds = new Set<string>();
@@ -1088,18 +1098,23 @@ export class BrainstormManager {
               content: `\n[tool] ${chunk.toolCall?.name || 'tool'}\n`
             };
           }
-        } else if (chunk.type === 'done' && chunk.usage) {
+        } else if (chunk.type === 'done') {
           agentUsage = chunk.usage;
-        } else if (chunk.type === 'error') {
+          agentContextUsage = chunk.contextUsage;
+        } else if (chunk.type === 'error' || chunk.type === 'auth_error') {
           throw new Error(chunk.content || `Agent ${agent.id} reported an error`);
         }
       }
 
+      if (!agentResponse.content.trim()) {
+        throw new Error(`Agent ${agent.id} returned an empty analysis`);
+      }
       agentResponse.status = 'complete';
       yield {
         type: 'agent_complete',
         agentId: agent.id,
-        usage: agentUsage
+        usage: agentUsage,
+        ...(agentContextUsage !== undefined ? { contextUsage: agentContextUsage } : {}),
       };
 
     } catch (error) {
@@ -1140,7 +1155,7 @@ export class BrainstormManager {
             discussionRole: role,
             roundNumber
           };
-        } else if (chunk.type === 'error') {
+        } else if (chunk.type === 'error' || chunk.type === 'auth_error') {
           throw new Error(chunk.content || `Discussion agent ${agent.id} reported an error`);
         }
       }
@@ -1190,7 +1205,7 @@ export class BrainstormManager {
             type: 'synthesis_text',
             content: chunk.content
           };
-        } else if (chunk.type === 'error') {
+        } else if (chunk.type === 'error' || chunk.type === 'auth_error') {
           throw new Error(chunk.content || `Synthesis agent ${synthesisAgentId} reported an error`);
         }
       }
@@ -1223,7 +1238,7 @@ export class BrainstormManager {
             if (chunk.type === 'text' && chunk.content) {
               synthesis += chunk.content;
               yield { type: 'synthesis_text', content: chunk.content };
-            } else if (chunk.type === 'error') {
+            } else if (chunk.type === 'error' || chunk.type === 'auth_error') {
               throw new Error(chunk.content || `Fallback synthesis agent ${fallbackAgent.id} reported an error`, { cause: error });
             }
           }

@@ -391,6 +391,7 @@ describe('renderMessageFooter', () => {
       extractFunction(html, 'shouldAutoResolveToolCards'),
       extractFunction(html, 'autoResolveRunningToolCards'),
       extractFunction(html, 'renderMessageFooter'),
+      extractFunction(html, 'questionAbove'),
     ].join('\n');
     const run = new Function(
       'document', 'state', 'escapeHtml', 'messageEl', 'usage', 'sessionInfo', 'pills',
@@ -399,7 +400,7 @@ describe('renderMessageFooter', () => {
     return run(fakeDocument, state, escapeHtmlStub, messageEl, usage, sessionInfo, pills) as FakeElement | null;
   }
 
-  it('should auto-resolve running/pending cards with a "not reported" note when emitsToolResults === false', () => {
+  it('should finish running/pending cards as unconfirmed when no result was reported', () => {
     const messageEl = new FakeElement('div');
     const body = new FakeElement('div');
     body.className = 'message-body';
@@ -414,10 +415,11 @@ describe('renderMessageFooter', () => {
     runFooter(manifestState(false), messageEl, null, { provider: 'agent-a' }, []);
 
     for (const card of [running, pending]) {
-      expect(card.classList.contains('completed')).toBe(true);
+      expect(card.classList.contains('completed')).toBe(false);
+      expect(card.classList.contains('unconfirmed')).toBe(true);
       expect(card.classList.contains('running')).toBe(false);
       expect(card.classList.contains('pending')).toBe(false);
-      expect(card.querySelector('.tool-call-status')!.textContent).toBe('completed');
+      expect(card.querySelector('.tool-call-status')!.textContent).toBe('result unavailable');
       const note = card.querySelector('.tool-call-note');
       expect(note).not.toBeNull();
       expect(note!.textContent).toBe('result not reported');

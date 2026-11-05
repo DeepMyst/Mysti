@@ -39,9 +39,9 @@ describe('composer model and action menus', () => {
         { name: 'gemini-cli', models: [{ id: 'gemini', name: 'Gemini' }] },
       ],
       providerManifest: { schemaVersion: 1, providers: [
-        { id: 'claude-code', capabilities: { supportsUltracode: true, effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'], effortDefault: 'high' } },
-        { id: 'openai-codex', capabilities: { effortLevels: ['low', 'medium', 'high', 'xhigh'], effortDefault: 'medium' } },
-        { id: 'gemini-cli', capabilities: {} },
+        { id: 'claude-code', capabilities: { modelSelection: 'full', supportsUltracode: true, effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'], effortDefault: 'high' } },
+        { id: 'openai-codex', capabilities: { modelSelection: 'full', effortLevels: ['low', 'medium', 'high', 'xhigh'], effortDefault: 'medium' } },
+        { id: 'gemini-cli', capabilities: { modelSelection: 'full' } },
       ] },
     } });
   });
@@ -170,9 +170,9 @@ describe('composer model and action menus', () => {
     await page.fill('#tools-menu-filter', 'nothing matches');
     expect(await page.locator('#tools-menu-empty').isVisible()).toBe(true);
     await page.fill('#tools-menu-filter', 'export');
-    expect(await page.locator('#tools-menu .tools-menu-item:visible').count()).toBe(1);
-    await page.click('[data-composer-action="export-conversation-btn"]');
-    expect((await posted()).some(m => m.type === 'exportConversation')).toBe(true);
+    expect(await page.locator('#tools-menu .tools-menu-item:visible').allTextContents()).toEqual(['Export JSON file', 'Export Markdown file']);
+    await page.click('#export-json-btn');
+    expect((await posted()).findLast(m => m.type === 'exportToFile')).toMatchObject({ payload: { format: 'json', requestId: expect.any(String) } });
     expect(await page.locator('#tools-menu').isVisible()).toBe(false);
     await page.click('#tools-menu-btn');
     expect(await page.locator('#tools-menu-filter').inputValue()).toBe('');

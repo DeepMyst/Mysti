@@ -44,7 +44,11 @@ describe('Gemini permission flag mapping', () => {
     { mode: 'default' as const, accessLevel: 'full-access' as const },
     { mode: 'default' as const, accessLevel: 'ask-permission' as const },
     { mode: 'ask-before-edit' as const, accessLevel: 'ask-permission' as const },
-  ])('should use --yolo for mode=$mode access=$accessLevel', ({ mode, accessLevel }) => {
+  ])('honors or explicitly rejects mode=$mode access=$accessLevel', ({ mode, accessLevel }) => {
+    if (accessLevel !== 'full-access') {
+      expect(() => provider.buildCliArgs(s({ mode, accessLevel }), createGeminiSession())).toThrow(/native approvals/);
+      return;
+    }
     const args = provider.buildCliArgs(s({ mode, accessLevel }), createGeminiSession());
     expect(args).toContain('--yolo');
     expect(args).not.toContain('--sandbox');

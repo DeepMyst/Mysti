@@ -111,7 +111,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
     getContext: () => [],
     setAutoContext: () => undefined,
     clearPanelContext: () => undefined,
-    restorePanelContext: () => Promise.resolve([]),
+    restorePanelContext: () => Promise.resolve([]), captureContextGuard: () => () => true,
   } as any;
   const conversationManager = {
     getCurrentConversation: () => null,

@@ -187,17 +187,9 @@ describe('the setup dismissal latch is released by every request path', () => {
     expect(CHAT_JS).not.toMatch(/setup-error'\)[\s\S]{0,120}classList\.add\('hidden'\)/);
   });
 
-  it('every way out of the auth prompt actually leaves', () => {
-    // Both "Later" and the waiting state's button must record the dismissal
-    // AND hide, or they are decoration on a full-screen wall.
-    for (const id of ['auth-skip-btn', 'auth-wait-skip-btn']) {
-      const at = CHAT_JS.indexOf(`document.getElementById('${id}')`);
-      expect(at, id).toBeGreaterThan(-1);
-      const body = CHAT_JS.slice(at, at + 700);
-      expect(body, `${id} must record the dismissal`).toContain('dismissedByUser = true');
-      expect(body, `${id} must hide the overlay`).toContain('hideSetupOverlay()');
-    }
-  });
+  // Auth exits are exercised as actual browser interactions in
+  // authRecoveryBrowser.test.ts, including stale replies after dismissal.
+  // Their DOM lookup syntax is not a behavioral contract.
 
   it('the Retry click never hides the pane that holds the only Skip button', () => {
     // `#setup-skip-btn` lives inside `.setup-error`; hiding it left a

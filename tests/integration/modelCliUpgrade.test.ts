@@ -22,6 +22,7 @@ describe('model CLI upgrade host action', () => {
       _setupManager: { refreshProviderStatus: vi.fn().mockResolvedValue(installed('2.1.286')) },
       _providerManager: { getProviderInstance: vi.fn().mockReturnValue(provider) },
       _lifecycleManager: { getSession: vi.fn().mockReturnValue({ status: 'idle' }) },
+      _panelStates: new Map([['panel-a', { currentConversationId: 'conversation-a', settingsOverrides: { provider: 'claude-code', model: 'model-a' } }], ['panel-b', { currentConversationId: 'conversation-b' }]]),
       _broadcastCliUpdates: vi.fn(),
     });
   });
@@ -99,5 +100,67 @@ describe('model CLI upgrade host action', () => {
     expect(last().state).toBe('failed');
     expect(runCliUpgradeTask).not.toHaveBeenCalled();
     expect(provider.disposePersistentProcess).not.toHaveBeenCalled();
+  });
+  it('does not launch an installer after its panel offer was removed during discovery', async () => {
+    const id = offer();
+    let release!: (value: unknown) => void;
+    host._setupManager.refreshProviderStatus.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    const pending = host._upgradeModelCli('panel-a', id);
+    // Actual panel cleanup removes offers owned by that panel.
+    host._modelCliUpgrades.delete(id);
+    host._postToPanel.mockClear();
+    release(installed('2.1.278'));
+    await pending;
+    expect(runCliUpgradeTask).not.toHaveBeenCalled();
+    expect(host._postToPanel).not.toHaveBeenCalled();
+    expect(provider.disposePersistentProcess).not.toHaveBeenCalled();
+    expect(host._upgradingClis.size).toBe(0);
+  });
+  it('a removed offer does not report a late task result or stop a replacement conversation', async () => {
+    const id = offer();
+    host._setupManager.refreshProviderStatus.mockResolvedValueOnce(installed('2.1.278'));
+    let release!: () => void;
+    vi.mocked(runCliUpgradeTask).mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    const pending = host._upgradeModelCli('panel-a', id);
+    await vi.waitFor(() => expect(runCliUpgradeTask).toHaveBeenCalledOnce());
+    host._modelCliUpgrades.delete(id);
+    host._postToPanel.mockClear();
+    release();
+    await pending;
+    expect(host._setupManager.refreshProviderStatus).toHaveBeenCalledTimes(1);
+    expect(host._postToPanel).not.toHaveBeenCalled();
+    expect(provider.disposePersistentProcess).not.toHaveBeenCalled();
+    expect(host._upgradingClis.size).toBe(0);
+  });
+  it('requires the response that became busy during discovery to finish before installing', async () => {
+    const id = offer();
+    let release!: (value: unknown) => void;
+    host._setupManager.refreshProviderStatus.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    const pending = host._upgradeModelCli('panel-a', id);
+    host._lifecycleManager.getSession.mockReturnValue({ status: 'busy' });
+    release(installed('2.1.278'));
+    await pending;
+    expect(runCliUpgradeTask).not.toHaveBeenCalled();
+    expect(last()).toMatchObject({ state: 'failed' });
+    expect(last().message).toContain('current response');
+    expect(provider.disposePersistentProcess).not.toHaveBeenCalled();
+  });
+  it.each(['conversation', 'provider', 'model', 'panel'])('does not launch a stale upgrade after the owning %s changes', async changed => {
+    const id = offer();
+    let release!: (value: unknown) => void;
+    host._setupManager.refreshProviderStatus.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    const pending = host._upgradeModelCli('panel-a', id);
+    const state = host._panelStates.get('panel-a');
+    if (changed === 'conversation') { state.currentConversationId = 'replacement'; }
+    else if (changed === 'provider') { state.settingsOverrides.provider = 'openai-codex'; }
+    else if (changed === 'model') { state.settingsOverrides.model = 'model-b'; }
+    else { host._panelStates.set('panel-a', { ...state }); }
+    host._postToPanel.mockClear();
+    release(installed('2.1.278'));
+    await pending;
+    expect(runCliUpgradeTask).not.toHaveBeenCalled();
+    expect(host._postToPanel).not.toHaveBeenCalled();
+    expect(provider.disposePersistentProcess).not.toHaveBeenCalled();
+    expect(host._upgradingClis.size).toBe(0);
   });
 });

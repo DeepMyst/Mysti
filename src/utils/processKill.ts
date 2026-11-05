@@ -8,9 +8,118 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { spawn } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import type { ChildProcess } from 'child_process';
 import { PROCESS_KILL_GRACE_PERIOD_MS } from '../constants';
+
+/** Only mark handles spawned with detached:true on POSIX. Never infer ownership from a PID. */
+const ownedProcessGroups = new WeakSet<ChildProcess>();
+const ownedDetachedDescendants = new WeakSet<ChildProcess>();
+const detachedCleanup = new WeakMap<ChildProcess, Promise<void>>();
+
+export function markOwnedProcessGroup(proc: ChildProcess, captureDetachedDescendants = false): void {
+  if (process.platform !== 'win32') {
+    ownedProcessGroups.add(proc);
+    if (captureDetachedDescendants) { ownedDetachedDescendants.add(proc); }
+  }
+}
+
+interface ProcessIdentity {
+  pid: number;
+  parent: number;
+  group: number;
+  started: string;
+}
+
+/** Metadata only: never inspect or retain another process's command or environment. */
+function readProcessIdentities(pids?: number[]): Promise<Map<number, ProcessIdentity>> {
+  return new Promise((resolve, reject) => {
+    execFile('/bin/ps', [...(pids ? ['-p', pids.join(',')] : ['-A']),
+      '-o', 'pid=,ppid=,pgid=,stat=,lstart='], {
+      encoding: 'utf8', timeout: 1500, maxBuffer: 4 * 1024 * 1024,
+      env: { ...process.env, LC_ALL: 'C' },
+    }, (error, stdout) => {
+      // ps exits 1 when none of the selected PIDs remain.
+      if (error && !(pids && error.code === 1 && !stdout.trim())) { reject(error); return; }
+      const rows = new Map<number, ProcessIdentity>();
+      for (const line of stdout.split('\n')) {
+        const row = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+((?:\S+\s+){4}\S+)$/);
+        if (!row || row[4].startsWith('Z')) { continue; }
+        const pid = Number(row[1]);
+        rows.set(pid, { pid, parent: Number(row[2]), group: Number(row[3]), started: row[5] });
+      }
+      resolve(rows);
+    });
+  });
+}
+
+/** A detached tool changes parent when its CLI exits; its birth time and group remain stable. */
+function sameProcessIdentity(before: ProcessIdentity, after: ProcessIdentity | undefined): boolean {
+  return !!after && before.pid === after.pid && before.group === after.group && before.started === after.started;
+}
+
+async function captureDetachedDescendants(proc: ChildProcess): Promise<ProcessIdentity[]> {
+  if (!isProcessLive(proc) || !proc.pid) { return []; }
+  const rows = await readProcessIdentities();
+  // Do not infer ownership from a reused PID after the actual handle exited.
+  if (!isProcessLive(proc) || !rows.has(proc.pid)) { return []; }
+  const owned = new Set([proc.pid]);
+  const descendants: ProcessIdentity[] = [];
+  // Parent-first order prevents terminating a sleep from waking its shell
+  // before that shell has received the cancellation signal.
+  for (const parent of owned) {
+    for (const row of rows.values()) {
+      if (row.parent !== parent || owned.has(row.pid)) { continue; }
+      owned.add(row.pid);
+      if (row.group !== proc.pid) { descendants.push(row); }
+    }
+  }
+  return descendants;
+}
+
+async function signalDetachedDescendants(descendants: ProcessIdentity[], signal: NodeJS.Signals): Promise<void> {
+  if (!descendants.length) { return; }
+  const current = await readProcessIdentities(descendants.map(row => row.pid));
+  for (const row of descendants) {
+    // Signal only individually verified descendants, never a discovered group
+    // or a PID selected by executable name, user, directory or port.
+    if (!sameProcessIdentity(row, current.get(row.pid))) { continue; }
+    try { process.kill(row.pid, signal); } catch { /* Already exited or inaccessible. */ }
+  }
+}
+
+async function killWithDetachedDescendants(
+  proc: ChildProcess, graceMs: number, options: Omit<KillProcessTreeOptions, 'graceMs'>,
+): Promise<void> {
+  let descendants: ProcessIdentity[] = [];
+  try {
+    descendants = await captureDetachedDescendants(proc);
+    if (options.initialSignal !== null) {
+      await signalDetachedDescendants(descendants, options.initialSignal ?? 'SIGTERM');
+    }
+  } catch {
+    console.warn('[Mysti] Could not inspect owned CLI descendants; continuing process-group cleanup.');
+  }
+  const groupCleanup = killProcessGroup(proc, graceMs, options);
+  if (descendants.length) {
+    await new Promise<void>(resolve => setTimeout(resolve, graceMs));
+    try { await signalDetachedDescendants(descendants, 'SIGKILL'); }
+    catch { console.warn('[Mysti] Could not recheck owned CLI descendants during cleanup.'); }
+  }
+  await groupCleanup;
+}
+
+/** Pause/resume the whole owned group; ordinary provider handles keep single-PID behavior. */
+export function signalOwnedProcess(proc: ChildProcess, signal: NodeJS.Signals): boolean {
+  if (process.platform === 'win32') { return proc.kill(signal); }
+  return sendSignal(proc, signal, ownedProcessGroups.has(proc));
+}
+
+function isProcessGroupLive(proc: ChildProcess): boolean {
+  if (typeof proc.pid !== 'number') { return false; }
+  try { process.kill(-proc.pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM'; }
+}
 
 /**
  * A process is considered alive only while BOTH exitCode and signalCode are null.
@@ -47,8 +156,8 @@ export interface KillProcessTreeOptions {
    * group via the negative pid (`process.kill(-pid, signal)`). Set this to true
    * ONLY when the spawn used `detached: true`; otherwise group signalling will
    * target an unrelated group (or throw ESRCH — in which case we fall back to
-   * signalling the single pid). Defaults to false: no provider spawns detached;
-   * DevServerManager does (and opts in). Ignored on Windows, where the tree is
+   * signalling the single pid). Defaults to whether the handle was explicitly
+   * marked by markOwnedProcessGroup. Ignored on Windows, where the tree is
    * always killed via `taskkill /T`.
    */
   useProcessGroup?: boolean;
@@ -57,11 +166,13 @@ export interface KillProcessTreeOptions {
    */
   label?: string;
   /**
-   * Initial signal to send before escalation. Defaults to 'SIGTERM'.
+   * Initial signal to send before escalation. Defaults to 'SIGTERM'. Pass null
+   * to observe cancellation already initiated by the owner without duplicating
+   * its signal; exit/group settlement and bounded escalation still apply.
    * Callers that have a frozen (SIGSTOP'd) process should pass 'SIGKILL' so the
    * signal is delivered to the stopped process without first resuming it.
    */
-  initialSignal?: NodeJS.Signals;
+  initialSignal?: NodeJS.Signals | null;
 }
 
 /**
@@ -156,8 +267,7 @@ function sendSignal(
     }
   }
   try {
-    proc.kill(signal);
-    return true;
+    return proc.kill(signal);
   } catch {
     // ESRCH (no such process) / EPERM — process is already gone or unreachable.
     return false;
@@ -177,8 +287,8 @@ function sendSignal(
  *  - Otherwise sends the initial signal (SIGTERM by default), then schedules a
  *    SIGKILL escalation after `graceMs`. The escalation fires ONLY if the process
  *    is still live at that point (checked via exitCode/signalCode, NOT `.killed`).
- *  - Listens for the process 'exit' event: when it fires, the escalation timer is
- *    cleared (no leaked timers) and the promise resolves.
+ *  - Listens for the process 'exit' event: the timer is cleared and the promise
+ *    resolves unless an explicitly owned group still contains descendants.
  *  - The returned promise resolves when the process is gone (either after the
  *    'exit' event, or after the SIGKILL escalation has been issued for a process
  *    that ignores SIGTERM).
@@ -192,11 +302,32 @@ export function killProcessTree(
   graceMs: number = PROCESS_KILL_GRACE_PERIOD_MS,
   options: Omit<KillProcessTreeOptions, 'graceMs'> = {},
 ): Promise<void> {
-  const { useProcessGroup = false, label, initialSignal = 'SIGTERM' } = options;
+  if (proc && ownedDetachedDescendants.has(proc) && process.platform !== 'win32') {
+    // Stop, the stream's finally, and ProviderManager may all cancel the same
+    // handle. They must share the snapshot before any path kills its parent.
+    let cleanup = detachedCleanup.get(proc);
+    if (!cleanup) {
+      cleanup = killWithDetachedDescendants(proc, graceMs, options);
+      detachedCleanup.set(proc, cleanup);
+    }
+    return cleanup;
+  }
+  return killProcessGroup(proc, graceMs, options);
+}
+
+function killProcessGroup(
+  proc: ChildProcess | null | undefined,
+  graceMs: number,
+  options: Omit<KillProcessTreeOptions, 'graceMs'>,
+): Promise<void> {
+  const { label, initialSignal = 'SIGTERM' } = options;
+  const useProcessGroup = process.platform !== 'win32'
+    && (options.useProcessGroup ?? (proc ? ownedProcessGroups.has(proc) : false));
+  const treeIsLive = () => isProcessLive(proc) || (useProcessGroup && !!proc && isProcessGroupLive(proc));
 
   return new Promise<void>((resolve) => {
     // Already dead (or no handle): nothing to do.
-    if (!isProcessLive(proc)) {
+    if (!treeIsLive()) {
       resolve();
       return;
     }
@@ -219,8 +350,9 @@ export function killProcessTree(
     };
 
     const onExit = () => {
-      // Process is gone — clear the escalation timer so no leaked timers remain.
-      cleanupAndResolve();
+      // A launcher can exit before its native child. Keep the group's deadline
+      // until its descendants are gone, even though the leader was reaped.
+      if (!useProcessGroup || !isProcessGroupLive(child)) { cleanupAndResolve(); }
     };
 
     child.on('exit', onExit);
@@ -228,11 +360,11 @@ export function killProcessTree(
     // Send the initial signal. If it could not be sent the process is already
     // gone — but the 'exit' listener will have fired (or will), so we still rely
     // on it / the immediate liveness re-check below.
-    sendSignal(child, initialSignal, useProcessGroup);
+    if (initialSignal !== null) { sendSignal(child, initialSignal, useProcessGroup); }
 
     // Re-check liveness synchronously: the signal may have terminated the process
     // immediately (or it was already reaped between the first check and now).
-    if (!isProcessLive(child)) {
+    if (!treeIsLive()) {
       cleanupAndResolve();
       return;
     }
@@ -240,7 +372,7 @@ export function killProcessTree(
     // Schedule SIGKILL escalation — fires only if still live after the grace period.
     escalationTimer = setTimeout(() => {
       escalationTimer = null;
-      if (isProcessLive(child)) {
+      if (treeIsLive()) {
         if (label) {
           console.warn(`[Mysti] ${label}: Force killing leaked process (SIGKILL)`);
         } else {

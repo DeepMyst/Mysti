@@ -132,6 +132,7 @@ export class CodexProvider extends BaseCliProvider {
     supportsThinking: true, // Codex has 'reasoning' events
     supportsToolUse: true,
     supportsNativeApproval: true,
+    supportsAskPermission: true,
     supportsPersistentProcess: true,
     supportsSessions: true,  // Native thread/resume
     // Plan 27 Phase 5: attachments are written to a temp file and referenced
@@ -218,6 +219,10 @@ export class CodexProvider extends BaseCliProvider {
     return [];
   }
 
+  protected override getAuthenticationEnvironmentKeys(): readonly string[] {
+    return ['OPENAI_API_KEY', 'CODEX_HOME'];
+  }
+
   async getAuthConfig(): Promise<AuthConfig> {
     // Codex OAuth (ChatGPT login) is stored in ~/.codex/auth.json. ~/.codex/config.toml
     // is only the settings file: it can exist without ever logging in and it SURVIVES
@@ -225,8 +230,9 @@ export class CodexProvider extends BaseCliProvider {
     // existence is NOT proof of auth — the only positive markers are auth.json and
     // OPENAI_API_KEY. config.toml is still exposed as configPath purely for the
     // email/user label lookup in checkAuthentication() when auth.json is absent.
-    const authJson = path.join(os.homedir(), '.codex', 'auth.json');
-    const configToml = path.join(os.homedir(), '.codex', 'config.toml');
+    const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+    const authJson = path.join(codexHome, 'auth.json');
+    const configToml = path.join(codexHome, 'config.toml');
     const hasAuth = fs.existsSync(authJson);
     return {
       type: 'oauth', // ChatGPT account login
@@ -926,15 +932,20 @@ export class CodexProvider extends BaseCliProvider {
       }
       console.warn(`[Mysti] Codex: Invalid custom model "${customModel}": ${validation.error}`);
     }
-    // Fall back to dropdown selection, but only if it's a Codex model — the
-    // global defaultModel may belong to another provider (cross-provider guard).
-    // The shared catalog stores additional IDs per provider. Honor those IDs
-    // while rejecting a selection leaked from another provider.
+    // The host resolves the picker against its merged/discovered catalog.
+    // A Codex-owned selection may therefore be newer than this static list,
+    // including a custom model later picked from its ordinary menu row.
+    // Keep rejecting inherited foreign settings and explicit foreign custom
+    // declarations; local catalogs may mirror another backend's model IDs.
     if (settings.model) {
       const validCodexModels = this.config.models.map(m => m.id);
       const customModels = config.get<Record<string, string[]>>('customModels', {});
       const declaredCustom = Array.isArray(customModels?.[this.id]) && customModels[this.id].includes(settings.model);
-      if (validateModelName(settings.model).valid && (validCodexModels.includes(settings.model) || declaredCustom)) {
+      const declaredForeign = Object.entries(customModels || {}).some(([provider, models]) =>
+        provider !== this.id && provider !== 'ollama' && provider !== 'localai'
+        && Array.isArray(models) && models.includes(settings.model));
+      const ownedSelection = settings.provider === this.id && !declaredForeign;
+      if (validateModelName(settings.model).valid && (validCodexModels.includes(settings.model) || declaredCustom || ownedSelection)) {
         return settings.model;
       }
       console.warn(`[Mysti] Codex: Ignoring non-Codex model "${settings.model}" (use the codexModel setting for a custom Codex model); using the Mysti Codex default.`);
@@ -947,16 +958,19 @@ export class CodexProvider extends BaseCliProvider {
    */
   private _getProfile(): string | undefined {
     const config = vscode.workspace.getConfiguration('mysti');
-    const profile = config.get<string>('codexProfile', '');
-    if (profile) {
-      const validation = validateProfileName(profile);
-      if (validation.valid) {
-        console.log(`[Mysti] Codex: Using profile: ${profile}`);
-        return profile;
-      }
-      console.warn(`[Mysti] Codex: Invalid profile "${profile}": ${validation.error}`);
+    const configured = config.get<unknown>('codexProfile', '');
+    const guidance = 'Change mysti.codexProfile in Settings, or clear it to use the default profile.';
+    if (typeof configured !== 'string') {
+      throw new Error(`Invalid Codex profile: expected a string. ${guidance}`);
     }
-    return undefined;
+    if (configured === '') { return undefined; }
+    const profile = configured.trim();
+    const validation = validateProfileName(profile);
+    if (!validation.valid) {
+      throw new Error(`Invalid Codex profile: ${validation.error} ${guidance}`);
+    }
+    console.log(`[Mysti] Codex: Using profile: ${profile}`);
+    return profile;
   }
 
   // Legacy event/argv support is retained for imported fixtures; production
@@ -973,9 +987,13 @@ export class CodexProvider extends BaseCliProvider {
     if (codex.appServer) {
       try {
         const data = JSON.parse(line);
+        // The protocol consumes matching IDs while parsing. Capture ownership
+        // first: an unrelated or already-completed RPC error must not evict
+        // the process that is serving the current turn.
+        const ownsRpc = !data.method && typeof data.id === 'number' && codex.appServer.requests.has(data.id);
         const chunk = handleCodexAppServer(data, codex.appServer, session.persistentProcess, this._nativeApprovalRequests(session));
         session.sessionId = codex.appServer.threadId;
-        if (data.error && !data.method) { this._interruptPersistentProcess(session); }
+        if ((ownsRpc || codex.appServer.protocolFailed) && chunk?.type === 'error') { this._interruptPersistentProcess(session); }
         return chunk;
       } catch { return null; }
     }
@@ -983,6 +1001,17 @@ export class CodexProvider extends BaseCliProvider {
   }
 
   protected requiresPersistentTransport(): boolean { return true; }
+
+  protected override _describePersistentProcessExit(session: PanelSessionState, message: string, stderr: string): string {
+    const state = (session as CodexSessionState).appServer;
+    if (state?.profile && !state.initialized
+      && /(?:^|\n)(?:Error:\s*)?--profile only applies to runtime commands and `codex mcp`:/i.test(stderr)) {
+      return 'This Codex CLI cannot use named profiles with Mysti\'s app-server connection. '
+        + 'Clear mysti.codexProfile in Settings and retry to use your base Codex configuration. '
+        + 'No model request was submitted.';
+    }
+    return super._describePersistentProcessExit(session, message, stderr);
+  }
 
   protected buildPersistentCliArgs(settings: Settings, session: PanelSessionState): string[] {
     const profile = this._getProfile();
@@ -1000,6 +1029,10 @@ export class CodexProvider extends BaseCliProvider {
     return super._persistentSettingsMatch(session, settings)
       && state?.settings.mode === settings.mode && state?.settings.accessLevel === settings.accessLevel
       && state?.profile === this._getProfile();
+  }
+
+  protected override _takePendingStreamChunks(session: PanelSessionState): StreamChunk[] {
+    return (session as CodexSessionState).appServer?.pendingChunks?.splice(0) ?? [];
   }
 
   protected _formatPersistentInput(prompt: string, session: PanelSessionState): string {

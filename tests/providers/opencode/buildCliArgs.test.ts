@@ -6,7 +6,7 @@ import type { Settings } from '../../../src/types';
 
 function defaultSettings(overrides?: Partial<Settings>): Settings {
   return {
-    mode: 'default', thinkingLevel: 'none', accessLevel: 'ask-permission',
+    mode: 'default', thinkingLevel: 'none', accessLevel: 'full-access',
     contextMode: 'auto', model: '', provider: 'opencode', ...overrides,
   };
 }

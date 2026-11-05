@@ -183,18 +183,10 @@ describe('provider-declared menu entries are alive too', () => {
     }
   });
 
-  /**
-   * A native command runs as a TURN against the backend, and the extension
-   * refuses to send one without the panel's settings. A menu pick that omits
-   * them is undeliverable — which is exactly what used to happen.
-   */
-  it('picking a menu item sends the same context typing one does', () => {
-    const idx = js.indexOf('function executeSlashMenuItem');
-    expect(idx).toBeGreaterThan(-1);
-    const body = js.slice(idx, idx + 1600);
-    expect(body).toContain('settings: state.settings');
-    expect(body).toContain('context: state.context');
-  });
+  // Menu submission carries settings and context through the shared composer
+  // dispatcher. The idle and queued menu-click cases in
+  // tests/webview/composerReliabilityBrowser.test.ts assert the actual posted
+  // payload; an inline source-string check here incorrectly rejects delegation.
 });
 
 describe('the four trigger* commands close the loop', () => {

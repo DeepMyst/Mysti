@@ -13,6 +13,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { clearMockConfig } from '../helpers/mockVscode';
 import { TestableClaudeProvider } from '../helpers/providerFactory';
+import { createClaudeSession } from '../helpers/sessionFactory';
 import { STREAM_INACTIVITY_TIMEOUT_MS } from '../../src/constants';
 
 describe('processStream inactivity watchdog (Plan 18 4.2)', () => {
@@ -31,9 +32,7 @@ describe('processStream inactivity watchdog (Plan 18 4.2)', () => {
     };
     return {
       session: {
-        panelId: 'p',
-        autonomousMode: false,
-        suspended: false,
+        ...createClaudeSession('p'),
         process: {
           pid: undefined, // Mock handle: never dispatch taskkill against a real Windows PID.
           exitCode: null,
@@ -92,7 +91,7 @@ describe('processStream inactivity watchdog (Plan 18 4.2)', () => {
       },
     };
     const session: any = {
-      panelId: 'p', autonomousMode: false, suspended: false,
+      ...createClaudeSession('p'),
       process: {
         pid: 4243, exitCode: 0, signalCode: null,
         kill: vi.fn(() => true), on: vi.fn(), once: vi.fn(), removeListener: vi.fn(),

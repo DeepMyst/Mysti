@@ -94,10 +94,10 @@ describe('CopilotProvider.parseStreamLine', () => {
 // ---------------------------------------------------------------------------
 // Copilot CLI 1.0 JSONL (2026-09-06)
 //
-// The 0.0.x line emitted plain text with NO tool events, so no tool_use chunk
-// ever reached Mysti's stream-level permission gate — Copilot ran `bash`
-// entirely unobserved, and ask-tier had to deny shell/write outright to stay
-// safe. 1.0's `--output-format json` is what finally makes it gateable.
+// The 0.0.x line emitted plain text with no tool events. 1.0 JSON adds
+// execution receipts, but these notifications do not wait for Mysti approval.
+// Both transports reject unsupported Ask before dispatch; explicit read-only
+// and unrestricted choices use their native CLI permission flags.
 //
 // Lines below are captured verbatim from `copilot -p … --output-format json`
 // on 1.0.83.
@@ -126,7 +126,7 @@ describe('Copilot 1.0 JSON stream', () => {
     )).toBeNull();
   });
 
-  /** The event Mysti's permission gate exists to intercept. */
+  /** A display notification about execution, not a pre-execution consent gate. */
   it('emits a tool_use for tool.execution_start', () => {
     const chunk = p.parseStreamLine(
       '{"type":"tool.execution_start","data":{"toolCallId":"call_1","toolName":"bash","arguments":{"command":"ls","description":"List files"}}}',

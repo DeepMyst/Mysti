@@ -11,11 +11,13 @@
 import * as vscode from 'vscode';
 import { validateModelName } from '../../utils/validation';
 import { BaseCliProvider, type PanelSessionState } from '../base/BaseCliProvider';
+import { showAuthenticationInput } from '../base/authenticationInput';
 import type {
   CliDiscoveryResult,
   AuthConfig,
   ProviderCapabilities,
   PersonaConfig,
+  ProviderInputResolver,
 } from '../base/IProvider';
 import type {
   Settings,
@@ -115,22 +117,31 @@ export class MiniMaxProvider extends BaseCliProvider {
     return (await this._extensionContext.secrets.get('mysti.minimax.apiKey'))?.trim() || process.env.MINIMAX_API_KEY?.trim() || '';
   }
 
-  async configureAuthentication(): Promise<AuthStatus> {
-    const key = await vscode.window.showInputBox({
+  async configureAuthentication(signal?: AbortSignal): Promise<AuthStatus> {
+    const cancelled = (): AuthStatus => ({ authenticated: false, error: 'Authentication cancelled.' });
+    if (signal?.aborted) { return cancelled(); }
+    const key = await showAuthenticationInput({
       title: 'MiniMax API key', prompt: 'Enter your MiniMax API key. It is stored in VS Code SecretStorage.',
       password: true, ignoreFocusOut: true,
       validateInput: value => value.trim() ? undefined : 'Enter an API key.',
-    });
-    if (key === undefined) { return { authenticated: false, error: 'Authentication cancelled.' }; }
+    }, signal);
+    if (signal?.aborted || key === undefined) { return cancelled(); }
     if (!key.trim()) { return { authenticated: false, error: 'Enter an API key.' }; }
     await this._extensionContext.secrets.store('mysti.minimax.apiKey', key.trim());
-    return this.checkAuthentication();
+    if (signal?.aborted) { return cancelled(); }
+    const status = await this.checkAuthentication();
+    return signal?.aborted ? cancelled() : status;
   }
 
   // The API adapter is always available. Missing credentials are an auth state,
   // never a missing CLI or a reason to offer an installer.
   async discoverCli(): Promise<CliDiscoveryResult> { return { found: true, path: 'api' }; }
   getCliPath(): string { return this._getBaseUrl(); }
+  protected override _getEffectiveModel(settings: Settings): string {
+    return settings.routedModel || vscode.workspace.getConfiguration('mysti').get<string>('minimaxModel', '').trim()
+      || settings.model || this.config.defaultModel;
+  }
+
   async getAuthConfig(): Promise<AuthConfig> { return { type: 'api-key', isAuthenticated: !!(await this._getApiKey()) }; }
   async checkAuthentication(): Promise<AuthStatus> {
     return (await this._getApiKey())
@@ -149,7 +160,9 @@ export class MiniMaxProvider extends BaseCliProvider {
     content: string, context: ContextItem[], settings: Settings, conversation: Conversation | null,
     persona?: PersonaConfig, panelId?: string, _providerManager?: unknown,
     agentConfig?: AgentConfiguration, attachments?: Attachment[],
+    resolveInput?: ProviderInputResolver,
   ): AsyncGenerator<StreamChunk> {
+    if (resolveInput && !resolveInput()) { return; }
     const session = this._getSession(panelId) as MiniMaxSessionState;
     session.abortController?.abort();
     const controller = new AbortController();
@@ -161,16 +174,28 @@ export class MiniMaxProvider extends BaseCliProvider {
     const timer = setTimeout(() => controller.abort(), timeout);
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     let apiKey = '';
+    let dispatched = false;
     try {
+      // Resolve the selected model before credential/prompt awaits. Settings
+      // changed for a later turn must not retarget this originating request.
+      const model = this._getEffectiveModel(settings);
       apiKey = await this._getApiKey();
       controller.signal.throwIfAborted();
       if (!apiKey) {
         yield { type: 'auth_error', content: 'MiniMax API key is not configured.', authCommand: this.getAuthCommand(), providerName: this.displayName };
         return;
       }
-      const model = settings.routedModel || config.get<string>('minimaxModel', '').trim() || settings.model || this.config.defaultModel;
       if (!validateModelName(model).valid) { throw new Error('Invalid MiniMax model name.'); }
-      const fullPrompt = await this.buildPromptAsync(content, context, conversation, settings, persona, agentConfig, attachments, session.channelSystemContext);
+      const render = resolveInput ? await this.preparePromptRenderer(
+        conversation, settings, persona, agentConfig, attachments, session.channelSystemContext,
+      ) : undefined;
+      let fullPrompt = render ? '' : await this.buildPromptAsync(content, context, conversation, settings, persona, agentConfig, attachments, session.channelSystemContext);
+      if (resolveInput && render) {
+        if (controller.signal.aborted || session.abortController !== controller) { return; }
+        const input = resolveInput();
+        if (!input || controller.signal.aborted || session.abortController !== controller) { return; }
+        fullPrompt = render(input.content, input.context);
+      }
       controller.signal.throwIfAborted();
       const temperature = config.get<number>('minimaxTemperature', 1);
       const maxTokens = config.get<number>('minimaxMaxTokens', 0);
@@ -180,6 +205,7 @@ export class MiniMaxProvider extends BaseCliProvider {
         stream_options: { include_usage: true }, reasoning_split: true,
       };
       if (Number.isFinite(maxTokens) && maxTokens > 0) { body.max_completion_tokens = Math.floor(maxTokens); }
+      dispatched = true;
       const response = await fetch(`${this._getBaseUrl()}/chat/completions`, {
         method: 'POST', redirect: 'error',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
@@ -203,11 +229,15 @@ export class MiniMaxProvider extends BaseCliProvider {
       while (!finished) {
         controller.signal.throwIfAborted();
         const { done, value } = await reader.read();
+        controller.signal.throwIfAborted();
         buffer += decoder.decode(value, { stream: !done });
         if (done && buffer) { buffer += '\n'; }
         if (buffer.length > 4 * 1024 * 1024) { throw new Error('MiniMax stream frame exceeded the size limit.'); }
         let newline: number;
         while ((newline = buffer.indexOf('\n')) >= 0) {
+          // Stop can arrive while the consumer is handling a yielded chunk,
+          // even when the remaining response bytes are already buffered.
+          controller.signal.throwIfAborted();
           const line = buffer.slice(0, newline).trim();
           buffer = buffer.slice(newline + 1);
           if (!line.startsWith('data:')) { continue; }
@@ -229,15 +259,18 @@ export class MiniMaxProvider extends BaseCliProvider {
           const choice = chunk.choices?.[0];
           if (choice?.finish_reason) { sawFinish = true; }
           if (typeof choice?.delta?.reasoning_content === 'string') { yield { type: 'thinking', content: choice.delta.reasoning_content }; }
+          controller.signal.throwIfAborted();
           if (typeof choice?.delta?.content === 'string' && choice.delta.content) { sawText = true; yield { type: 'text', content: choice.delta.content }; }
         }
         if (done) { break; }
       }
+      controller.signal.throwIfAborted();
       if (!finished && !sawFinish) { throw new Error('MiniMax stream ended before completion. Please retry.'); }
       if (!sawText) { throw new Error('MiniMax returned no answer. Check the model and output token limit.'); }
       if (session.abortController === controller) { session.lastUsageStats = usage ?? null; }
       yield { type: 'done', ...(usage ? { usage } : {}), contextWindow: this.config.models.find(m => m.id === model)?.contextWindow };
     } catch (error) {
+      if (resolveInput && !dispatched && (controller.signal.aborted || session.abortController !== controller)) { return; }
       const message = controller.signal.aborted ? 'MiniMax request cancelled or timed out.'
         : error instanceof Error ? error.message : 'MiniMax request failed.';
       yield { type: 'error', content: apiKey ? message.split(apiKey).join('[REDACTED]') : message };

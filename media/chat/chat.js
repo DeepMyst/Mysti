@@ -10,7 +10,7 @@
         getMermaid: () => window.mermaid,
         logger: console,
       });
-      const renderMarkdownSafe = value => markdownRenderer.renderMarkdown(value);
+      const renderMarkdownSafe = (value, options) => markdownRenderer.renderMarkdown(value, options);
       const renderMermaidDiagrams = () => markdownRenderer.renderDiagrams();
       window.addEventListener('pagehide', event => {
         if (!event.persisted) { markdownRenderer.dispose(); }
@@ -74,6 +74,7 @@
       };
 
 
+      var initialStateReceived = false;
       let state = {
         panelId: null,  // Unique ID for this panel
         workspacePath: '',  // Workspace root for relative path display
@@ -99,6 +100,7 @@
         slashMenuVisible: false,
         slashMenuIndex: 0,
         slashMenuItems: [],
+        slashMenuSelectedId: null,
         // Plan 29 — set while the slash menu is picking agents for a session:
         // { shape: <SessionMenuEntry>, picked: {providerId: true} }. Null the
         // rest of the time, which is what keeps the menu a plain command list.
@@ -142,6 +144,7 @@
         // for queued intent nobody has committed to yet.
         queue: [],
         queueSeq: 0,
+        queuePaused: false,
         // Plan 28 Phase 3: the Runs dock's model. `runsById` is the record,
         // `runOrder` preserves first-seen order so the list does not jump
         // around as entries change state.
@@ -223,6 +226,55 @@
       // literals. A provider id only selects display identity (name, color,
       // logo, shortId) from its manifest entry.
       // ========================================================================
+
+      function normalizeProviderManifest(payload) {
+        if (!payload || payload.schemaVersion !== EXPECTED_MANIFEST_SCHEMA_VERSION || !Array.isArray(payload.providers)) { return null; }
+        var seen = new Set();
+        var invalid = payload.providers.some(function(entry) {
+          if (!entry || typeof entry !== 'object' || typeof entry.id !== 'string' || !/^[a-z0-9][a-z0-9-]*$/.test(entry.id) || seen.has(entry.id)) { return true; }
+          seen.add(entry.id);
+          return false;
+        });
+        if (invalid) { return null; }
+        function levels(value) {
+          return Array.isArray(value) ? value.filter(function(level, index) {
+            return ['low', 'medium', 'high', 'xhigh', 'max'].indexOf(level) !== -1 && value.indexOf(level) === index;
+          }) : [];
+        }
+        return { schemaVersion: payload.schemaVersion, providers: payload.providers.map(function(entry) {
+          var source = entry.capabilities && typeof entry.capabilities === 'object' && !Array.isArray(entry.capabilities) ? entry.capabilities : {};
+          var caps = Object.assign({}, source);
+          ['supportsImages', 'supportsFileAttachments', 'supportsUltracode', 'supportsPromptEnhancement', 'supportsChannels', 'supportsSteering', 'toolCallsAreProposals'].forEach(function(key) { caps[key] = source[key] === true; });
+          var noExecutor = source.supportsToolUse === false || source.toolCallsAreProposals === true;
+          caps._authorityKnown = typeof source.supportsToolUse === 'boolean'
+            || typeof source.supportsAskPermission === 'boolean' || typeof source.supportsReadOnly === 'boolean'
+            || source.supportsNativeApproval === true || source.toolCallsAreProposals === true;
+          // Optional fields on older, otherwise declared adapters retain their
+          // contract. A partial record or a malformed present flag grants none.
+          caps.supportsAskPermission = Object.prototype.hasOwnProperty.call(source, 'supportsAskPermission')
+            ? source.supportsAskPermission === true : source.supportsNativeApproval === true || noExecutor;
+          caps.supportsReadOnly = Object.prototype.hasOwnProperty.call(source, 'supportsReadOnly')
+            ? source.supportsReadOnly === true : noExecutor
+              || (typeof source.supportsToolUse === 'boolean' && ['native', 'detected'].indexOf(source.planMode) !== -1);
+          caps.thinkingStyle = ['streamed', 'complete-blocks', 'none'].indexOf(source.thinkingStyle) !== -1 ? source.thinkingStyle : 'none';
+          caps.thinkingLevelEffective = source.thinkingLevelEffective === true;
+          caps.modelSelection = ['full', 'custom-only', 'none'].indexOf(source.modelSelection) !== -1 ? source.modelSelection : 'none';
+          caps.effortLevels = levels(source.effortLevels);
+          caps.effortLevelsByModel = Object.create(null);
+          if (source.effortLevelsByModel && typeof source.effortLevelsByModel === 'object' && !Array.isArray(source.effortLevelsByModel)) {
+            Object.keys(source.effortLevelsByModel).forEach(function(model) { caps.effortLevelsByModel[model] = levels(source.effortLevelsByModel[model]); });
+          }
+          return Object.assign({}, entry, {
+            displayName: typeof entry.displayName === 'string' ? entry.displayName : entry.id,
+            shortId: typeof entry.shortId === 'string' ? entry.shortId : entry.id,
+            color: typeof entry.color === 'string' && /^#[a-f0-9]{3,8}$/i.test(entry.color) ? entry.color : '#888888',
+            capabilities: caps,
+            settingsSections: Array.isArray(entry.settingsSections) ? entry.settingsSections.filter(function(section) {
+              return section && typeof section.id === 'string' && ['text', 'number', 'select', 'note'].indexOf(section.type) !== -1;
+            }).map(function(section) { return Object.assign({}, section, { options: Array.isArray(section.options) ? section.options.filter(function(option) { return option && typeof option.value === 'string'; }) : [] }); }) : []
+          });
+        }) };
+      }
 
       function getManifestEntry(providerId) {
         var manifest = state.providerManifest;
@@ -511,16 +563,16 @@
 
       // Highlight matched characters in a display name
       function highlightMatch(text, query) {
-        if (!query) return text;
+        if (!query) return escapeHtml(text);
         var t = text.toLowerCase();
         var q = query.toLowerCase();
 
         // Try substring highlight first
         var idx = t.indexOf(q);
         if (idx !== -1) {
-          return text.substring(0, idx)
-            + '<strong>' + text.substring(idx, idx + q.length) + '</strong>'
-            + text.substring(idx + q.length);
+          return escapeHtml(text.substring(0, idx))
+            + '<strong>' + escapeHtml(text.substring(idx, idx + q.length)) + '</strong>'
+            + escapeHtml(text.substring(idx + q.length));
         }
 
         // Fuzzy highlight: bold each matching character
@@ -529,10 +581,10 @@
         var i;
         for (i = 0; i < text.length; i++) {
           if (qi < q.length && text[i].toLowerCase() === q[qi]) {
-            result += '<strong>' + text[i] + '</strong>';
+            result += '<strong>' + escapeHtml(text[i]) + '</strong>';
             qi++;
           } else {
-            result += text[i];
+            result += escapeHtml(text[i]);
           }
         }
         return result;
@@ -654,9 +706,9 @@
           var globalIdx = agentCount + idx;
           var nameHtml = highlightMatch(item.displayName, query);
           var pathHtml = item.relativePath !== item.displayName
-            ? '<span class="mention-shortname" title="' + item.relativePath + '">' + item.relativePath + '</span>'
+            ? '<span class="mention-shortname" title="' + escapeHtml(item.relativePath) + '">' + escapeHtml(item.relativePath) + '</span>'
             : '';
-          return '<div class="mention-menu-item' + (globalIdx === state.mentionMenuIndex ? ' selected' : '') + '" data-index="' + globalIdx + '" data-type="file" data-value="' + item.value + '">'
+          return '<div class="mention-menu-item' + (globalIdx === state.mentionMenuIndex ? ' selected' : '') + '" data-index="' + globalIdx + '" data-type="file" data-value="' + escapeHtml(item.value) + '">'
             + '<span class="mention-file-icon">&#128196;</span>'
             + '<span class="mention-name">' + nameHtml + '</span>'
             + pathHtml
@@ -848,7 +900,8 @@
         var after = inputEl.value.substring(inputEl.selectionStart);
         var mentionText = item.type === 'role'
           ? '@' + item.agentShort + ':' + item.value + ' '
-          : '@' + item.shortName + ' ';
+          : item.type === 'file' ? '@' + JSON.stringify(item.value) + ' '
+            : '@' + item.shortName + ' ';
 
         inputEl.value = before + mentionText + after;
         var newPos = state.mentionStartPos + mentionText.length;
@@ -859,13 +912,119 @@
         inputEl.focus();
       }
 
+      // Mirror the ordered quote/code grammar in src/utils/mentionParser.ts.
+      // Visible paths carry identity through edits, queues and cache reordering.
+      function scanMentionSyntax(content) {
+        var code = [], quoted = [];
+        var markers = /```|~~~|`|@"/g;
+        var marker;
+        while ((marker = markers.exec(content)) !== null) {
+          var start = marker.index;
+          var token = marker[0];
+          if (token === '@"') {
+            var end = start + 2, closed = false;
+            while (end < content.length) {
+              var char = content[end];
+              if (char === '\n' || char === '\r') break;
+              if (char === '\\') {
+                if (content[end + 1] === '\n' || content[end + 1] === '\r') break;
+                end = Math.min(content.length, end + 2);
+                continue;
+              }
+              end++;
+              if (char === '"') { closed = true; break; }
+            }
+            quoted.push({ startIndex: start, endIndex: end, closed: closed });
+            markers.lastIndex = end;
+          } else {
+            var close = content.indexOf(token, start + token.length);
+            if (token === '`') {
+              if (close < 0 || /[\r\n]/.test(content.slice(start + 1, close))) continue;
+            }
+            var codeEnd = close < 0 ? content.length : close + token.length;
+            code.push([start, codeEnd]);
+            markers.lastIndex = codeEnd;
+          }
+        }
+        return { code: code, quoted: quoted };
+      }
+
+      function isMentionBoundary(content, index) {
+        // Match a complete code point, including astral letters and numbers.
+        var previous = Array.from(content.slice(Math.max(0, index - 2), index)).pop() || '';
+        if (/^[\p{L}\p{N}_/@]$/u.test(previous)) return false;
+        var escapes = 0;
+        for (var i = index - 1; i >= 0 && content[i] === '\\'; i--) escapes++;
+        return escapes % 2 === 0;
+      }
+
+      function hasExplicitFileReferenceSyntax(value) {
+        // Ignore prose-ending periods only when deciding whether unresolved
+        // text looks like a file. Never change the spelling used for resolution.
+        var candidate = value.replace(/\.+$/, '');
+        return candidate.indexOf('/') !== -1 ||
+          (candidate.indexOf('.') !== -1 && /[^.]/.test(candidate));
+      }
+
+      function resolveFileMentionPath(value, quoted) {
+        var files = Array.from(new Set((state.workspaceFileCache || []).filter(function(file) {
+          return typeof file === 'string';
+        })));
+        // Exact selected spelling wins. An obsolete absolute token must never
+        // fall back to a same-named file elsewhere (or a case-only replacement).
+        if (files.indexOf(value) !== -1) return { path: value };
+        var absolute = /^\//.test(value) || /^[a-z]:[\\/]/i.test(value) || /^\\\\/.test(value);
+        var matches = [];
+        if (!(quoted && absolute)) {
+          var normalized = value.replace(/\\/g, '/').replace(/^\.\//, '');
+          var exact = files.filter(function(file) {
+            var candidate = file.replace(/\\/g, '/');
+            return candidate === normalized || candidate.endsWith('/' + normalized);
+          });
+          matches = exact;
+          // Retain case-insensitive shorthand only when it identifies one file.
+          if (!matches.length && !quoted) {
+            var lower = normalized.toLowerCase();
+            matches = files.filter(function(file) {
+              var candidate = file.replace(/\\/g, '/').toLowerCase();
+              return candidate === lower || candidate.endsWith('/' + lower);
+            });
+          }
+        }
+        if (matches.length === 1) return { path: matches[0] };
+        if (matches.length > 1) return { error: 'More than one file matches @' + value + '. Choose a file from the suggestions or use its full path.' };
+        if (quoted) { return { error: 'File reference is no longer in the workspace list: ' + value + '. Select it again before sending.' }; }
+        if (hasExplicitFileReferenceSyntax(value)) {
+          return { error: 'File reference is not available in the current workspace file list: ' + value + '. Choose the file from suggestions or add it through Context.' };
+        }
+        return {};
+      }
+
       function parseMentionsFromContent(content) {
-        var mentions = [];
+        var mentions = [], errors = [];
+        var syntax = scanMentionSyntax(content);
+        syntax.quoted.forEach(function(span) {
+          if (!isMentionBoundary(content, span.startIndex)) return;
+          var raw = content.slice(span.startIndex, span.endIndex);
+          var value;
+          try { if (span.closed) value = JSON.parse(raw.slice(1)); } catch (_) { /* Report below. */ }
+          if (typeof value !== 'string' || !value || value.indexOf('\0') !== -1) {
+            errors.push('Invalid quoted file reference. Choose the file again from the suggestions.');
+            return;
+          }
+          var resolved = resolveFileMentionPath(value, true);
+          if (resolved.error) { errors.push(resolved.error); return; }
+          mentions.push({ type: 'file', value: resolved.path, displayName: raw,
+            startIndex: span.startIndex, endIndex: span.endIndex });
+        });
         // M3/Plan 14: allows alphanumeric, hyphens, dots, slashes, underscores,
         // plus an optional ":role" suffix for the @agent:role collaboration grammar.
         var regex = /@([\w\-./]+)(?::([\w-]+))?/g;
         var match;
         while ((match = regex.exec(content)) !== null) {
+          if (!isMentionBoundary(content, match.index)
+            || syntax.code.some(function(span) { return match.index >= span[0] && match.index < span[1]; })
+            || syntax.quoted.some(function(span) { return match.index >= span.startIndex && match.index < span.endIndex; })) continue;
           var word = match[1].toLowerCase();
           var role = match[2] ? match[2].toLowerCase() : undefined;
           // Plan 27 Phase 5 — workspace-state mentions. Checked BEFORE the file
@@ -893,33 +1052,38 @@
               role: role
             });
           } else {
-            // M4: File matching with path boundary check — require minimum 3 chars
-            // and match on path separator boundary or exact filename
-            if (word.length < 3) continue;
-            var matchedFile = null;
-            var files = state.workspaceFileCache || [];
-            for (var i = 0; i < files.length; i++) {
-              var normalized = files[i].replace(/\\/g, '/');
-              var parts = normalized.split('/');
-              var fileName = (parts[parts.length - 1] || '').toLowerCase();
-              // Exact full path, exact filename, OR path ending with /word
-              if (normalized.toLowerCase() === word || fileName === word || normalized.toLowerCase().endsWith('/' + word)) {
-                matchedFile = files[i];
-                break;
+            // Bare names must identify one file, independent of cache order.
+            if (word.length < 3) {
+              if (hasExplicitFileReferenceSyntax(match[1])) {
+                errors.push('Choose the file from suggestions or use its quoted full path for this short file reference: @' + match[1] + '.');
               }
+              continue;
             }
-            if (matchedFile) {
+            var resolvedFile = resolveFileMentionPath(match[1], false);
+            if (resolvedFile.error) { errors.push(resolvedFile.error); continue; }
+            if (resolvedFile.path) {
               mentions.push({
                 type: 'file',
-                value: matchedFile,
-                displayName: '@' + word,
+                value: resolvedFile.path,
+                displayName: match[0],
                 startIndex: match.index,
                 endIndex: match.index + match[0].length
               });
             }
           }
         }
-        return mentions;
+        return { mentions: mentions.sort(function(a, b) { return a.startIndex - b.startIndex; }), errors: errors };
+      }
+
+      // Validate before consuming a draft, attachments, or the Stop queue hold.
+      // Queued text is checked again at dispatch because the file list can change.
+      function parseMentionsForSubmission(content) {
+        var result = parseMentionsFromContent(content);
+        if (result.errors.length) {
+          showToast(result.errors[0], 'warning');
+          return null;
+        }
+        return result.mentions;
       }
 
       // Plan 32: a view over the messages below. It never answers a card or a
@@ -951,6 +1115,7 @@
         document,
         getMessagesElement: () => document.getElementById('messages'),
         getAgentDisplay,
+        getToolDisplayRecord: toolDisplayRecord,
         renderMarkdown: renderMarkdownSafe,
         renderDiagrams: scope => markdownRenderer.renderDiagrams(scope),
         highlight: element => {
@@ -1198,6 +1363,9 @@
 
       // Helper to convert absolute paths to relative paths
       function makeRelativePath(absolutePath) {
+        // Tool inputs are arbitrary JSON. A malformed/structured path has no
+        // path summary, but its original value remains in the Input details.
+        if (typeof absolutePath !== 'string') return '';
         if (!absolutePath || !state.workspacePath) return absolutePath;
         // Normalize path separators
         var normalizedPath = absolutePath.replace(/\\/g, '/');
@@ -1213,6 +1381,7 @@
 
       // Helper to replace absolute paths with relative paths in a string (for commands)
       function cleanPathsInString(str) {
+        if (typeof str !== 'string') return '';
         if (!str || !state.workspacePath) return str;
         var normalizedWorkspace = state.workspacePath.replace(/\\/g, '/');
         // Replace workspace path with ./ or just remove it
@@ -1516,7 +1685,13 @@
       }
 
       /** Send a welcome suggestion with its persona/skills (welcome cards + wizard step 3). */
-      function sendQuickAction(s) {
+      function sendQuickAction(s, event) {
+        if (!ensureInitialState()) return;
+        if (modeUnavailableReason(deriveChatMode())) {
+          if (event) { event.stopPropagation(); }
+          showCompatibleModes();
+          return;
+        }
         // Provider-specific message at click time (the provider may have changed).
         var message = getProviderMessage(s, state.settings.provider);
         postMessageWithPanelId({
@@ -1550,7 +1725,7 @@
             '<div class="welcome-card-title">' + escapeHtml(s.title) + '</div>' +
             '<div class="welcome-card-desc">' + escapeHtml(s.description) + '</div>';
 
-          card.onclick = function() { sendQuickAction(s); };
+          card.onclick = function(e) { sendQuickAction(s, e); };
 
           container.appendChild(card);
         });
@@ -1565,7 +1740,9 @@
       console.log('[Mysti Webview] inputEl:', inputEl);
 
       if (sendBtn) {
-        sendBtn.addEventListener('click', sendMessage);
+        sendBtn.addEventListener('click', function(e) {
+          if (sendMessage() === false) { e.stopPropagation(); }
+        });
       } else {
         console.error('[Mysti Webview] sendBtn not found!');
       }
@@ -1678,7 +1855,7 @@
       }
       if (stopBtn) {
         stopBtn.addEventListener('click', function() {
-          postMessageWithPanelId({ type: 'cancelRequest' });
+          cancelActiveRequest();
         });
       }
       if (stopAgentBtn) {
@@ -1687,19 +1864,35 @@
           postMessageWithPanelId({ type: 'shutdownAgent', payload: { force: false } });
         });
       }
+      var dropOverlay = document.getElementById('drop-overlay');
+      var dragCounter = 0; // Track nested drag enter/leave events
+      function resetDropOverlay() {
+        dragCounter = 0;
+        if (dropOverlay) { dropOverlay.classList.remove('visible'); }
+      }
       if (inputEl) {
+        var inputComposing = false;
+        inputEl.addEventListener('compositionstart', function() { inputComposing = true; });
+        inputEl.addEventListener('compositionend', function() { inputComposing = false; });
         inputEl.addEventListener('keydown', function(e) {
+        // Candidate selection belongs to the IME, including engines whose
+        // committing Enter only reports legacy keyCode 229. Neither submit,
+        // queue nor autocomplete may consume it.
+        if (inputComposing || e.isComposing || e.keyCode === 229) return;
+        if (e.repeat && (e.key === 'Enter' || e.key === 'Tab')) return;
         // Slash menu keyboard navigation (highest priority when visible)
         if (state.slashMenuVisible) {
           if (e.key === 'ArrowDown') {
             e.preventDefault();
             state.slashMenuIndex = Math.min(state.slashMenuIndex + 1, state.slashMenuItems.length - 1);
+            state.slashMenuSelectedId = state.slashMenuItems[state.slashMenuIndex] && state.slashMenuItems[state.slashMenuIndex].id;
             updateSlashMenuSelection();
             return;
           }
           if (e.key === 'ArrowUp') {
             e.preventDefault();
             state.slashMenuIndex = Math.max(state.slashMenuIndex - 1, 0);
+            state.slashMenuSelectedId = state.slashMenuItems[state.slashMenuIndex] && state.slashMenuItems[state.slashMenuIndex].id;
             updateSlashMenuSelection();
             return;
           }
@@ -1800,7 +1993,7 @@
         // else is consuming Escape.
         if (e.key === 'Escape' && state.isLoading) {
           e.preventDefault();
-          postMessageWithPanelId({ type: 'cancelRequest' });
+          cancelActiveRequest();
           return;
         }
 
@@ -1808,7 +2001,7 @@
         // a turn. Runs AFTER the slash/mention/autocomplete handlers above, so
         // Tab keeps its completion meaning wherever one is offered.
         if (state.isLoading && !e.shiftKey && (e.key === 'Tab' || e.key === 'Enter')) {
-          if (inputEl.value.trim()) {
+          if (inputEl.value.trim() || composerAttachmentCount()) {
             e.preventDefault();
             enqueueMessage(inputEl.value);
             return;
@@ -1854,47 +2047,14 @@
 
             e.preventDefault();
 
-            var sizeLimit = isImage ? 5 * 1024 * 1024 : 10 * 1024 * 1024;
-            var sizeLimitLabel = isImage ? '5 MB' : '10 MB';
-
-            if (blob.size > sizeLimit) {
-              showToast('File too large (max ' + sizeLimitLabel + ')', 'error');
-              continue;
-            }
-
-            if (state.attachments.length >= 10) {
-              showToast('Maximum 10 attachments per message', 'error');
-              continue;
-            }
-
-            (function(b, bIsImage) {
-              var reader = new FileReader();
-              reader.onload = function(evt) {
-                var dataUrl = evt.target.result;
-                var base64 = dataUrl.split(',')[1];
-                var mimeType = dataUrl.split(';')[0].split(':')[1] || b.type || 'application/octet-stream';
-                var fileName = b.name || (bIsImage ? 'pasted-image.' + (mimeType.split('/')[1] || 'png') : 'pasted-file');
-                var attachment = {
-                  id: 'att-' + Date.now() + '-' + Math.random().toString(36).substr(2, 6),
-                  type: bIsImage ? 'image' : 'file',
-                  fileName: fileName,
-                  mimeType: mimeType,
-                  base64Data: base64,
-                  size: b.size
-                };
-                state.attachments.push(attachment);
-                renderAttachmentPreviews();
-              };
-              reader.readAsDataURL(b);
-            })(blob, isImage);
+            var mimeType = blob.type || 'application/octet-stream';
+            var fileName = blob.name || (isImage ? 'pasted-image.' + (mimeType.split('/')[1] || 'png') : 'pasted-file');
+            readComposerAttachment(blob, isImage, mimeType, fileName);
           }
         });
 
         // Document-level drag and drop (must capture at document level to
         // prevent VSCode from intercepting the drop and opening the file)
-        var dropOverlay = document.getElementById('drop-overlay');
-        var dragCounter = 0; // Track nested drag enter/leave events
-
         document.addEventListener('dragenter', function(e) {
           e.preventDefault();
           e.stopPropagation();
@@ -1924,10 +2084,7 @@
         document.addEventListener('drop', function(e) {
           e.preventDefault();
           e.stopPropagation();
-          dragCounter = 0;
-          if (dropOverlay) {
-            dropOverlay.classList.remove('visible');
-          }
+          resetDropOverlay();
           handleDroppedFiles(e.dataTransfer);
         });
 
@@ -2757,8 +2914,18 @@
       var exportConversationBtn = document.getElementById('export-conversation-btn');
       if (exportConversationBtn) {
         exportConversationBtn.addEventListener('click', function() {
-          postMessageWithPanelId({ type: 'exportConversation' });
+          requestConversationTransfer('exportConversation', {}, exportConversationBtn);
         });
+      }
+      ['json', 'markdown'].forEach(function(format) {
+        var button = document.getElementById('export-' + format + '-btn');
+        if (button) {
+          button.addEventListener('click', function() { requestConversationTransfer('exportToFile', { format: format }, button); });
+        }
+      });
+      var importConversationBtn = document.getElementById('import-conversation-btn');
+      if (importConversationBtn) {
+        importConversationBtn.addEventListener('click', function() { requestConversationTransfer('importFromFile', {}, importConversationBtn); });
       }
 
       // Manual compaction trigger via context usage pie chart click
@@ -2778,12 +2945,29 @@
       }
 
       // History menu toggle
+      function closeHistoryMenu(returnFocus) {
+        if (historyMenu) { historyMenu.classList.add('hidden'); }
+        if (historyBtn) {
+          historyBtn.setAttribute('aria-expanded', 'false');
+          if (returnFocus) { historyBtn.focus(); }
+        }
+      }
       if (historyBtn && historyMenu) {
+        historyBtn.setAttribute('aria-controls', 'history-menu');
+        historyBtn.setAttribute('aria-expanded', 'false');
         historyBtn.addEventListener('click', function(e) {
           e.stopPropagation();
           historyMenu.classList.toggle('hidden');
+          historyBtn.setAttribute('aria-expanded', String(!historyMenu.classList.contains('hidden')));
           if (!historyMenu.classList.contains('hidden')) {
             postMessageWithPanelId({ type: 'getConversationHistory' });
+          }
+        });
+        historyMenu.addEventListener('keydown', function(e) {
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            e.stopPropagation();
+            closeHistoryMenu(true);
           }
         });
       }
@@ -2791,7 +2975,7 @@
       // Close history menu on outside click
       document.addEventListener('click', function(e) {
         if (historyMenu && !historyMenu.contains(e.target) && e.target !== historyBtn) {
-          historyMenu.classList.add('hidden');
+          closeHistoryMenu(false);
         }
       });
 
@@ -2822,32 +3006,43 @@
       // Render history menu items
       function renderHistoryMenu(conversations, currentId) {
         if (!historyMenu) return;
+        // A title can arrive while the user is navigating the list. Preserve
+        // the focused action by conversation identity, never by its row index.
+        var focused = historyMenu.contains(document.activeElement) ? document.activeElement : null;
+        var focusedRow = focused && focused.closest('.history-item');
+        var focusedId = focusedRow && focusedRow.dataset.conversationId;
+        var focusedDelete = focused && focused.classList.contains('history-item-delete');
+        var focusTarget = null;
         historyMenu.innerHTML = '';
 
         if (conversations.length === 0) {
           historyMenu.innerHTML = '<div class="history-empty">No previous chats</div>';
+          if (focused && historyBtn) { historyBtn.focus(); }
           return;
         }
 
         conversations.forEach(function(conv) {
           var item = document.createElement('div');
           item.className = 'history-item' + (conv.id === currentId ? ' active' : '');
+          item.dataset.conversationId = conv.id;
 
           var date = new Date(conv.updatedAt);
           var dateStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
 
           item.innerHTML =
-            '<div class="history-item-info">' +
+            '<button type="button" class="history-item-info"' + (conv.id === currentId ? ' aria-current="true"' : '') + '>' +
               '<span class="history-item-title">' + escapeHtml(conv.title || 'New Conversation') + '</span>' +
               '<span class="history-item-date">' + dateStr + '</span>' +
-            '</div>' +
-            '<button class="history-item-delete" title="Delete">×</button>';
+            '</button>' +
+            '<button type="button" class="history-item-delete" title="Delete" aria-label="' +
+              escapeHtml('Delete conversation: ' + (conv.title || 'New Conversation')) + '">×</button>';
 
           // Click to switch conversation
           item.addEventListener('click', function(e) {
             if (!e.target.classList.contains('history-item-delete')) {
               postMessageWithPanelId({ type: 'switchConversation', payload: { id: conv.id } });
-              historyMenu.classList.add('hidden');
+              closeHistoryMenu(false);
+              if (!mapIsOpen()) { inputEl.focus(); }
             }
           });
 
@@ -2858,7 +3053,15 @@
           });
 
           historyMenu.appendChild(item);
+          if (conv.id === focusedId) {
+            focusTarget = item.querySelector(focusedDelete ? '.history-item-delete' : '.history-item-info');
+          }
         });
+        if (focused && !historyMenu.classList.contains('hidden')) {
+          // If the focused chat was deleted, land on an Open control so a
+          // repeated Enter cannot accidentally delete a different chat.
+          (focusTarget || historyMenu.querySelector('.history-item-info')).focus();
+        }
       }
 
       // Plan 28 Phase 1: the `mode-select` / `access-select` change listeners
@@ -2955,11 +3158,18 @@
         var coordinator = state.activeAgent === 'mysti';
         var manifest = getManifestEntry(state.activeAgent);
         var supportsUltracode = !!(manifest && manifest.capabilities && manifest.capabilities.supportsUltracode);
-        var modelMode = manifest && manifest.capabilities && manifest.capabilities.modelSelection || 'full';
+        var modelMode = manifest && manifest.capabilities && manifest.capabilities.modelSelection || 'none';
+        // The settings hub and composer must expose the same model contract.
+        // Keep stored values intact for a later provider switch.
+        modelSelect.classList.toggle('hidden', modelMode !== 'full');
+        customModelSection.style.display = modelMode === 'none' ? 'none' : '';
+        if (modelMode === 'custom-only') customModelSection.classList.remove('hidden');
+        var managedModelHint = document.getElementById('model-cli-managed-hint');
+        if (managedModelHint) managedModelHint.classList.toggle('hidden', modelMode !== 'none');
         var canPickModel = coordinator || (state.activeAgent !== 'brainstorm' && modelMode !== 'none' && (!!manifest || hasModels));
         hasModels = hasModels && canPickModel;
         var attachmentCaps = manifest && manifest.capabilities;
-        var attachmentsSupported = attachmentCaps ? !!(attachmentCaps.supportsImages || attachmentCaps.supportsFileAttachments) : !coordinator && state.activeAgent !== 'brainstorm';
+        var attachmentsSupported = !!(attachmentCaps && (attachmentCaps.supportsImages || attachmentCaps.supportsFileAttachments));
         ['#attach-btn', '[data-composer-action="attach-btn"]'].forEach(function(selector) {
           var button = document.querySelector(selector);
           if (!button) { return; }
@@ -2973,7 +3183,11 @@
           toggle.title = state.settings.ultracode ? 'Ultracode on' : 'Ultracode off';
         });
         var selected = modelSelectInline.selectedOptions[0];
-        var modelLabel = coordinator ? 'Coordinator model' : (hasModels && selected ? selected.text : 'Model');
+        // Keep the custom selector entry while naming the override in the footer.
+        var customModelLabel = state.providerSettings && state.providerSettings.customModel;
+        var modelLabel = coordinator ? 'Coordinator model' :
+          (canPickModel && selected && selected.value === '__custom__' && customModelLabel
+            ? customModelLabel : (hasModels && selected ? selected.text : 'Model'));
         var effortLabel = hasEffort && effortSelectInline.selectedOptions[0] ? effortSelectInline.selectedOptions[0].text : '';
         trigger.classList.toggle('hidden', !canPickModel && !hasEffort);
         document.getElementById('model-menu-label').textContent = modelLabel;
@@ -2985,6 +3199,7 @@
         actionsModel.firstChild.textContent = canPickModel ? 'Switch model…' : 'Model configured in CLI';
         actionsModel.title = canPickModel ? 'Choose a model' : 'This provider manages its model in its own CLI configuration.';
         var options = document.getElementById('model-menu-options');
+        var focusedModel = options.contains(document.activeElement) ? document.activeElement.dataset.model : null;
         options.replaceChildren();
         var provider = (state.providers || []).find(function(p) { return p.name === state.activeAgent; });
         function addModel(value, label, description, active) {
@@ -3021,6 +3236,12 @@
           });
           addModel('__custom__', 'Custom model…', 'Enter a model ID from your provider or local server', modelSelect.value === '__custom__');
         }
+        if (focusedModel !== null && !document.getElementById('model-menu').classList.contains('hidden')) {
+          var modelButtons = Array.from(options.querySelectorAll('[data-model]'));
+          var focusTarget = modelButtons.find(function(button) { return button.dataset.model === focusedModel; }) ||
+            modelButtons.find(function(button) { return button.getAttribute('aria-pressed') === 'true'; }) || modelButtons[0];
+          if (focusTarget) focusTarget.focus();
+        }
         document.querySelectorAll('[data-effort-control]').forEach(function(row) {
           row.classList.toggle('hidden', !hasEffort);
           if (!hasEffort) { return; }
@@ -3046,6 +3267,8 @@
           row.style.setProperty('--effort-fill', (levels.length > 1 ? index / (levels.length - 1) * 100 : 0) + '%');
         });
         filterComposerActions();
+        renderModeOptions();
+        updateBehaviorIndicator();
       }
 
       function closeComposerMenus(restoreFocus) {
@@ -3162,7 +3385,7 @@
           state.providerSettings = Object.assign({}, state.providerSettings, { customModel: '' });
           postMessageWithPanelId({ type: 'updateSettings', payload: { model: modelSelect.value, customModel: '' } });
         }
-        syncInlineSelectors();
+        updateEffortSectionVisibility(state.activeAgent);
       });
 
       // Custom model input validation
@@ -3189,6 +3412,7 @@
           // Plan 31: a later settingsSync repaints from this, so keep it current.
           state.providerSettings = Object.assign({}, state.providerSettings, { customModel: val });
           postMessageWithPanelId({ type: 'updateSettings', payload: { customModel: val } });
+          updateEffortSectionVisibility(state.activeAgent);
         }
       });
 
@@ -3627,13 +3851,13 @@
       // the provider never emits thinking (thinkingStyle 'none'); shown with
       // an advisory hint when it emits thinking but doesn't enforce the
       // selected level (thinkingLevelEffective false). Unknown ids (the
-      // brainstorm pseudo-agent, pre-manifest renders) keep it visible.
+      // brainstorm pseudo-agent) keep their established coordinator controls.
       function updateThinkingSectionVisibility(provider) {
         var thinkingSection = document.getElementById('thinking-section');
         if (!thinkingSection) return;
         var entry = getManifestEntry(provider);
         var caps = entry && entry.capabilities;
-        var hidden = !!(caps && caps.thinkingStyle === 'none');
+        var hidden = caps ? caps.thinkingStyle === 'none' : provider !== 'mysti' && provider !== 'brainstorm';
         thinkingSection.style.display = hidden ? 'none' : 'block';
         var advisoryHint = document.getElementById('thinking-advisory-hint');
         if (advisoryHint) {
@@ -3661,6 +3885,10 @@
           var caps = entry && entry.capabilities;
           levels = caps && caps.effortLevels;
           effortDefault = caps && caps.effortDefault;
+          var effectiveModel = state.providerSettings && state.providerSettings.customModel || state.settings.model;
+          if (caps && caps.effortLevelsByModel && Object.prototype.hasOwnProperty.call(caps.effortLevelsByModel, effectiveModel)) {
+            levels = caps.effortLevelsByModel[effectiveModel];
+          }
         }
         if (!levels || !levels.length) {
           section.classList.add('hidden');
@@ -3703,6 +3931,21 @@
       }
 
       // Behavior indicator click to open popup
+      var pendingStallHandoff = null;
+      var composerModePlan = document.getElementById('composer-mode-plan');
+      var composerModeChoose = document.getElementById('composer-mode-choose');
+      if (composerModePlan) {
+        composerModePlan.addEventListener('click', function() {
+          applyChatMode('plan');
+          inputEl.focus();
+        });
+      }
+      if (composerModeChoose) {
+        composerModeChoose.addEventListener('click', function(e) {
+          e.stopPropagation();
+          showCompatibleModes();
+        });
+      }
       if (behaviorIndicator && behaviorPopup) {
         behaviorIndicator.addEventListener('click', function(e) {
           e.stopPropagation();
@@ -3724,26 +3967,20 @@
           var card = document.getElementById('stall-card');
           if (card) { card.remove(); }
           if (action === 'wait') { noteStreamActivity(); return; }
-          if (action === 'stop') { postMessageWithPanelId({ type: 'cancelRequest' }); return; }
+          if (action === 'stop') { cancelActiveRequest(); return; }
           if (action === 'hand') {
-            // Stop first, then re-ask the same question of a different agent —
-            // down the mention path, so nothing is retyped and no new route
-            // is invented.
-            var question = state.lastSentContent || '';
-            postMessageWithPanelId({ type: 'cancelRequest' });
-            if (!question) { showToast('Nothing to hand over \u2014 no question in flight.', 'error'); return; }
-            var anchor = document.getElementById('agent-select-btn');
-            var fake = document.createElement('div');
-            fake.className = 'message assistant';
-            fake.setAttribute('data-provider', state.settings.provider || '');
-            fake.innerHTML = '<div class="message-content"></div>';
-            var q = document.createElement('div');
-            q.className = 'message user';
-            q.innerHTML = '<div class="message-content"></div>';
-            q.querySelector('.message-content').textContent = question;
-            messagesEl.appendChild(q); messagesEl.appendChild(fake);
-            showSecondOpinionMenu(anchor || b, fake);
-            q.remove(); fake.remove();
+            // Keep the real source node: reconstructed text loses Markdown,
+            // attachments and the host's original-message identity. Wait for
+            // Stop before offering a new send so it cannot enter the held queue.
+            var questionNode = Array.from(messagesEl.querySelectorAll('.message.user')).reverse().find(function(node) {
+              return node._mystiQuestion && node._mystiQuestion.id;
+            });
+            pendingStallHandoff = questionNode ? {
+              question: questionNode, conversation: state.conversation,
+              provider: currentTurnAttribution && currentTurnAttribution.provider || state.settings.provider
+            } : null;
+            cancelActiveRequest();
+            if (!questionNode) { showToast('Nothing to hand over \u2014 no question in flight.', 'error'); }
             return;
           }
         });
@@ -3910,9 +4147,10 @@
           var onBackground = !el || el === document.body;
           if (!onComposer && !onBackground) { return; }
           e.preventDefault();
-          var order = CHAT_MODES.map(function(m) { return m.id; });
+          var order = CHAT_MODES.filter(function(m) { return !modeUnavailableReason(m.id); }).map(function(m) { return m.id; });
+          if (!order.length) { return; }
           var i = order.indexOf(deriveChatMode());
-          applyChatMode(order[((i < 0 ? 0 : i) + 1) % order.length]);
+          applyChatMode(order[(i + 1) % order.length]);
         });
 
         // Plan 06: pick a mode from the single Mode picker.
@@ -4311,18 +4549,27 @@
             + '</div>';
         } else {
           var u = updates[i - models.length];
+          var updateTarget = u.installable || u.latest;
           html = '<div class="update-card update-card-cli" data-kind="cli"'
             + ' data-provider="' + escapeHtml(u.providerId) + '">'
             + close
             + '<div class="update-card-head">'
             + '<span class="update-badge">Update available</span>'
             + '<span class="update-title">' + escapeHtml(u.providerLabel) + ' CLI</span>'
-            + '<span class="update-agent">' + escapeHtml(u.installed) + ' &rarr; ' + escapeHtml(u.latest) + '</span>'
+            + '<span class="update-agent">' + escapeHtml(u.installed) + ' &rarr; ' + escapeHtml(updateTarget) + '</span>'
             + '</div>'
-            + '<div class="update-text">Runs <span class="update-cmd">' + escapeHtml(u.command)
-            + '</span> in a terminal you can review first.</div>'
+            + '<div class="update-text">' + (u.manualUpdateReason
+              ? escapeHtml(u.manualUpdateReason)
+              : 'Runs <span class="update-cmd">' + escapeHtml(u.command)
+                + '</span> in a terminal you can review first.') + '</div>'
+            + (u.blockedByNodeEngine && !u.manualUpdateReason
+              ? '<div class="update-text update-compatibility">' + escapeHtml(u.latest)
+                + ' requires Node ' + escapeHtml(u.requiredNode || 'a newer version')
+                + '; this update installs ' + escapeHtml(updateTarget) + '.</div>'
+              : '')
             + '<div class="update-actions">'
-            + '<button class="update-btn update-cta" data-action="run-update">Update</button>'
+            + '<button class="update-btn update-cta" data-action="run-update">'
+            + (u.manualUpdateReason ? 'Update instructions' : 'Update') + '</button>'
             + nav
             + '</div>'
             + '</div>';
@@ -4392,7 +4639,18 @@
         var provider = state.providers.find(function(p) { return p.name === payload.provider; });
         if (!provider) return;
 
-        provider.models = payload.models;
+        var seenModels = new Set();
+        provider.models = payload.models.filter(function(model) {
+          if (!model || typeof model.id !== 'string' || !model.id.trim() ||
+              model.id === '__custom__' || seenModels.has(model.id)) return false;
+          seenModels.add(model.id);
+          return true;
+        }).map(function(model) {
+          return Object.assign({}, model, {
+            name: typeof model.name === 'string' ? model.name : model.id,
+            description: typeof model.description === 'string' ? model.description : undefined
+          });
+        });
         if (payload.defaultModel) provider.defaultModel = payload.defaultModel;
 
         if (state.settings && state.settings.provider === payload.provider) {
@@ -4767,6 +5025,7 @@
         contextPanelEl.addEventListener('drop', function(e) {
           e.preventDefault();
           e.stopPropagation();
+          resetDropOverlay();
           contextPanelEl.classList.remove('drop-target');
           handleDroppedToContext(e.dataTransfer);
         });
@@ -4804,16 +5063,21 @@
           case 'messageAdded':
             addMessage(message.payload);
             break;
+          case 'composerSubmissionSettled':
+            settleComposerSubmission(message.payload);
+            break;
           case 'checkpointCreated':
             handleCheckpointCreated(message.payload);
             break;
           case 'checkpointAvailability':
             state.checkpointsAvailable = !(message.payload && message.payload.available === false);
+            refreshRewindMenu();
             break;
           case 'rewindComplete':
             handleRewindComplete(message.payload);
             break;
           case 'responseStarted':
+            settlePlanCards();
             subAgentCards.stop();
             stopCollaborations();
             // Who is answering this turn, as the extension resolved it — the
@@ -4849,6 +5113,7 @@
             }
             break;
           case 'responseComplete':
+            clearPendingSlashCommand();
             // Perf: post the per-response chunk-cost summary + heap sample
             // ("done" report). No-op (single boolean check) when disabled.
             if (perfState.enabled) postMessageWithPanelId(perfBuildReport());
@@ -4876,12 +5141,7 @@
               // child with fresh tool ids) so a completed run never leaves an
               // eternal spinner — the main path's auto-resolve only covers
               // .tool-call, not .subagent-tool-call.
-              finalizedEl.querySelectorAll('.subagent-tool-call.running').forEach(function(card) {
-                card.classList.remove('running');
-                card.classList.add('completed');
-                var sp = card.querySelector('.subagent-tool-spinner');
-                if (sp) { sp.outerHTML = '<span class="subagent-tool-icon completed">&#10003;</span>'; }
-              });
+              settleSubagentToolCards(finalizedEl);
               // Plan 33: the first turn that edited files learns it can be undone.
               // ponytail: keyed on .edit-report-card, so only FILE_EDIT_TOOLS backends trigger it.
               if (finalizedEl.querySelector('.edit-report-card') && state.checkpointsAvailable !== false && claimTip('rewind')) {
@@ -4906,6 +5166,12 @@
             // about fill — leave the pie alone rather than inventing a number.
             if (responsePayload.usageUnavailable) {
               setContextUsageUnavailable();
+            } else if (responsePayload.contextUsageUnavailable) {
+              setContextUsageUnavailable(responsePayload.usage
+                ? 'The backend reported turn totals but did not report the latest model call’s context size. Context fill is unknown.'
+                : 'The backend did not report the latest model call’s context size. Context fill is unknown.');
+            } else if (typeof responsePayload.contextTokens === 'number') {
+              updateContextUsage(responsePayload.contextTokens, null);
             } else if (responsePayload.usage && typeof responsePayload.usage.contextTokens === 'number') {
               console.log('[Mysti Webview] Context usage:', responsePayload.usage.contextTokens);
               updateContextUsage(responsePayload.usage.contextTokens, null);
@@ -4946,13 +5212,21 @@
             updateSavingsChip(message.payload);
             break;
           case 'requestCancelled':
+            settlePlanCards();
+            clearPendingSlashCommand();
             subAgentCards.stop();
             stopCollaborations();
             hideLoading();
             // Resolve any still-running tool cards in the active streaming
             // message so Stop never leaves an eternal spinner (review [5]).
-            var streamingForCancel = messagesEl.querySelector('.message.streaming:not([data-brainstorm-synthesis])');
+            var streamingForCancel = message.payload && message.payload.message
+              ? finalizeStreamingMessage(message.payload.message)
+              : messagesEl.querySelector('.message.streaming:not([data-brainstorm-synthesis])');
             if (streamingForCancel) {
+              streamingForCancel.classList.remove('streaming');
+              streamingForCancel.querySelectorAll('.streaming-thinking').forEach(function(thinking) {
+                thinking.classList.remove('streaming-thinking');
+              });
               streamingForCancel.querySelectorAll('.tool-call.running, .tool-call.pending, .subagent-tool-call.running').forEach(function(card) {
                 card.classList.remove('running', 'pending');
                 card.classList.add('failed');
@@ -4967,6 +5241,13 @@
             if (quickActionsContainer) {
               quickActionsContainer.classList.remove('loading');
               quickActionsContainer.innerHTML = '';
+            }
+            if (pendingStallHandoff) {
+              var handoff = pendingStallHandoff;
+              pendingStallHandoff = null;
+              if (handoff.conversation === state.conversation && handoff.question.isConnected) {
+                showSecondOpinionMenu(document.getElementById('agent-select-btn') || inputEl, handoff.question, handoff.provider);
+              }
             }
             break;
           // Sub-agent response events (from @-mentions)
@@ -5035,12 +5316,9 @@
             // manifest on provider availability changes and on changes to
             // manifest-affecting settings. Payload IS the
             // ProviderManifestPayload ({ schemaVersion, providers }).
-            if (message.payload && message.payload.providers) {
-              if (message.payload.schemaVersion !== EXPECTED_MANIFEST_SCHEMA_VERSION) {
-                console.warn('[Mysti Webview] Ignoring manifestUpdated with unexpected schemaVersion:', message.payload.schemaVersion);
-                break;
-              }
-              state.providerManifest = message.payload;
+            var nextManifest = normalizeProviderManifest(message.payload);
+            if (nextManifest) {
+              state.providerManifest = nextManifest;
               applyProviderManifest();
               if (state.settings && state.settings.provider) {
                 renderProviderSettingsSections(state.settings.provider);
@@ -5089,6 +5367,7 @@
             break;
 
           case 'imageWarning':
+          case 'contextWarning':
           case 'attachmentWarning':
             if (message.payload && message.payload.message) {
               showToast(message.payload.message, 'warning');
@@ -5098,7 +5377,7 @@
           case 'fileAttachmentSelected':
             if (message.payload && message.payload.attachments) {
               for (var fai = 0; fai < message.payload.attachments.length; fai++) {
-                if (state.attachments.length >= 10) {
+                if (composerAttachmentCount() >= MAX_ATTACHMENTS) {
                   showToast('Maximum 10 attachments per message', 'error');
                   break;
                 }
@@ -5189,13 +5468,23 @@
             // cancels another job's / the foreground turn's gate); otherwise all.
             (function() {
               var ids = message.payload && message.payload.requestIds;
-              var cards = (ids && ids.length)
+              var cards = Array.isArray(ids)
                 ? ids.map(function(id) { return document.querySelector('.permission-card[data-id="' + String(id).replace(/"/g, '\\"') + '"]'); }).filter(Boolean)
                 : Array.prototype.slice.call(document.querySelectorAll('.permission-card.pending'));
               cards.forEach(function(card) {
                 if (!card || !card.classList.contains('pending')) return;
                 card.classList.remove('pending');
                 card.classList.add('expired');
+                var requestId = card.dataset.id;
+                state.pendingPermissions.delete(requestId);
+                if (state.focusedPermissionId === requestId) { state.focusedPermissionId = null; }
+                card.querySelectorAll('button, input').forEach(function(control) { control.disabled = true; });
+                var optionsEl = card.querySelector('.permission-options');
+                if (optionsEl) { optionsEl.style.display = 'none'; }
+                var customEl = card.querySelector('.permission-custom-input');
+                if (customEl) { customEl.style.display = 'none'; }
+                var footerEl = card.querySelector('.permission-footer');
+                if (footerEl) { footerEl.textContent = 'Cancelled'; }
                 var actionsEl = card.querySelector('.permission-actions');
                 if (actionsEl) {
                   actionsEl.innerHTML = '<span style="color: var(--vscode-descriptionForeground);">Cancelled</span>';
@@ -5215,15 +5504,44 @@
           case 'planOptions':
             handlePlanOptionsMessage(message.payload);
             break;
+          case 'planExecutionModeRequired':
+            document.querySelectorAll('.plan-options-container').forEach(function(container) {
+              var payload = message.payload || {};
+              if (container.getAttribute('data-synthetic-plan-id') !== payload.syntheticPlanId ||
+                  container._conversationId !== payload.conversationId || container._provider !== payload.provider ||
+                  container._provider !== state.activeAgent) return;
+              // Host rejection leaves this exact delivery pending, including
+              // when an unattended selection tried an unsupported authority.
+              container._settled = false;
+              container.querySelectorAll('button, textarea').forEach(function(control) { control.disabled = false; });
+              container.querySelectorAll('.semi-autonomous-feedback').forEach(function(feedback) { feedback.remove(); });
+              renderPlanExecutionOptions();
+              showToast(payload.reason, 'info');
+              showCompatibleModes();
+            });
+            break;
           case 'askUserQuestion':
             handleAskUserQuestionMessage(message.payload);
             break;
           case 'error':
+            clearPendingSlashCommand();
             hideLoading();
-            showError(message.payload);
+            if (message.payload && typeof message.payload === 'object') {
+              if (message.payload.message) finalizeStreamingMessage(message.payload.message);
+              showError(message.payload.error || 'The response was interrupted.');
+            } else {
+              showError(message.payload);
+            }
             break;
           case 'authError':
+            clearPendingSlashCommand();
             hideLoading();
+            // Authentication ends this turn unsuccessfully. Keep any useful
+            // attributed partial answer, but leave queued follow-ups pending.
+            if (message.payload && message.payload.message) {
+              finalizeStreamingMessage(message.payload.message);
+              (message.payload.message.toolCalls || []).forEach(handleToolResult);
+            }
             showAuthError(message.payload);
             break;
           case 'contextUpdated':
@@ -5235,6 +5553,10 @@
           case 'conversationChanged':
             cancelDictation();
             cancelPromptEnhancement();
+            switchConversationDraft(message.payload);
+            switchConversationQueue(message.payload);
+            hideLoading();
+            stopCollaborations();
             clearMessages();
             resetContextUsage();
             if (agentMap) { agentMap.reset(); }
@@ -5242,6 +5564,7 @@
             // messages without a per-message provider/model stamp fall back
             // to the conversation's values (Plan 02 Phase 3.4).
             state.conversation = message.payload || null;
+            renderUnsentMessages();
             if (message.payload && message.payload.messages) {
               message.payload.messages.forEach(function(msg) { addMessage(msg); });
             }
@@ -5439,18 +5762,23 @@
           case 'slashCommandResult':
             addSystemMessage(message.payload.result);
             break;
+          case 'slashCommandCompleted':
+            handleSlashCommandCompleted(message.payload);
+            break;
           case 'showHelp':
             renderHelpCard();
             break;
           case 'sessionCleared':
             sessionIndicator.style.display = 'none';
             sessionIndicator.className = 'session-indicator';
+            setSessionLabel('Session');
             // Stopping the agent session leaves the transcript, and its agents, on screen.
             if (agentMap && !(message.payload && message.payload.reason === 'shutdown')) { agentMap.reset(); }
             break;
           case 'sessionActive':
             sessionIndicator.style.display = 'flex';
             sessionIndicator.className = 'session-indicator';
+            setSessionLabel('Session');
             break;
           case 'lifecycleEvent':
             handleLifecycleEvent(message.payload);
@@ -5581,7 +5909,7 @@
                 // No opinion sent: don't yank an active override off "Custom…".
                 selectModelOption(message.payload.model);
               }
-              syncInlineSelectors();
+              updateEffortSectionVisibility(state.activeAgent);
             }
             break;
           case 'modeChanged':
@@ -5795,11 +6123,18 @@
           case 'exportResult':
             handleExportResult(message.payload);
             break;
+          case 'conversationImportNotice':
+            if (message.payload && typeof message.payload.conversationId === 'string'
+              && state.conversation && message.payload.conversationId === state.conversation.id
+              && typeof message.payload.notice === 'string' && message.payload.notice) {
+              showExportToast(message.payload.notice);
+            }
+            break;
           case 'triggerExport':
-            postMessageWithPanelId({ type: 'exportConversation' });
+            if (transferTriggerIsCurrent(message.payload)) { requestConversationTransfer('exportConversation', {}, document.getElementById('export-conversation-btn')); }
             break;
           case 'triggerImport':
-            postMessageWithPanelId({ type: 'importFromFile' });
+            if (transferTriggerIsCurrent(message.payload)) { requestConversationTransfer('importFromFile', {}, document.getElementById('import-conversation-btn')); }
             break;
           /**
            * Plan 27 Phase 4 — `/share`, `/init-team`, `/memory` and `/rules`.
@@ -5846,6 +6181,8 @@
             }
             break;
           case 'triggerShareLink':
+            if (transferTriggerIsCurrent(message.payload)) { requestConversationTransfer('triggerShareLink', {}); }
+            break;
           case 'triggerInitTeam':
           case 'triggerOpenMemory':
           case 'triggerOpenRules':
@@ -6010,6 +6347,52 @@
       // ========================================
       // Export / Copy Handlers
       // ========================================
+      var conversationTransfers = new Map();
+      var conversationTransferSequence = 0;
+      var latestConversationTransfer = null;
+      var exportToastTimer = null;
+
+      function transferTriggerIsCurrent(payload) {
+        return !payload || typeof payload.conversationId !== 'string' ||
+          payload.conversationId === (state.conversation && state.conversation.id || '');
+      }
+
+      function resetTransferControl(origin) {
+        if (!origin) { return; }
+        origin.disabled = false;
+        origin.removeAttribute('aria-busy');
+        delete origin._mystiTransferPending;
+      }
+
+      function requestConversationTransfer(type, payload, origin) {
+        if (origin && (!origin.isConnected || origin.disabled || origin._mystiTransferPending)) { return; }
+        var requestId = 'transfer-' + Date.now() + '-' + (++conversationTransferSequence);
+        var conversationId = state.conversation && state.conversation.id || '';
+        if (origin) {
+          clearTimeout(origin._mystiCopyReset);
+          origin.classList.remove('copied');
+          if (origin.classList.contains('message-code-copy')) { origin.textContent = 'Copy code'; }
+          if (origin.classList.contains('edit-report-btn-copy')) { origin.textContent = 'Copy path'; }
+          origin.disabled = true;
+          origin.setAttribute('aria-busy', 'true');
+          origin._mystiTransferPending = requestId;
+        }
+        conversationTransfers.set(requestId, { conversation: state.conversation, conversationId: conversationId, origin: origin });
+        latestConversationTransfer = requestId;
+        var toast = document.getElementById('export-toast');
+        if (toast) { toast.classList.remove('visible'); }
+        clearTimeout(exportToastTimer);
+        postMessageWithPanelId({ type: type, payload: Object.assign({}, payload, { requestId: requestId, conversationId: conversationId }) });
+      }
+
+      function clearConversationTransfers() {
+        conversationTransfers.forEach(function(pending) { resetTransferControl(pending.origin); });
+        conversationTransfers.clear();
+        latestConversationTransfer = null;
+        clearTimeout(exportToastTimer);
+        var toast = document.getElementById('export-toast');
+        if (toast) { toast.classList.remove('visible'); }
+      }
 
       // ====================================================================
       // Visual Test UI Functions
@@ -6086,20 +6469,40 @@
 
       function handleExportResult(payload) {
         var toast = document.getElementById('export-toast');
-        if (!toast) return;
+        if (!toast) { return; }
+        var pending;
+        if (payload && payload.requestId) {
+          pending = conversationTransfers.get(payload.requestId);
+          if (!pending) { return; }
+          if (payload.conversationId !== pending.conversationId) { return; }
+          conversationTransfers.delete(payload.requestId);
+          var origin = pending.origin;
+          resetTransferControl(origin);
+          if (pending.conversation !== state.conversation || (origin && !origin.isConnected)) { return; }
+          if (payload.success && !payload.cancelled && origin && (origin.classList.contains('message-copy-btn') || origin.classList.contains('tool-call-copy') || origin.classList.contains('message-code-copy') || origin.classList.contains('edit-report-btn-copy'))) {
+            origin.classList.add('copied');
+            if (origin.classList.contains('message-code-copy')) { origin.textContent = 'Copied!'; }
+            if (origin.classList.contains('edit-report-btn-copy')) { origin.textContent = 'Copied!'; }
+            origin._mystiCopyReset = setTimeout(function() {
+              origin.classList.remove('copied');
+              if (origin.classList.contains('message-code-copy')) { origin.textContent = 'Copy code'; }
+              if (origin.classList.contains('edit-report-btn-copy')) { origin.textContent = 'Copy path'; }
+            }, 1500);
+          }
+          if (payload.cancelled || payload.requestId !== latestConversationTransfer) { return; }
+        }
+        if (payload && payload.cancelled) { return; }
         if (payload && payload.success) {
-          toast.textContent = 'Copied to clipboard!';
-          toast.classList.add('visible');
-          setTimeout(function() {
-            toast.classList.remove('visible');
-          }, 2000);
+          toast.textContent = payload.notice || (payload.operation === 'file' ? 'Conversation saved.'
+            : payload.operation === 'import' ? 'Conversation imported.'
+            : payload.operation === 'share' && payload.format === 'json' ? 'Conversation JSON copied to clipboard.'
+            : payload.operation === 'share' ? 'Share link copied to clipboard!' : 'Copied to clipboard!');
         } else {
           toast.textContent = payload && payload.error || 'Export failed';
-          toast.classList.add('visible');
-          setTimeout(function() {
-            toast.classList.remove('visible');
-          }, 2000);
         }
+        toast.classList.add('visible');
+        clearTimeout(exportToastTimer);
+        exportToastTimer = setTimeout(function() { toast.classList.remove('visible'); }, 4000);
       }
 
       // Cache badge data for instant panel rendering
@@ -6206,9 +6609,10 @@
         if (!toast) return;
         toast.textContent = text;
         toast.classList.add('visible');
-        setTimeout(function() {
+        clearTimeout(exportToastTimer);
+        exportToastTimer = setTimeout(function() {
           toast.classList.remove('visible');
-        }, 2000);
+        }, 4000);
       }
 
       function formatTimeAgo(timestamp) {
@@ -6355,14 +6759,24 @@
         // its own; ask for one so the wizard's cards and Continue catch up.
         if (state.wizard.visible) { postMessageWithPanelId({ type: 'requestWizardStatus' }); }
         reviveSetupRetry();   // terminal
+        setAuthRecoveryPending(payload.providerId, false);
         state.setup.isReady = true;
-        state.setup.currentStep = 'ready';
-        state.setup.message = 'Setup complete!';
+        state.setup.currentStep = payload.requiresVerification ? 'verify' : 'ready';
+        state.setup.message = payload.requiresVerification
+          ? 'Credentials detected. Retry your request to verify sign-in.' : 'Setup complete!';
         state.setup.error = null;
+        if (payload.requiresVerification) {
+          messagesEl.querySelectorAll('.auth-error').forEach(function(card) {
+            if (card.dataset.authProvider === payload.providerId) {
+              card.querySelector('.auth-recovery-status').textContent = state.setup.message;
+            }
+          });
+          updateSetupOverlay();
+        }
 
         // Hide setup after brief success display
         setTimeout(function() {
-          if (state.setup.currentStep === 'ready' && state.setup.providerId === payload.providerId) hideSetupOverlay();
+          if ((state.setup.currentStep === 'ready' || state.setup.currentStep === 'verify') && state.setup.providerId === payload.providerId) hideSetupOverlay();
         }, 1000);
       }
 
@@ -6394,6 +6808,7 @@
       }
 
       function handleSetupFailed(payload) {
+        setAuthRecoveryPending(payload.providerId, false);
         reviveSetupRetry();
         state.setup.currentStep = 'failed';
         state.setup.providerId = payload.providerId;
@@ -6445,6 +6860,7 @@
           overlay.classList.add('hidden');
         }
         state.setup.isReady = true;
+        setAuthRecoveryPending(state.setup.providerId, false);
       }
 
       function updateSetupOverlay() {
@@ -6489,6 +6905,7 @@
                          state.setup.currentStep === 'installing' ? 'Installing...' :
                          state.setup.currentStep === 'authenticating' ? 'Authenticating...' :
                          state.setup.currentStep === 'ready' ? 'Ready!' :
+                         state.setup.currentStep === 'verify' ? 'Verify sign-in' :
                          state.setup.currentStep === 'failed' ? 'Setup Failed' : '';
           stepEl.textContent = stepText;
         }
@@ -6536,23 +6953,7 @@
           // full-screen overlay. Everything downstream — the dismissal latch,
           // Escape's fallback, the guards on three render paths — exists
           // because this one state had no way out. It keeps one.
-          content.innerHTML =
-            '<div class="setup-progress">' +
-              '<div class="setup-icon">⏳</div>' +
-              '<div class="setup-step">Waiting for authentication...</div>' +
-              '<div class="setup-message">Complete sign-in in the terminal that opened</div>' +
-              '<div class="setup-buttons">' +
-                '<button class="setup-btn secondary" id="auth-wait-skip-btn">Continue without it</button>' +
-              '</div>' +
-            '</div>';
-          var waitSkip = document.getElementById('auth-wait-skip-btn');
-          if (waitSkip) {
-            waitSkip.addEventListener('click', function() {
-              if (state.setup) { state.setup.dismissedByUser = true; }
-              postMessageWithPanelId({ type: 'skipSetup' });
-              hideSetupOverlay();
-            });
-          }
+          showAuthenticationWait(payload.providerId);
         });
 
         // "Later" is an EXIT, and was not one: it neither recorded the
@@ -6565,6 +6966,28 @@
           hideSetupOverlay();
           postMessageWithPanelId({ type: 'authSkip', payload: { providerId: payload.providerId } });
         });
+      }
+
+      function showAuthenticationWait(providerId) {
+        state.setup.providerId = providerId;
+        state.setup.currentStep = 'authenticating';
+        var content = document.querySelector('#setup-overlay .setup-content');
+        if (!content) return;
+        content.innerHTML =
+          '<div class="setup-progress">' +
+            '<div class="setup-icon">⏳</div>' +
+            '<div class="setup-step">Waiting for authentication...</div>' +
+            '<div class="setup-message">Complete authentication in the provider prompt, browser, or terminal that opened</div>' +
+            '<div class="setup-buttons">' +
+              '<button class="setup-btn secondary" id="auth-wait-skip-btn">Continue without it</button>' +
+            '</div>' +
+          '</div>';
+        content.querySelector('#auth-wait-skip-btn').addEventListener('click', function() {
+          state.setup.dismissedByUser = true;
+          postMessageWithPanelId({ type: 'skipSetup' });
+          hideSetupOverlay();
+        });
+        showSetupOverlay();
       }
 
       // ========================================
@@ -7074,17 +7497,19 @@
         // Platform info
         html += '<div class="diagnostics-section">' +
           '<h5>Platform</h5>' +
-          '<div class="diagnostics-row"><span class="label">OS</span><span class="value">' + (result.platform ? result.platform.os : 'Unknown') + '</span></div>' +
-          '<div class="diagnostics-row"><span class="label">Architecture</span><span class="value">' + (result.platform ? result.platform.arch : 'Unknown') + '</span></div>' +
-          '<div class="diagnostics-row"><span class="label">Shell</span><span class="value">' + (result.platform ? result.platform.shell : 'Unknown') + '</span></div>' +
+          '<div class="diagnostics-row"><span class="label">OS</span><span class="value">' + escapeHtml(result.platform ? result.platform.os : 'Unknown') + '</span></div>' +
+          '<div class="diagnostics-row"><span class="label">Architecture</span><span class="value">' + escapeHtml(result.platform ? result.platform.arch : 'Unknown') + '</span></div>' +
+          '<div class="diagnostics-row"><span class="label">Shell</span><span class="value">' + escapeHtml(result.platform ? result.platform.shell : 'Unknown') + '</span></div>' +
           '<div class="diagnostics-row"><span class="label">NVM</span><span class="value ' + (result.platform && result.platform.hasNvm ? 'ok' : 'warn') + '">' + (result.platform && result.platform.hasNvm ? 'Detected' : 'Not found') + '</span></div>' +
           '</div>';
 
         // Node & npm
         html += '<div class="diagnostics-section">' +
           '<h5>Node.js & npm</h5>' +
-          '<div class="diagnostics-row"><span class="label">Node.js</span><span class="value ' + (result.nodeStatus && result.nodeStatus.meetsMinimum ? 'ok' : 'error') + '">' + (result.nodeStatus && result.nodeStatus.version ? result.nodeStatus.version : 'Not found') + '</span></div>' +
-          '<div class="diagnostics-row"><span class="label">npm</span><span class="value ' + (result.npmStatus && result.npmStatus.available ? 'ok' : 'error') + '">' + (result.npmStatus && result.npmStatus.version ? result.npmStatus.version : 'Not found') + '</span></div>' +
+          '<div class="diagnostics-row"><span class="label">Node.js</span><span class="value ' + (result.nodeStatus && result.nodeStatus.meetsMinimum ? 'ok' : 'error') + '">' + escapeHtml(result.nodeStatus && result.nodeStatus.version ? result.nodeStatus.version : 'Not found') + '</span></div>' +
+          '<div class="diagnostics-row"><span class="label">npm</span><span class="value ' + (result.npmStatus && result.npmStatus.available ? 'ok' : 'error') + '">' + escapeHtml(result.npmStatus && result.npmStatus.version ? result.npmStatus.version : 'Not found') + '</span></div>' +
+          (result.npmStatus && result.npmStatus.path ? '<div class="diagnostics-row"><span class="label">npm path</span><span class="value diagnostics-npm-path" title="' + escapeHtml(result.npmStatus.path) + '">' + escapeHtml(result.npmStatus.path) + '</span></div>' : '') +
+          (result.npmStatus && result.npmStatus.prefix ? '<div class="diagnostics-row"><span class="label">npm prefix</span><span class="value diagnostics-npm-prefix" title="' + escapeHtml(result.npmStatus.prefix) + '">' + escapeHtml(result.npmStatus.prefix) + '</span></div>' : '') +
           '<div class="diagnostics-row"><span class="label">npm global dir writable</span><span class="value ' + (result.npmStatus && result.npmStatus.canWriteGlobalDir ? 'ok' : 'warn') + '">' + (result.npmStatus && result.npmStatus.canWriteGlobalDir ? 'Yes' : 'No') + '</span></div>' +
           '<div class="diagnostics-row"><span class="label">Network</span><span class="value ' + (result.networkReachable ? 'ok' : 'error') + '">' + (result.networkReachable ? 'Connected' : 'Unreachable') + '</span></div>' +
           '</div>';
@@ -7097,6 +7522,9 @@
             var statusText = p.installed ? (p.authenticated ? 'Ready' : 'Not authenticated') : 'Not installed';
             if (p.error) statusText = p.error;
             html += '<div class="diagnostics-row"><span class="label">' + escapeHtml(p.id) + '</span><span class="value ' + statusClass + '">' + escapeHtml(statusText) + (p.version ? ' (v' + escapeHtml(p.version) + ')' : '') + '</span></div>';
+            if (p.path) {
+              html += '<div class="diagnostics-row"><span class="label">Binary path</span><span class="value diagnostics-provider-path" title="' + escapeHtml(p.path) + '">' + escapeHtml(p.path) + '</span></div>';
+            }
           });
           html += '</div>';
         }
@@ -7876,7 +8304,12 @@
             fs.appendChild(label);
           });
         }
-        fs.querySelectorAll('input[name="wizard-mode"]').forEach(function(r) { r.checked = r.value === current; });
+        fs.querySelectorAll('input[name="wizard-mode"]').forEach(function(r) {
+          r.checked = r.value === current;
+          var unavailable = modeUnavailableReason(r.value);
+          r.disabled = !!unavailable;
+          r.closest('.wizard-mode').title = unavailable || '';
+        });
         renderWizardCaps(current);
       }
 
@@ -7894,7 +8327,7 @@
           b.innerHTML = '<div class="welcome-card-icon"><img src="' + (ICON_URIS[s.icon] || '') + '" alt="" /></div>' +
             '<div class="welcome-card-title">' + escapeHtml(s.title) + '</div>' +
             '<div class="welcome-card-desc">' + escapeHtml(s.description) + '</div>';
-          b.addEventListener('click', function() { finishWizard(); sendQuickAction(s); });
+          b.addEventListener('click', function(e) { finishWizard(); sendQuickAction(s, e); });
           box.appendChild(b);
         });
       }
@@ -8291,6 +8724,7 @@
           }
           case 'orch_node_done': {
             mystiSetNodeStatus(evt.nodeId, evt.hasError ? 'error' : 'done', evt.hasError ? 'failed' : 'done');
+            settleSubagentToolCards(mystiNodeEl(evt.nodeId));
             break;
           }
           case 'orch_synthesis': {
@@ -8406,6 +8840,7 @@
           run.closed = true;
           run.cards.forEach(function(card) {
             card.wait.textContent = '';
+            settleSubagentToolCards(card.el);
             if (card.status.dataset.state === 'error') { run.failed = true; }
           });
           run.nextStep.remove();
@@ -8417,6 +8852,7 @@
         if (!card) {
           var el = document.createElement('details');
           el.className = 'collaboration-card';
+          el.dataset.agentId = p.agentId || '';
           el.open = true;
           var summary = document.createElement('summary');
           var name = document.createElement('span');
@@ -8464,6 +8900,7 @@
         } else if (p.type === 'collab_ask_user_question') {
           card.status.textContent = 'Waiting for your answer';
         } else if (p.type === 'collab_complete' || p.type === 'collab_error' || p.type === 'collab_skipped') {
+          settleSubagentToolCards(card.el);
           var failed = p.hasError || p.type !== 'collab_complete';
           card.status.textContent = failed ? 'Unavailable · ' + (p.failure || 'failed') : 'Complete';
           card.status.dataset.state = failed ? 'error' : 'complete';
@@ -8498,6 +8935,7 @@
           if (out) { out.innerHTML = ''; }
           mystiSetNodeStatus(evt.nodeId, 'running', 'retrying');
         } else if (chunk.type === 'collab_complete') {
+          settleSubagentToolCards(el);
           // Ensure final text is shown even if no incremental text streamed.
           if (out && !mystiNodeText[evt.nodeId] && chunk.responseText) {
             out.innerHTML = formatContent(chunk.responseText);
@@ -8528,6 +8966,13 @@
         return nodeEl ? nodeEl.querySelector('.mysti-node-activity') : null;
       }
 
+      function settleSubagentToolCards(nodeEl) {
+        if (!nodeEl) { return; }
+        nodeEl.querySelectorAll('.subagent-tool-call.running, .subagent-tool-call.pending').forEach(function(card) {
+          window.MystiSubAgentCards.setToolStatus(card, { status: 'unconfirmed' });
+        });
+      }
+
       function mystiToolSummary(input) {
         if (!input) return '';
         if (input.file_path || input.path) return String(input.file_path || input.path);
@@ -8544,6 +8989,7 @@
       function mystiNodeToolUse(nodeEl, toolCall) {
         var act = mystiNodeActivityEl(nodeEl);
         if (!act || !toolCall) return;
+        toolCall = toolDisplayRecord(toolCall, nodeEl.dataset.agentId);
         var inputJson;
         try { inputJson = JSON.stringify(toolCall.input || {}, null, 2); }
         catch (e) { inputJson = String(toolCall.input || '{}'); }
@@ -8562,6 +9008,9 @@
           if (exSummary) { exSummary.textContent = mystiToolSummary(toolCall.input); }
           var exCode = existing.querySelector('.subagent-tool-detail-code code');
           if (exCode) { exCode.textContent = inputJson; }
+          // Duplicate tool-use messages update input without undoing a settled
+          // result. A proposal flag may still strengthen the display evidence.
+          if (toolCall.proposalOnly) { window.MystiSubAgentCards.setToolStatus(existing, toolCall); }
           return;
         }
         var toolDiv = document.createElement('div');
@@ -8584,6 +9033,7 @@
               '<pre class="subagent-tool-detail-code"><code class="subagent-tool-output-code"></code></pre>' +
             '</div>' +
           '</div>';
+        window.MystiSubAgentCards.setToolStatus(toolDiv, Object.assign({}, toolCall, { status: toolCall.status || 'running' }));
         var header = toolDiv.querySelector('.subagent-tool-header');
         if (header) {
           header.addEventListener('click', function() {
@@ -8606,15 +9056,7 @@
         // backslash would make querySelector throw and freeze the trace card.
         var toolDiv = act.querySelector('.subagent-tool-call[data-id="' + (window.CSS && CSS.escape ? CSS.escape(String(toolCall.id)) : String(toolCall.id)) + '"]');
         if (!toolDiv) return;
-        toolDiv.classList.remove('running');
-        var resultStatus = (toolCall.status === 'failed') ? 'failed' : 'completed';
-        toolDiv.classList.add(resultStatus);
-        var spinner = toolDiv.querySelector('.subagent-tool-spinner');
-        if (spinner) {
-          spinner.outerHTML = resultStatus === 'failed'
-            ? '<span class="subagent-tool-icon failed">&#10005;</span>'
-            : '<span class="subagent-tool-icon completed">&#10003;</span>';
-        }
+        window.MystiSubAgentCards.setToolStatus(toolDiv, toolDisplayRecord(toolCall, nodeEl.dataset.agentId));
         var outputSection = toolDiv.querySelector('.subagent-tool-output');
         var outputCode = toolDiv.querySelector('.subagent-tool-output-code');
         if (outputSection && outputCode && toolCall.output) {
@@ -8711,6 +9153,7 @@
         payload = payload || {};
         setProcessing(false);
         var container = mystiContainerEl();
+        settleSubagentToolCards(container);
         if (payload.cancelled) {
           // A stopped run must not read as successfully complete — leave the
           // stepper where it was and mark the container cancelled.
@@ -9614,36 +10057,43 @@
         brainstormAgentTimeouts = {};
       }
 
+      function setSessionLabel(label) {
+        var dot = sessionIndicator.querySelector('.session-dot');
+        if (dot && dot.nextSibling) { dot.nextSibling.textContent = ' ' + label; }
+      }
+
       function handleLifecycleEvent(payload) {
         if (!payload) { return; }
         var type = payload.type;
         if (type === 'session-idle') {
           sessionIndicator.className = 'session-indicator idle';
-          sessionIndicator.querySelector('.session-dot').nextSibling.textContent = ' Idle';
-        } else if (type === 'shutdown-blocked') {
+          setSessionLabel('Idle');
+        } else if (type === 'shutdown-blocked' || type === 'children-detected') {
           sessionIndicator.className = 'session-indicator blocked';
           var childCount = (payload.childPids && payload.childPids.length) || 0;
-          sessionIndicator.querySelector('.session-dot').nextSibling.textContent =
-            ' Active (' + childCount + ' process' + (childCount !== 1 ? 'es' : '') + ')';
-          addSystemMessage('Agent shutdown blocked: ' + (payload.detail || 'active child processes'));
+          setSessionLabel(childCount ? 'Active (' + childCount + ' process' + (childCount !== 1 ? 'es' : '') + ')' : 'Active');
+          if (type === 'shutdown-blocked') { addSystemMessage('Agent shutdown blocked: ' + (payload.detail || 'active child processes')); }
         } else if (type === 'session-expired' || type === 'session-shutdown') {
           sessionIndicator.style.display = 'none';
           sessionIndicator.className = 'session-indicator';
+          setSessionLabel('Session');
         } else if (type === 'session-started') {
           sessionIndicator.style.display = 'flex';
           sessionIndicator.className = 'session-indicator';
-        } else if (type === 'children-detected') {
-          sessionIndicator.className = 'session-indicator blocked';
+          setSessionLabel('Session');
         } else if (type === 'children-cleared') {
           if (sessionIndicator.classList.contains('blocked')) {
-            sessionIndicator.className = 'session-indicator idle';
+            sessionIndicator.className = 'session-indicator' + (state.isLoading ? '' : ' idle');
+            setSessionLabel(state.isLoading ? 'Active' : 'Idle');
           }
         }
       }
 
       function handleFileLineNumber(payload) {
         // Find edit report card with this file path and update line numbers
-        var cards = document.querySelectorAll('.edit-report-card[data-file-path="' + payload.filePath + '"]');
+        var cards = Array.from(document.querySelectorAll('.edit-report-card')).filter(function(card) {
+          return card.dataset.filePath === payload.filePath && (!payload.toolCallId || card.dataset.toolId === payload.toolCallId);
+        });
         cards.forEach(function(card) {
           var baseLineNum = payload.lineNumber;
           // Store line number on card for Open File button to use
@@ -9657,8 +10107,13 @@
       }
 
       function handleFileReverted(payload) {
-        // Find all file edit cards with this path and update the revert button (legacy cards)
-        var cards = document.querySelectorAll('.file-edit-card[data-file-path="' + payload.path + '"]');
+        // A receipt belongs to one owned tool edit, not every card for a file.
+        // Compare dataset values directly: filenames may contain quotes.
+        if (!payload.toolCallId) return;
+        var matchesEdit = function(card) {
+          return card.dataset.toolId === payload.toolCallId && card.dataset.filePath === payload.path;
+        };
+        var cards = Array.from(document.querySelectorAll('.file-edit-card')).filter(matchesEdit);
         cards.forEach(function(card) {
           var revertBtn = card.querySelector('.file-edit-revert');
           if (revertBtn) {
@@ -9679,7 +10134,7 @@
         });
 
         // Find all edit report cards with this path and update the revert button
-        var editReportCards = document.querySelectorAll('.edit-report-card[data-file-path="' + payload.path + '"]');
+        var editReportCards = Array.from(document.querySelectorAll('.edit-report-card')).filter(matchesEdit);
         editReportCards.forEach(function(card) {
           var revertBtn = card.querySelector('.edit-report-btn-revert');
           if (revertBtn) {
@@ -9690,7 +10145,9 @@
             } else {
               revertBtn.textContent = 'Failed';
               revertBtn.classList.add('failed');
+              revertBtn.title = payload.error || 'This edit could not be safely reverted.';
               setTimeout(function() {
+                if (!revertBtn.classList.contains('failed')) return;
                 revertBtn.textContent = 'Revert';
                 revertBtn.disabled = false;
                 revertBtn.classList.remove('failed');
@@ -9867,7 +10324,13 @@
         // initialState payload (starts/stops heap sampling + chunk timing).
         perfSetEnabled(!!payload.performanceLogging);
         var savedAgentSettings = state.agentSettings;
+        if (payload.panelId && state.panelId && payload.panelId !== state.panelId) {
+          pendingComposerSubmissions.clear(); unsentComposerSubmissions.clear();
+        }
+        if (Object.prototype.hasOwnProperty.call(payload, 'conversation')) { switchConversationDraft(payload.conversation); }
+        switchConversationQueue(payload.conversation);
         state = Object.assign({}, state, payload);
+        renderUnsentMessages();
         // An unconfigured conversation's `agentConfig: undefined` does not
         // survive JSON — without this, a rebound (or followed) Mysti tab kept
         // the previous conversation's persona and skills, and saved them there.
@@ -9880,10 +10343,7 @@
 
         // Plan 02 Phase 2: only trust a manifest whose schema matches the
         // one this webview build was generated against.
-        if (state.providerManifest && state.providerManifest.schemaVersion !== EXPECTED_MANIFEST_SCHEMA_VERSION) {
-          console.warn('[Mysti Webview] Ignoring provider manifest with unexpected schemaVersion:', state.providerManifest.schemaVersion);
-          state.providerManifest = null;
-        }
+        state.providerManifest = normalizeProviderManifest(state.providerManifest);
         // Build every manifest-derived surface (provider dropdown, brainstorm
         // options, mention short-id map) before values are applied below.
         applyProviderManifest();
@@ -9959,6 +10419,7 @@
         // Perf: signal time-to-usable after the initial render has painted.
         // Posted UNCONDITIONALLY (panel.timeToUsable is a coarse always-on
         // measure), once per webview lifetime.
+        initialStateReceived = true;
         perfPostUiReady();
       }
 
@@ -9970,75 +10431,140 @@
       var MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5 MB
       var MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
       var MAX_ATTACHMENTS = 10;
+      var pendingAttachmentReads = new Map();
+      var attachmentReadGeneration = 0;
+      var attachmentReadSequence = 0;
+      var attachmentReadsDisposed = false;
 
-      // Plan 07: pull file paths out of a drop (works for drags from the VS Code
-      // explorer / OS, which set a uri-list). Returns absolute paths.
-      function extractDroppedPaths(dataTransfer) {
+      function composerAttachmentCount() {
+        return state.attachments.length + pendingAttachmentReads.size;
+      }
+
+      function composerAttachmentsReady(options) {
+        // Queued turns and second opinions temporarily borrow the composer;
+        // its unfinished reads still belong to the independent draft.
+        if (options && (options.fromQueue || options.secondOpinion)) { return true; }
+        if (!pendingAttachmentReads.size) { return true; }
+        showToast('Attachments are still loading. Wait or remove them before sending.', 'info');
+        return false;
+      }
+
+      function releaseAttachmentRead(record) {
+        if (pendingAttachmentReads.get(record.id) === record) { pendingAttachmentReads.delete(record.id); }
+        record.reader.onload = record.reader.onerror = record.reader.onabort = null;
+      }
+
+      function cancelAttachmentRead(record) {
+        releaseAttachmentRead(record);
+        if (record.reader.readyState === 1) {
+          try { record.reader.abort(); } catch { /* already finished */ }
+        }
+      }
+
+      function cancelComposerAttachmentReads() {
+        attachmentReadGeneration++;
+        Array.from(pendingAttachmentReads.values()).forEach(cancelAttachmentRead);
+        renderAttachmentPreviews();
+      }
+
+      window.addEventListener('pagehide', function(event) {
+        if (!event.persisted) {
+          attachmentReadsDisposed = true;
+          cancelComposerAttachmentReads();
+        }
+      });
+
+      function readComposerAttachment(file, isImage, mimeType, fileName) {
+        if (attachmentReadsDisposed) { return; }
+        var limit = isImage ? MAX_IMAGE_SIZE : MAX_FILE_SIZE;
+        if (file.size > limit) {
+          showToast('"' + fileName + '" too large (max ' + (isImage ? '5 MB' : '10 MB') + ')', 'error');
+          return;
+        }
+        if (composerAttachmentCount() >= MAX_ATTACHMENTS) {
+          showToast('Maximum ' + MAX_ATTACHMENTS + ' attachments per message', 'error');
+          return;
+        }
+        var record = {
+          id: 'att-' + Date.now() + '-' + (++attachmentReadSequence), reader: new FileReader(),
+          generation: attachmentReadGeneration, conversationId: state.conversation && state.conversation.id,
+          type: isImage ? 'image' : 'file', fileName: fileName, mimeType: mimeType, size: file.size
+        };
+        var isCurrent = function() {
+          return !attachmentReadsDisposed && pendingAttachmentReads.get(record.id) === record
+            && record.generation === attachmentReadGeneration
+            && record.conversationId === (state.conversation && state.conversation.id);
+        };
+        var fail = function() {
+          if (!isCurrent()) { return; }
+          releaseAttachmentRead(record);
+          renderAttachmentPreviews();
+          showToast('Failed to read: ' + fileName, 'error');
+        };
+        record.reader.onload = function(event) {
+          if (!isCurrent()) { return; }
+          var result = event.target.result;
+          if (typeof result !== 'string' || !/^data:[^,]*;base64,/.test(result)) { fail(); return; }
+          var base64 = result.slice(result.indexOf(',') + 1);
+          releaseAttachmentRead(record);
+          if (composerAttachmentCount() >= MAX_ATTACHMENTS) {
+            showToast('Maximum ' + MAX_ATTACHMENTS + ' attachments per message', 'error');
+          } else {
+            state.attachments.push({ id: record.id, type: record.type, fileName: fileName,
+              mimeType: mimeType, size: record.size, base64Data: base64 });
+          }
+          renderAttachmentPreviews();
+        };
+        record.reader.onerror = fail;
+        record.reader.onabort = fail;
+        pendingAttachmentReads.set(record.id, record);
+        renderAttachmentPreviews();
+        try { record.reader.readAsDataURL(file); } catch { fail(); }
+      }
+
+      // Preserve URI syntax for validation and native path conversion by the
+      // extension host. Read both formats so one does not hide the other.
+      function extractDroppedUris(dataTransfer) {
         var out = [];
         if (!dataTransfer) { return out; }
-        var raw = '';
-        try { raw = dataTransfer.getData('text/uri-list') || dataTransfer.getData('application/vnd.code.uri-list') || ''; } catch (e) { /* unreadable drop payload — treat as empty */ }
-        raw.split(/\r?\n/).forEach(function(line) {
-          line = (line || '').trim();
-          if (line && line.indexOf('file:') === 0) {
-            try { out.push(decodeURIComponent(line.replace(/^file:\/\//, ''))); } catch (e) { /* malformed URI — skip this line */ }
-          }
+        ['text/uri-list', 'application/vnd.code.uri-list'].forEach(function(format) {
+          var raw = '';
+          try { raw = dataTransfer.getData(format) || ''; } catch { /* try the other format */ }
+          raw.split(/\r?\n/).forEach(function(line) {
+            line = line.trim();
+            if (line && line.charAt(0) !== '#' && out.indexOf(line) === -1) { out.push(line); }
+          });
         });
         return out;
       }
 
-      // Drop onto the context panel → add as persistent context files. Falls back
-      // to attaching when the drop carries no resolvable file paths.
+      // A context drop with only browser File bytes cannot identify a disk path.
       function handleDroppedToContext(dataTransfer) {
-        var paths = extractDroppedPaths(dataTransfer);
-        if (paths.length) {
-          postMessageWithPanelId({ type: 'addContextPaths', payload: paths });
-        } else {
+        var uris = extractDroppedUris(dataTransfer);
+        if (uris.length) {
+          postMessageWithPanelId({ type: 'addContextUris', payload: uris });
+        } else if (dataTransfer && dataTransfer.files && dataTransfer.files.length) {
+          showToast('No file paths were supplied. Using message attachments for this draft.', 'info');
           handleDroppedFiles(dataTransfer);
+        } else {
+          showToast('No file links or files found. Use + Add in Context.', 'info');
         }
       }
 
       function handleDroppedFiles(dataTransfer) {
-        if (!dataTransfer || !dataTransfer.files || dataTransfer.files.length === 0) return;
+        if (!dataTransfer || !dataTransfer.files || dataTransfer.files.length === 0) {
+          if (extractDroppedUris(dataTransfer).length) {
+            showToast('Drop file links into Context to keep them for this chat, or use Attach for this message.', 'info');
+          }
+          return;
+        }
 
         for (var i = 0; i < dataTransfer.files.length; i++) {
           var file = dataTransfer.files[i];
           var ext = (file.name.split('.').pop() || '').toLowerCase();
           var isImage = file.type.startsWith('image/') || IMAGE_EXTENSIONS.indexOf(ext) !== -1;
-          var sizeLimit = isImage ? MAX_IMAGE_SIZE : MAX_FILE_SIZE;
-          var sizeLimitLabel = isImage ? '5 MB' : '10 MB';
-
-          if (file.size > sizeLimit) {
-            showToast('"' + file.name + '" too large (max ' + sizeLimitLabel + ')', 'error');
-            continue;
-          }
-          if (state.attachments.length >= MAX_ATTACHMENTS) {
-            showToast('Maximum ' + MAX_ATTACHMENTS + ' attachments per message', 'error');
-            break;
-          }
-
-          // Read file as base64 (both images and non-image files)
-          (function(f, fIsImage, fExt) {
-            var reader = new FileReader();
-            reader.onload = function(evt) {
-              var dataUrl = evt.target.result;
-              var base64 = dataUrl.split(',')[1];
-              var mimeType = f.type || (fIsImage ? 'image/' + fExt : 'application/octet-stream');
-              state.attachments.push({
-                id: 'att-' + Date.now() + '-' + Math.random().toString(36).substr(2, 6),
-                type: fIsImage ? 'image' : 'file',
-                fileName: f.name,
-                mimeType: mimeType,
-                base64Data: base64,
-                size: f.size
-              });
-              renderAttachmentPreviews();
-            };
-            reader.onerror = function() {
-              showToast('Failed to read: ' + f.name, 'error');
-            };
-            reader.readAsDataURL(f);
-          })(file, isImage, ext);
+          var mimeType = file.type || (isImage ? 'image/' + ext : 'application/octet-stream');
+          readComposerAttachment(file, isImage, mimeType, file.name);
         }
       }
 
@@ -10046,7 +10572,10 @@
         var container = document.getElementById('attachment-previews');
         if (!container) return;
 
-        if (state.attachments.length === 0) {
+        var previews = state.attachments.concat(Array.from(pendingAttachmentReads.values()).map(function(record) {
+          return { id: record.id, type: record.type, fileName: record.fileName, reading: true };
+        }));
+        if (previews.length === 0) {
           container.innerHTML = '';
           container.classList.remove('has-items');
           return;
@@ -10054,16 +10583,17 @@
 
         container.classList.add('has-items');
         var html = '';
-        for (var i = 0; i < state.attachments.length; i++) {
-          var att = state.attachments[i];
-          html += '<div class="attachment-preview-item" data-id="' + att.id + '">';
+        for (var i = 0; i < previews.length; i++) {
+          var att = previews[i];
+          html += '<div class="attachment-preview-item' + (att.reading ? ' is-reading' : '') + '" data-id="' + escapeHtml(att.id) + '">';
           if (att.type === 'image' && att.base64Data) {
-            html += '<img src="data:' + att.mimeType + ';base64,' + att.base64Data + '" alt="' + att.fileName + '" title="' + att.fileName + '">';
+            html += '<img src="' + escapeHtml('data:' + att.mimeType + ';base64,' + att.base64Data) + '" alt="' + escapeHtml(att.fileName) + '" title="' + escapeHtml(att.fileName) + '">';
           } else {
-            html += '<div class="attachment-file-icon" title="' + att.fileName + '">&#128196;</div>';
+            html += '<div class="attachment-file-icon" title="' + escapeHtml(att.fileName) + '">&#128196;</div>';
           }
-          html += '<span class="attachment-name">' + att.fileName + '</span>';
-          html += '<button class="attachment-remove" data-id="' + att.id + '" title="Remove">&times;</button>';
+          html += '<span class="attachment-name">' + escapeHtml(att.fileName) + '</span>';
+          if (att.reading) { html += '<span class="attachment-reading" role="status">Reading…</span>'; }
+          html += '<button class="attachment-remove" data-id="' + escapeHtml(att.id) + '" title="Remove" aria-label="' + escapeHtml('Remove ' + att.fileName) + '">&times;</button>';
           html += '</div>';
         }
         container.innerHTML = html;
@@ -10074,6 +10604,8 @@
           removeBtns[j].addEventListener('click', function(e) {
             e.stopPropagation();
             var removeId = this.getAttribute('data-id');
+            var reading = pendingAttachmentReads.get(removeId);
+            if (reading) { cancelAttachmentRead(reading); }
             state.attachments = state.attachments.filter(function(a) { return a.id !== removeId; });
             renderAttachmentPreviews();
           });
@@ -10098,17 +10630,25 @@
 
       // ---- Rewind / fork menu (anchored to a user message) -----------------
       var _rewindMenuEl = null;
+      var _rewindMenuOwner = null;
+      messagesEl.addEventListener('keydown', function(e) {
+        if (e.repeat && (e.key === 'Enter' || e.key === ' ') && e.target.closest('.message-rewind-btn')) {
+          e.preventDefault(); e.stopPropagation();
+        }
+      });
 
       function getRewindMenuEl() {
         if (_rewindMenuEl) return _rewindMenuEl;
         var menu = document.createElement('div');
         menu.className = 'rewind-menu';
         menu.id = 'rewind-menu';
+        menu.setAttribute('role', 'menu');
+        menu.setAttribute('aria-label', 'Fork or rewind this turn');
         menu.style.display = 'none';
         menu.innerHTML =
-          '<button class="rewind-menu-item" data-action="fork">Fork conversation from here</button>' +
-          '<button class="rewind-menu-item rewind-menu-code" data-action="rewind">Rewind code to here</button>' +
-          '<button class="rewind-menu-item rewind-menu-code" data-action="fork-rewind">Fork conversation and rewind code</button>';
+          '<button role="menuitem" class="rewind-menu-item" data-action="fork">Fork conversation from here</button>' +
+          '<button role="menuitem" class="rewind-menu-item rewind-menu-code" data-action="rewind">Rewind code to here</button>' +
+          '<button role="menuitem" class="rewind-menu-item rewind-menu-code" data-action="fork-rewind">Fork conversation and rewind code</button>';
         // The menu lives on document.body, so it handles its own item clicks
         // (the message-level delegated handler is scoped to the messages list).
         menu.addEventListener('click', function(e) {
@@ -10120,56 +10660,91 @@
         return menu;
       }
 
-      function closeRewindMenu() {
+      function closeRewindMenu(returnFocus) {
+        var owner = _rewindMenuOwner;
+        _rewindMenuOwner = null;
         if (_rewindMenuEl) {
           _rewindMenuEl.style.display = 'none';
           _rewindMenuEl.removeAttribute('data-message-id');
           _rewindMenuEl.removeAttribute('data-commit');
+          _rewindMenuEl.removeAttribute('data-conversation-id');
+        }
+        if (owner && owner.button.isConnected) {
+          owner.button.setAttribute('aria-expanded', 'false');
+          if (returnFocus) { owner.button.focus({ preventScroll: true }); }
         }
         document.removeEventListener('click', _rewindOutsideClick, true);
         document.removeEventListener('keydown', _rewindEscClose, true);
+        window.removeEventListener('resize', positionRewindMenu);
       }
 
-      function toggleRewindMenu(btn) {
-        var menu = getRewindMenuEl();
-        var messageId = btn.dataset.messageId || '';
-        if (menu.style.display === 'block' && menu.dataset.messageId === messageId) {
-          closeRewindMenu();
-          return;
-        }
-        var commit = btn.dataset.commit || '';
-        menu.dataset.messageId = messageId;
-        if (commit) { menu.dataset.commit = commit; } else { menu.removeAttribute('data-commit'); }
+      function rewindMenuIsCurrent() {
+        var owner = _rewindMenuOwner;
+        return !!(owner && owner.button.isConnected && messagesEl.contains(owner.button) &&
+          owner.button.dataset.messageId === owner.messageId && state.conversation &&
+          state.conversation.id === owner.conversationId);
+      }
 
-        // The two code-rewind items need a captured checkpoint AND git available.
+      function refreshRewindMenu() {
+        if (!_rewindMenuOwner) { return; }
+        if (!rewindMenuIsCurrent()) { closeRewindMenu(); return; }
+        var menu = _rewindMenuEl;
+        var commit = _rewindMenuOwner.button.dataset.commit || '';
+        if (commit) { menu.dataset.commit = commit; } else { menu.removeAttribute('data-commit'); }
         var codeEnabled = state.checkpointsAvailable !== false && !!commit;
         var codeItems = menu.querySelectorAll('.rewind-menu-code');
+        var focusedItem = document.activeElement;
         for (var i = 0; i < codeItems.length; i++) {
+          codeItems[i].disabled = !codeEnabled;
+          codeItems[i].classList.toggle('disabled', !codeEnabled);
           if (codeEnabled) {
-            codeItems[i].removeAttribute('disabled');
-            codeItems[i].classList.remove('disabled');
             codeItems[i].removeAttribute('title');
           } else {
-            codeItems[i].setAttribute('disabled', 'true');
-            codeItems[i].classList.add('disabled');
             codeItems[i].title = state.checkpointsAvailable === false
               ? 'Code checkpoints unavailable (git not found or disabled)'
               : 'No checkpoint captured for this turn yet';
           }
         }
+        if (!codeEnabled && focusedItem && focusedItem.disabled && menu.contains(focusedItem)) {
+          menu.querySelector('[data-action="fork"]').focus({ preventScroll: true });
+        }
+      }
 
-        // Position under the button, right-aligned, clamped to the viewport.
+      function positionRewindMenu() {
+        if (!rewindMenuIsCurrent()) { closeRewindMenu(); return; }
+        var menu = _rewindMenuEl;
+        var rect = _rewindMenuOwner.button.getBoundingClientRect();
+        if (rect.top >= window.innerHeight || rect.bottom <= 0) { closeRewindMenu(); return; }
+        var mw = menu.offsetWidth, mh = menu.offsetHeight;
+        menu.style.left = Math.max(8, Math.min(rect.right - mw, window.innerWidth - mw - 8)) + 'px';
+        var top = rect.bottom + 4;
+        if (top + mh > window.innerHeight - 8) { top = rect.top - mh - 4; }
+        menu.style.top = Math.max(8, Math.min(top, window.innerHeight - mh - 8)) + 'px';
+      }
+
+      function toggleRewindMenu(btn) {
+        var messageId = btn.dataset.messageId || '';
+        if (!messageId || !btn.isConnected || !state.conversation || !state.conversation.id) { return; }
+        if (_rewindMenuOwner && _rewindMenuOwner.button === btn) {
+          closeRewindMenu(true);
+          return;
+        }
+        closeRewindMenu();
+        var menu = getRewindMenuEl();
+        _rewindMenuOwner = { button: btn, messageId: messageId, conversationId: state.conversation.id };
+        menu.dataset.messageId = messageId;
+        menu.dataset.conversationId = _rewindMenuOwner.conversationId;
+        btn.setAttribute('aria-expanded', 'true');
+        refreshRewindMenu();
         menu.style.display = 'block';
-        var rect = btn.getBoundingClientRect();
-        var mw = menu.offsetWidth || 240;
-        var left = Math.max(8, Math.min(rect.right - mw, window.innerWidth - mw - 8));
-        menu.style.left = left + 'px';
-        menu.style.top = (rect.bottom + 4) + 'px';
-
-        setTimeout(function() {
-          document.addEventListener('click', _rewindOutsideClick, true);
-          document.addEventListener('keydown', _rewindEscClose, true);
-        }, 0);
+        positionRewindMenu();
+        if (!_rewindMenuOwner) { return; }
+        menu.querySelector('[data-action="fork"]').focus({ preventScroll: true });
+        // This opener's click has already passed capture; attach immediately
+        // so fast keyboard dismissal cannot race a delayed listener install.
+        document.addEventListener('click', _rewindOutsideClick, true);
+        document.addEventListener('keydown', _rewindEscClose, true);
+        window.addEventListener('resize', positionRewindMenu);
       }
 
       function _rewindOutsideClick(e) {
@@ -10181,45 +10756,57 @@
       }
 
       function _rewindEscClose(e) {
-        if (e.key === 'Escape') { closeRewindMenu(); }
+        if (e.repeat && (e.key === 'Enter' || e.key === ' ') && _rewindMenuEl && _rewindMenuEl.contains(e.target)) {
+          e.preventDefault(); e.stopImmediatePropagation(); return;
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault(); e.stopImmediatePropagation(); closeRewindMenu(true);
+        } else if (_rewindMenuEl && _rewindMenuEl.contains(e.target)) {
+          if (e.key === 'Tab') { closeRewindMenu(true); return; }
+          if (['ArrowDown', 'ArrowUp', 'Home', 'End'].indexOf(e.key) === -1) { return; }
+          e.preventDefault(); e.stopPropagation();
+          var items = Array.from(_rewindMenuEl.querySelectorAll('.rewind-menu-item:not(:disabled)'));
+          var index = items.indexOf(document.activeElement);
+          var next = e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1
+            : (index + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+          if (items[next]) { items[next].focus({ preventScroll: true }); }
+        }
       }
 
       function handleRewindMenuAction(item) {
         if (item.getAttribute('disabled')) { return; }
+        if (!rewindMenuIsCurrent()) { closeRewindMenu(); return; }
         var menu = getRewindMenuEl();
-        var messageId = menu.dataset.messageId || '';
-        var commit = menu.dataset.commit || '';
+        var owner = _rewindMenuOwner;
+        var messageId = owner.messageId;
+        var conversationId = owner.conversationId;
+        var commit = owner.button.dataset.commit || '';
         var action = item.dataset.action;
-        if (!messageId) { closeRewindMenu(); return; }
+        if (!menu.contains(item) || (action !== 'fork' && (state.checkpointsAvailable === false || !commit))) { return; }
+        // Consume the menu before posting so a retained callback cannot send
+        // twice, even if the host immediately switches to the fork.
+        closeRewindMenu(true);
         if (action === 'fork') {
-          postMessageWithPanelId({ type: 'forkConversation', payload: { messageId: messageId } });
+          postMessageWithPanelId({ type: 'forkConversation', payload: { conversationId: conversationId, messageId: messageId } });
         } else if (action === 'rewind' && commit) {
-          postMessageWithPanelId({ type: 'rewindToCheckpoint', payload: { commit: commit, messageId: messageId } });
+          postMessageWithPanelId({ type: 'rewindToCheckpoint', payload: { conversationId: conversationId, commit: commit, messageId: messageId } });
         } else if (action === 'fork-rewind' && commit) {
-          postMessageWithPanelId({ type: 'forkAndRewind', payload: { messageId: messageId, commit: commit } });
+          postMessageWithPanelId({ type: 'forkAndRewind', payload: { conversationId: conversationId, messageId: messageId, commit: commit } });
         }
-        closeRewindMenu();
       }
 
       // A turn's checkpoint commit lands shortly after the user bubble (the
       // snapshot runs off the send critical path). Stamp it on the button so
       // the code-rewind actions become available.
       function handleCheckpointCreated(payload) {
-        if (!payload || !payload.messageId || !payload.commit) return;
-        var btn = messagesEl.querySelector('.message[data-id="' + payload.messageId + '"] .message-rewind-btn');
+        if (!payload || !payload.messageId || !payload.commit) { return; }
+        if (payload.conversationId && (!state.conversation || payload.conversationId !== state.conversation.id)) { return; }
+        var btn = Array.from(messagesEl.querySelectorAll('.message-rewind-btn')).find(function(button) {
+          return button.dataset.messageId === payload.messageId;
+        });
         if (btn) { btn.dataset.commit = payload.commit; }
         // If the menu is open for this very message, enable its code items now.
-        if (_rewindMenuEl && _rewindMenuEl.style.display === 'block' &&
-            _rewindMenuEl.dataset.messageId === payload.messageId &&
-            state.checkpointsAvailable !== false) {
-          _rewindMenuEl.dataset.commit = payload.commit;
-          var codeItems = _rewindMenuEl.querySelectorAll('.rewind-menu-code');
-          for (var i = 0; i < codeItems.length; i++) {
-            codeItems[i].removeAttribute('disabled');
-            codeItems[i].classList.remove('disabled');
-            codeItems[i].removeAttribute('title');
-          }
-        }
+        refreshRewindMenu();
       }
 
       function handleRewindComplete(payload) {
@@ -10570,6 +11157,7 @@
         var out = [];
         var here = deriveChatMode();
         CHAT_MODES.forEach(function(m) {
+          if (modeUnavailableReason(m.id)) { return; }
           out.push({ group: 'Trust', label: m.label, hint: m.desc, active: m.id === here,
                      run: function() { applyChatMode(m.id); } });
         });
@@ -10601,7 +11189,8 @@
         out.push({ group: 'Do', label: 'Changes \u2014 every edit this session', hint: 'Ctrl/Cmd+Shift+A',
                    run: function() { toggleChangesDock(true); } });
         [['New conversation', 'new-conversation-btn'], ['Open in a tab', 'new-tab-btn'],
-         ['Export conversation', 'export-conversation-btn'], ['Enhance the prompt', 'enhance-btn'],
+         ['Copy conversation as Markdown', 'export-conversation-btn'], ['Export JSON file', 'export-json-btn'],
+         ['Export Markdown file', 'export-markdown-btn'], ['Import conversation', 'import-conversation-btn'], ['Enhance the prompt', 'enhance-btn'],
          ['Look at the running app', 'visual-test-btn'], ['Open the canvas', 'canvas-btn'],
          ['Personas and skills', 'agent-config-btn'], ['Connections', 'connections-btn'], ['Proactive inbox', 'proactive-btn'],
          ['Set the coordinator model\u2026', 'mysti-model-btn'],
@@ -10795,16 +11384,127 @@
        * until a provider implements a real steer path and declares
        * `supportsSteering`.
        */
-      function enqueueMessage(text) {
+      var pendingSlashCommand = null;
+      var slashRequestSequence = 0;
+      function clearPendingSlashCommand() { pendingSlashCommand = null; }
+
+      // Keep bytes only until the host records the question. Unrecorded turns
+      // are recoverable in their original conversation for this view's lifetime.
+      var composerSubmissionSequence = 0;
+      var pendingComposerSubmissions = new Map();
+      var unsentComposerSubmissions = new Map();
+      window.addEventListener('pagehide', function(event) {
+        if (!event.persisted) { pendingComposerSubmissions.clear(); unsentComposerSubmissions.clear(); }
+      });
+      function captureComposerSubmission(text, attachments) {
+        var id = 'submit-' + Date.now() + '-' + (++composerSubmissionSequence);
+        pendingComposerSubmissions.set(id, { id: id, text: text,
+          attachments: attachments.map(function(item) { return Object.assign({}, item); }),
+          conversationId: state.conversation && state.conversation.id || null, panelId: state.panelId });
+        return id;
+      }
+      function settleComposerSubmission(payload) {
+        if (!payload || typeof payload.accepted !== 'boolean') return;
+        var submission = pendingComposerSubmissions.get(payload.submissionId);
+        if (!submission || submission.panelId !== state.panelId || submission.conversationId !== payload.conversationId) return;
+        pendingComposerSubmissions.delete(payload.submissionId);
+        if (!payload.accepted) { unsentComposerSubmissions.set(submission.id, submission); }
+        renderUnsentMessages();
+      }
+      function renderUnsentMessages() {
+        var container = document.getElementById('unsent-messages');
+        if (!container || !unsentComposerSubmissions) return;
+        container.replaceChildren();
+        var conversationId = state.conversation && state.conversation.id || null;
+        unsentComposerSubmissions.forEach(function(submission) {
+          if (submission.panelId !== state.panelId || submission.conversationId !== conversationId) return;
+          var card = document.createElement('div'); card.className = 'unsent-message';
+          var text = document.createElement('span'); text.className = 'unsent-message-text';
+          text.textContent = 'Unsent message: ' + submission.text + (submission.attachments.length
+            ? ' · ' + submission.attachments.map(function(item) { return item.fileName; }).join(', ') : '');
+          card.appendChild(text);
+          var restore = document.createElement('button'); restore.type = 'button'; restore.dataset.action = 'restore';
+          restore.textContent = 'Restore draft';
+          restore.addEventListener('click', function(event) {
+            event.preventDefault(); event.stopPropagation();
+            if (unsentComposerSubmissions.get(submission.id) !== submission
+              || submission.panelId !== state.panelId || submission.conversationId !== (state.conversation && state.conversation.id || null)) return;
+            if (state.isLoading || inputEl.value || state.attachments.length || pendingAttachmentReads.size) {
+              showToast('Finish or clear your current draft before restoring this message.', 'info'); return;
+            }
+            inputEl.value = submission.text;
+            state.attachments = submission.attachments.slice();
+            unsentComposerSubmissions.delete(submission.id);
+            renderUnsentMessages(); renderAttachmentPreviews(); clearAutocomplete(); autoResizeTextarea();
+            inputEl.dispatchEvent(new Event('input', { bubbles: true })); inputEl.focus();
+          });
+          card.appendChild(restore);
+          var dismiss = document.createElement('button'); dismiss.type = 'button'; dismiss.dataset.action = 'dismiss'; dismiss.textContent = 'Dismiss';
+          dismiss.addEventListener('click', function(event) {
+            event.preventDefault(); event.stopPropagation();
+            if (submission.panelId !== state.panelId || submission.conversationId !== (state.conversation && state.conversation.id || null)) return;
+            unsentComposerSubmissions.delete(submission.id); renderUnsentMessages();
+          });
+          card.appendChild(dismiss); container.appendChild(card);
+        });
+        container.classList.toggle('has-items', container.childElementCount > 0);
+      }
+
+      function handleSlashCommandCompleted(payload) {
+        if (!payload || !pendingSlashCommand || payload.requestId !== pendingSlashCommand.id) return;
+        // A native turn has its own terminal event, which may already have
+        // dispatched the next queue item by the time this acknowledgement lands.
+        if (payload.kind === 'turn') return;
+        var completed = pendingSlashCommand;
+        clearPendingSlashCommand();
+        hideLoading();
+        // Local commands/prefills did not consume these files. Return them to
+        // the draft, never attach them to the following queued amendment.
+        var ids = new Set(state.attachments.map(function(attachment) { return attachment.id; }));
+        (completed.attachments || []).forEach(function(attachment) {
+          if (!ids.has(attachment.id)) { state.attachments.push(attachment); ids.add(attachment.id); }
+        });
+        renderAttachmentPreviews();
+        if (payload.kind === 'prefill' && payload.prefill) {
+          if (!inputEl.value.trim()) {
+            inputEl.value = payload.prefill;
+            autoResizeTextarea();
+            inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+          } else {
+            addSystemMessage('Complete this command when ready: ' + payload.prefill);
+          }
+        } else if (payload.kind === 'error' || payload.success === false) {
+          showError(payload.error || 'The command failed.');
+        } else if (payload.kind === 'action' && payload.success) {
+          drainQueue();
+        }
+      }
+
+      function submitSlashCommand(command, attachments) {
+        var requestId = 'slash-' + Date.now() + '-' + (++slashRequestSequence);
+        pendingSlashCommand = { id: requestId, attachments: attachments.slice() };
+        setProcessing(true);
+        postMessageWithPanelId({ type: 'executeSlashCommand', payload: Object.assign({}, command, {
+          requestId: requestId, settings: state.settings, context: state.context,
+          attachments: attachments.length ? attachments : undefined
+        }) });
+      }
+
+      function enqueueMessage(text, options) {
+        if (!composerAttachmentsReady(options)) { return false; }
         var content = (text || '').trim();
-        if (!content) return false;
+        if (!content && state.attachments.length === 0) return false;
+        var slashSubmission = !(options && options.secondOpinion) && (content.startsWith('/') || options && options.slashCommand);
+        if (!slashSubmission && !parseMentionsForSubmission(content)) { return false; }
         // Attachments belong to the message they were staged for. Capturing
         // them here is what lets the drain hand the queued item ITS files and
         // give the composer back whatever was staged for the draft.
         state.queue.push({
           id: 'q' + (++state.queueSeq),
           text: content,
-          attachments: state.attachments.slice()
+          attachments: state.attachments.slice(),
+          secondOpinion: options && options.secondOpinion,
+          slashCommand: options && options.slashCommand
         });
         state.attachments = [];
         renderAttachmentPreviews();
@@ -10820,6 +11520,26 @@
         if (btn) { e.preventDefault(); removeQueued(btn.getAttribute('data-id')); }
       });
 
+      // Follow-ups belong to the conversation that was running when queued.
+      // Keep them in this webview when navigating away, and restore them on
+      // return; completing an unrelated conversation must never submit them.
+      var conversationQueues = new Map();
+      function switchConversationQueue(conversation) {
+        var previousId = state.conversation && state.conversation.id;
+        var nextId = conversation && conversation.id;
+        if (previousId === nextId) { return; }
+        if (previousId && state.queue.length) {
+          conversationQueues.set(previousId, { items: state.queue, paused: state.queuePaused });
+        } else if (previousId) {
+          conversationQueues.delete(previousId);
+        }
+        var saved = nextId && conversationQueues.get(nextId);
+        state.queue = saved ? saved.items : [];
+        state.queuePaused = saved ? saved.paused : false;
+        if (nextId) { conversationQueues.delete(nextId); }
+        renderQueue();
+      }
+
       function removeQueued(id) {
         state.queue = state.queue.filter(function(q) { return q.id !== id; });
         renderQueue();
@@ -10834,6 +11554,8 @@
           return '<span class="queued-chip" data-id="' + escapeHtml(q.id) + '">' +
                    '<span class="queued-chip-n">' + (i + 1) + '</span>' +
                    '<span class="queued-chip-text">' + escapeHtml(q.text) + '</span>' +
+                   (q.secondOpinion ? '<span class="queued-chip-target">Second opinion · ' +
+                     escapeHtml(getAgentDisplayName(q.secondOpinion.provider) || q.secondOpinion.provider) + '</span>' : '') +
                    // Files ride with the message they were staged for, so the
                    // chip has to say they are there — dropping the chip drops
                    // them, and a silent discard is not a thing to do to a file
@@ -10847,11 +11569,17 @@
         }).join('');
       }
 
-      /** Send the next queued message. Only ever called from responseComplete. */
+      function cancelActiveRequest() {
+        // Hold before posting: a completion already in transit can arrive before
+        // requestCancelled. Keep queued work for an explicit new send.
+        state.queuePaused = true;
+        postMessageWithPanelId({ type: 'cancelRequest' });
+      }
+
+      /** Send the next queued message after completion unless Stop held it. */
       function drainQueue() {
-        if (state.isLoading || state.queue.length === 0) return;
-        var next = state.queue.shift();
-        renderQueue();
+        if (state.queuePaused || state.isLoading || state.queue.length === 0) return;
+        var next = state.queue[0];
         // Phase 2 made the composer live for the whole turn, so by the time a
         // queued item drains there may be a HALF-TYPED DRAFT sitting in it.
         // sendMessage reads and clears inputEl, so the draft is saved across
@@ -10864,20 +11592,52 @@
         var draftAttachments = state.attachments.slice();
         inputEl.value = next.text;
         state.attachments = next.attachments || [];
-        sendMessage();
-        state.attachments = draftAttachments;
-        renderAttachmentPreviews();
-        if (draft) {
+        var accepted;
+        try {
+          accepted = sendMessage({ fromQueue: true, secondOpinion: next.secondOpinion, slashCommand: next.slashCommand });
+        } finally {
+          state.attachments = draftAttachments;
+          renderAttachmentPreviews();
           inputEl.value = draft;
           autoResizeTextarea();
         }
+        if (accepted) { state.queue.shift(); renderQueue(); }
       }
 
-      function sendMessage() {
-        if (dictationRequest) { finishDictation(); return; }
+      function ensureInitialState() {
+        if (initialStateReceived) return true;
+        showToast('Chat settings are still loading. Please try again in a moment.', 'info');
+        return false;
+      }
+
+      function sendMessage(options) {
+        if (!ensureInitialState()) return false;
+        if (!composerAttachmentsReady(options)) { return false; }
+        if (dictationRequest && !(options && (options.fromQueue === true || options.secondOpinion))) { finishDictation(); return false; }
         var content = inputEl.value.trim();
-        if (!content && state.attachments.length === 0) return;
-        if (state.isLoading) return;
+        if (!content && state.attachments.length === 0) return false;
+        if (state.isLoading) return false;
+
+        // Local menu actions, typed settings/help and conversation transfers remain available for
+        // recovery. Unknown and native slash commands become provider turns,
+        // so they need the same preflight as ordinary text. Second opinions
+        // use their own provider and read-only authority.
+        var slash = options && options.slashCommand;
+        var localCommand = slash && slash.commandId
+          ? slash.commandId.indexOf('native:') !== 0
+          : /^\/(mode|agent|model|help|clear|export|import|share)(?:\s|$)/.test(content);
+        if (!(options && options.secondOpinion) && !localCommand && modeUnavailableReason(deriveChatMode())) {
+          showCompatibleModes();
+          return false;
+        }
+
+        var slashSubmission = !(options && options.secondOpinion) && (content.startsWith('/') || options && options.slashCommand);
+        var parsedMentions = slashSubmission ? [] : parseMentionsForSubmission(content);
+        if (!parsedMentions) { return false; }
+
+        // Rejected/empty sends and incoming events do not release a Stop hold.
+        // A new explicit submission resumes the retained queue on completion.
+        if (!(options && options.fromQueue)) { state.queuePaused = false; }
 
         // Hide quick actions when sending a message
         var quickActions = document.getElementById('quick-actions');
@@ -10885,7 +11645,7 @@
           quickActions.innerHTML = '';
         }
 
-        if (content.startsWith('/')) {
+        if (slashSubmission) {
           hideSlashMenu();
           var parts = content.slice(1).split(' ');
           var command = parts[0];
@@ -10894,31 +11654,29 @@
           // is forwarded to the backend as a normal message so Claude Code's
           // native /deep-research, /skill-name, and saved workflows run — the
           // passthrough needs the same send context a normal message carries.
-          postMessageWithPanelId({
-            type: 'executeSlashCommand',
-            payload: { command: command, args: args, settings: state.settings, context: state.context }
-          });
+          submitSlashCommand(options && options.slashCommand || { command: command, args: args }, state.attachments.slice());
           inputEl.value = '';
           inputEl.style.height = 'auto';
-          return;
+          state.attachments = [];
+          renderAttachmentPreviews();
+          return true;
         }
-
-        // Parse @-mentions from content
-        var parsedMentions = parseMentionsFromContent(content);
 
         // Plan 25: the last thing the user actually asked for, so a credential
         // failure can offer "switch agent and retry" instead of making them
         // retype it. Kept in memory only — never persisted, never sent unasked.
         state.lastSentContent = content;
+        var submissionId = options && options.secondOpinion ? undefined : captureComposerSubmission(content, state.attachments);
 
         // Check if brainstorm mode is selected (use activeAgent which is set synchronously)
-        if (state.activeAgent === 'brainstorm') {
+        if (state.activeAgent === 'brainstorm' && !(options && options.secondOpinion)) {
           // In brainstorm mode, ignore agent mentions (brainstorm handles multi-agent)
           // but still pass file mentions
           var fileMentions = parsedMentions.filter(function(m) { return m.type === 'file'; });
           postMessageWithPanelId({
             type: 'sendBrainstormMessage',
             payload: {
+              submissionId: submissionId,
               content: content,
               context: state.context,
               settings: state.settings,
@@ -10930,10 +11688,12 @@
           postMessageWithPanelId({
             type: 'sendMessage',
             payload: {
+              submissionId: submissionId,
               content: content,
               context: state.context,
               settings: state.settings,
               mentions: parsedMentions.length > 0 ? parsedMentions : undefined,
+              secondOpinion: options && options.secondOpinion,
               attachments: state.attachments.length > 0 ? state.attachments : undefined
             }
           });
@@ -10948,6 +11708,7 @@
         // responseStarted (which can be 100-500ms away). This is the fix for
         // "no stop button while the message is processing".
         setProcessing(true);
+        return true;
       }
 
       function addMessage(msg) {
@@ -10957,6 +11718,9 @@
         var div = document.createElement('div');
         div.className = 'message ' + msg.role;
         div.dataset.id = msg.id;
+        // Keep the source on its owned node. Rendered text contains formatting
+        // labels and cannot faithfully reconstruct a question or its files.
+        if (msg.role === 'user') { div._mystiQuestion = msg; }
 
         var attribution = getMessageAttribution(msg);
         if (msg.role === 'assistant' && attribution.provider) { div.dataset.provider = attribution.provider; }
@@ -10983,7 +11747,7 @@
           var rewindCommit = (msg.checkpoint && msg.checkpoint.commit) ? msg.checkpoint.commit : '';
           html += '<button class="message-rewind-btn" data-message-id="' + msg.id + '"' +
             (rewindCommit ? ' data-commit="' + escapeHtml(rewindCommit) + '"' : '') +
-            ' title="Rewind / fork from here">' +
+            ' title="Rewind / fork from here" aria-label="Rewind or fork from this message" aria-haspopup="menu" aria-expanded="false" aria-controls="rewind-menu">' +
             '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 5.5h4v-4"/><path d="M2.9 9.2a5 5 0 1 0 1.3-4.7L2.5 5.5"/></svg>' +
             '</button>';
         }
@@ -10996,7 +11760,7 @@
             var att = msg.attachments[ai];
             if (att.type === 'image') {
               if (att.base64Data) {
-                html += '<img class="message-attachment-img" src="data:' + att.mimeType + ';base64,' + att.base64Data + '" alt="' + escapeHtml(att.fileName) + '" title="' + escapeHtml(att.fileName) + '">';
+                html += '<img class="message-attachment-img" src="' + escapeHtml('data:' + att.mimeType + ';base64,' + att.base64Data) + '" alt="' + escapeHtml(att.fileName) + '" title="' + escapeHtml(att.fileName) + '">';
               } else {
                 html += '<span class="message-attachment-label">' + escapeHtml(att.fileName) + '</span>';
               }
@@ -11014,16 +11778,17 @@
           // components used live — .message-body with interleaved thinking
           // zone / content segments / tool cards, then the unified footer.
           div.appendChild(buildRestoredMessageBody(msg));
-          renderMessageFooter(div, null, attribution, []);
         } else {
           var contentEl = document.createElement('div');
           contentEl.className = 'message-content';
-          contentEl.innerHTML = formatContent(msg.content);
+          contentEl.innerHTML = formatContent(msg.content, { literalHtml: msg.role === 'user' });
           div.appendChild(contentEl);
         }
 
         messagesEl.appendChild(div);
+        if (msg.role === 'assistant') { renderMessageFooter(div, null, attribution, []); }
         messagesEl.scrollTop = messagesEl.scrollHeight;
+        return div;
       }
 
       // Build a restored assistant message's .message-body by replaying
@@ -11069,7 +11834,7 @@
             } else if (segment.type === 'tool') {
               var call = toolCallById[segment.toolCallId];
               if (call) {
-                body.appendChild(buildToolCallElement(call));
+                body.appendChild(buildToolCallElement(call, msg.provider || (state.conversation && state.conversation.provider)));
                 delete toolCallById[segment.toolCallId];
               }
             }
@@ -11077,7 +11842,7 @@
           // Defensive: tool calls not referenced by any segment still render
           (msg.toolCalls || []).forEach(function(call) {
             if (call && call.id && toolCallById[call.id]) {
-              body.appendChild(buildToolCallElement(call));
+              body.appendChild(buildToolCallElement(call, msg.provider || (state.conversation && state.conversation.provider)));
             }
           });
         } else {
@@ -11092,7 +11857,7 @@
             body.appendChild(flatContent);
           }
           (msg.toolCalls || []).forEach(function(call) {
-            if (call) body.appendChild(buildToolCallElement(call));
+            if (call) body.appendChild(buildToolCallElement(call, msg.provider || (state.conversation && state.conversation.provider)));
           });
         }
 
@@ -11266,7 +12031,33 @@
 
       function handleResponseChunkBody(chunk) {
         console.log('[Mysti Webview] Received chunk:', JSON.stringify(chunk));
-        if (chunk.type === 'text') {
+        if (chunk.type === 'progress') {
+          if (!state.isLoading || typeof chunk.content !== 'string' || !chunk.content.trim()) return;
+          var progress = messagesEl.querySelector('.response-progress');
+          if (!progress) {
+            progress = document.createElement('div');
+            progress.className = 'response-progress';
+            progress.setAttribute('role', 'status');
+            progress.setAttribute('aria-live', 'polite');
+            messagesEl.appendChild(progress);
+          }
+          // Status is untrusted plain text, never Markdown or an action.
+          progress.textContent = chunk.content.slice(0, 2000);
+          messagesEl.scrollTop = messagesEl.scrollHeight;
+          return;
+        }
+        if (chunk.type === 'text' || chunk.type === 'thinking') clearProviderProgress();
+        if (chunk.revision && (chunk.type === 'text' || chunk.type === 'thinking')) {
+          renderResponseRevision(chunk.revision);
+          return;
+        }
+        if (chunk.type === 'model_info') {
+          // Response attribution is independent of the user's next model choice.
+          // Do not reset text/tools or create a bubble for metadata alone.
+          if (!state.isLoading || !currentTurnAttribution) return;
+          currentTurnAttribution = { provider: chunk.provider, model: chunk.model, requestedModel: chunk.requestedModel };
+          updateMessageAttributionChip(messagesEl.querySelector('.message.streaming:not([data-brainstorm-synthesis])'), currentTurnAttribution);
+        } else if (chunk.type === 'text') {
           currentResponse += chunk.content;
           // Strip channel markers from display (actions handled by extension side)
           var displayContent = stripChannelMarkers(currentResponse);
@@ -11278,23 +12069,65 @@
         }
       }
 
+      function renderResponseRevision(revision) {
+        var streamingEl = getOrCreateStreamingMessage();
+        var body = streamingEl.querySelector('.message-body');
+        if (!body || !Array.isArray(revision.segments)) { return; }
+        // Keep existing tool cards, edit receipts and their local interaction
+        // state. Only text nodes are rebuilt from the host's corrected segments.
+        Array.from(body.children).filter(function(el) { return el.classList.contains('message-content'); })
+          .forEach(function(el) { el.remove(); });
+        var zone = body.querySelector('.thinking-zone');
+        var expanded = zone && zone.classList.contains('expanded');
+        var zoneNext = zone && zone.nextSibling;
+        if (zone) { zone.remove(); }
+        currentThinking = revision.thinking || '';
+        if (currentThinking) {
+          zone = renderThinkingZone(body, 'streamed', currentThinking);
+          if (zoneNext && zoneNext.parentNode === body) { body.insertBefore(zone, zoneNext); }
+          else { body.insertBefore(zone, body.firstChild); }
+          if (expanded) { zone.classList.add('expanded'); }
+        }
+        var previous = zone && zone.parentNode === body ? zone : null;
+        var textNode = null;
+        currentResponse = '';
+        contentSegmentIndex = 0;
+        revision.segments.forEach(function(segment) {
+          if (segment.type === 'tool') {
+            var tool = Array.from(body.querySelectorAll('.tool-call')).find(function(el) { return el.dataset.id === segment.toolCallId; });
+            if (tool) {
+              previous = tool;
+              var report = Array.from(body.querySelectorAll('.edit-report-card')).find(function(el) { return el.dataset.toolId === segment.toolCallId; });
+              if (report) { previous = report; }
+            }
+            if (textNode) { contentSegmentIndex++; }
+            textNode = null;
+            currentResponse = '';
+          } else if (segment.type === 'text' && segment.content) {
+            if (!textNode) {
+              textNode = document.createElement('div');
+              textNode.className = 'message-content content-segment-' + contentSegmentIndex;
+              body.insertBefore(textNode, previous ? previous.nextSibling : body.firstChild);
+            }
+            currentResponse += segment.content;
+            var display = stripChannelMarkers(currentResponse);
+            textNode.innerHTML = formatContent(display);
+            textNode._markdownSource = display;
+            previous = textNode;
+          }
+        });
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+
       function getOrCreateStreamingMessage() {
         var streamingEl = messagesEl.querySelector('.message.streaming:not([data-brainstorm-synthesis])');
 
         if (!streamingEl) {
-          // Remove loading indicator and reset button states when first streaming content arrives
+          // The first token replaces the waiting dots, but the request is
+          // still running. Keep Stop and follow-up queueing active until a
+          // terminal host event calls setProcessing(false).
           var loading = messagesEl.querySelector('.loading');
           if (loading) loading.remove();
-
-          // Reset loading state and buttons
-          state.isLoading = false;
-          if (sendBtn) {
-            sendBtn.style.display = 'flex';
-            sendBtn.disabled = false;
-          }
-          if (stopBtn) {
-            stopBtn.style.display = 'none';
-          }
 
           streamingEl = document.createElement('div');
           streamingEl.className = 'message assistant streaming';
@@ -11312,7 +12145,7 @@
           // mislabel this is here to end — so the chip shows the agent alone
           // until the stamp lands.
           var liveAttribution = currentTurnAttribution
-            ? { provider: currentTurnAttribution.provider, model: currentTurnAttribution.model || '', participants: currentTurnAttribution.participants }
+            ? { provider: currentTurnAttribution.provider, model: currentTurnAttribution.model || '', requestedModel: currentTurnAttribution.requestedModel, participants: currentTurnAttribution.participants }
             : { provider: state.activeAgent, model: state.settings.model };
           streamingEl.innerHTML = '<div class="message-header"><div class="message-role-container"><span class="message-role assistant">Mysti</span><span class="message-model-info">' + escapeHtml(formatAttributionLabel(liveAttribution)) + '</span></div></div><div class="message-body"></div>';
           messagesEl.appendChild(streamingEl);
@@ -11425,6 +12258,7 @@
         }
 
         segmentEl.innerHTML = formatContent(content);
+        segmentEl._markdownSource = content;
         messagesEl.scrollTop = messagesEl.scrollHeight;
       }
 
@@ -11559,7 +12393,8 @@
           case 'websearch':
             return input.query || '';
           case 'task':
-            return input.description || input.prompt?.substring(0, 50) || '';
+            if (typeof input.description === 'string' && input.description) return input.description;
+            return typeof input.prompt === 'string' ? input.prompt.substring(0, 50) : '';
           case 'todowrite':
             var todos = input.todos || [];
             return todos.length + ' item' + (todos.length !== 1 ? 's' : '');
@@ -11580,13 +12415,31 @@
       // are event-delegated on messagesEl, so cards work in both paths
       // without per-card listeners.
       // ======================================================================
-      function buildToolCallElement(toolCall) {
+      function getToolStatusClass(status) {
+        return ['pending', 'running', 'completed', 'failed', 'proposed', 'unconfirmed'].indexOf(status) !== -1 ? status : 'unknown';
+      }
+
+      function toolDisplayRecord(toolCall, providerId) {
+        var entry = getManifestEntry(providerId);
+        if (toolCall.proposalOnly === true || (entry && entry.capabilities.toolCallsAreProposals === true)) {
+          return Object.assign({}, toolCall, { proposalOnly: true, status: 'proposed' });
+        }
+        return toolCall;
+      }
+
+      function toolStatusLabel(status) { return status === 'unconfirmed' ? 'result unavailable' : status; }
+
+      function buildToolCallElement(toolCall, providerId) {
+        toolCall = toolDisplayRecord(toolCall, providerId);
         // Use actual status from toolCall, default to 'running'
-        var toolStatus = toolCall.status || 'running';
+        var toolStatus = typeof toolCall.status === 'string' ? toolCall.status : toolCall.status === undefined ? 'running' : 'unknown';
+        var toolStatusClass = getToolStatusClass(toolStatus);
 
         var div = document.createElement('div');
-        div.className = 'tool-call ' + toolStatus;
+        div.className = 'tool-call ' + toolStatusClass;
         div.dataset.id = toolCall.id;
+        if (toolCall.historicalOnly) { div.dataset.historicalOnly = 'true'; }
+        if (toolCall.proposalOnly) { div.dataset.proposalOnly = 'true'; }
 
         // Format input for display
         var inputStr = JSON.stringify(toolCall.input || {}, null, 2);
@@ -11610,6 +12463,7 @@
         var truncatedNote = toolCall.truncated
           ? '<span class="tool-call-note" title="Input/output were truncated for storage">truncated</span>'
           : '';
+        if (toolCall.proposalOnly) { truncatedNote += '<span class="tool-call-note tool-call-execution-note">Not executed</span>'; }
 
         div.innerHTML =
           '<div class="tool-call-header">' +
@@ -11618,7 +12472,7 @@
             '<span class="tool-call-name">' + escapeHtml(toolCall.name) + '</span>' +
             '<span class="tool-call-summary">' + escapeHtml(summary) + '</span>' +
             truncatedNote +
-            '<span class="tool-call-status ' + toolStatus + '">' + toolStatus + '</span>' +
+            '<span class="tool-call-status ' + toolStatusClass + '">' + escapeHtml(toolStatusLabel(toolStatus)) + '</span>' +
             '<button class="tool-call-copy" title="Copy to clipboard">' + copySvg + '</button>' +
           '</div>' +
           '<div class="tool-call-details">' +
@@ -11646,6 +12500,7 @@
       }
 
       function handleToolUse(toolCall) {
+        clearProviderProgress();
         // Store tool data for later lookup when result arrives
         // (tool_result events don't include name or input)
         if (toolCall.id && toolCall.name) {
@@ -11690,21 +12545,35 @@
         }
 
         // Append tool call directly to message body (interleaved with content segments)
-        messageBody.appendChild(buildToolCallElement(toolCall));
+        messageBody.appendChild(buildToolCallElement(toolCall, currentTurnAttribution && currentTurnAttribution.provider || state.activeAgent));
         messagesEl.scrollTop = messagesEl.scrollHeight;
       }
 
       function handleToolResult(toolCall) {
+        clearProviderProgress();
         var toolEl = messagesEl.querySelector('.tool-call[data-id="' + toolCall.id + '"]');
         if (toolEl) {
+          toolCall = toolDisplayRecord(toolCall, toolEl.closest('.message').dataset.provider);
+          if (toolEl.dataset.proposalOnly === 'true') { toolCall = Object.assign({}, toolCall, { proposalOnly: true, status: 'proposed' }); }
           // Update status badge
           var statusEl = toolEl.querySelector('.tool-call-status');
-          statusEl.className = 'tool-call-status ' + toolCall.status;
-          statusEl.textContent = toolCall.status;
+          var toolStatus = typeof toolCall.status === 'string' ? toolCall.status : 'unknown';
+          var toolStatusClass = getToolStatusClass(toolStatus);
+          statusEl.className = 'tool-call-status ' + toolStatusClass;
+          statusEl.textContent = toolStatusLabel(toolStatus);
 
           // Add status class to the tool call element for background styling
-          toolEl.classList.remove('running');
-          toolEl.classList.add(toolCall.status);
+          toolEl.classList.remove('pending', 'running', 'completed', 'failed', 'unknown', 'proposed', 'unconfirmed');
+          toolEl.classList.add(toolStatusClass);
+          if (toolCall.proposalOnly) {
+            toolEl.dataset.proposalOnly = 'true';
+            if (!toolEl.querySelector('.tool-call-execution-note')) {
+              var executionNote = document.createElement('span');
+              executionNote.className = 'tool-call-note tool-call-execution-note';
+              executionNote.textContent = 'Not executed';
+              toolEl.querySelector('.tool-call-header').appendChild(executionNote);
+            }
+          }
 
           // Show output if available
           if (toolCall.output) {
@@ -11720,14 +12589,18 @@
           var toolInput = storedData ? storedData.input : toolCall.input;
 
           // For file edit tools, AUGMENT with structured report card below
-          if (isFileEditTool(toolName)) {
+          if (!toolCall.proposalOnly && isFileEditTool(toolName)) {
             var editInfo = parseFileEditInfo(toolName, toolInput || {}, toolCall.output || '');
 
             // Check if edit report card already exists for this tool
             var existingCard = toolEl.parentNode.querySelector('.edit-report-card[data-tool-id="' + toolCall.id + '"]');
             if (!existingCard && editInfo.filePath) {
               // Create and insert edit report card below the tool call
-              var cardHtml = renderEditReportCard(editInfo, currentThinking);
+              var historicalOnly = toolCall.historicalOnly || toolEl.dataset.historicalOnly === 'true';
+              var canRevert = !historicalOnly && toolCall.status === 'completed' && String(toolName).toLowerCase() === 'edit'
+                && typeof toolInput.old_string === 'string' && typeof toolInput.new_string === 'string'
+                && toolInput.new_string.length > 0 && toolInput.replace_all !== true && !toolCall.truncated;
+              var cardHtml = renderEditReportCard(editInfo, currentThinking, canRevert, historicalOnly);
               var cardWrapper = document.createElement('div');
               cardWrapper.innerHTML = cardHtml;
               var cardEl = cardWrapper.firstChild;
@@ -11741,12 +12614,13 @@
               }
 
               // Request actual file line number from extension
-              var searchText = toolInput.old_string || toolInput.content || '';
+              var searchText = toolInput.new_string || toolInput.content || toolInput.old_string || '';
               if (searchText && editInfo.filePath) {
                 postMessageWithPanelId({
                   type: 'getFileLineNumber',
                   filePath: editInfo.filePath,
-                  searchText: searchText
+                  searchText: searchText,
+                  toolCallId: toolCall.id
                 });
               }
 
@@ -12482,9 +13356,10 @@
 
       function handlePermissionAction(requestId, action) {
         var request = state.pendingPermissions.get(requestId);
+        if (!request) return;
         if (action === 'always-allow' && request && (request.forceInteractive || request.remoteOrigin)) return;
         var card = document.querySelector('.permission-card[data-id="' + requestId + '"]');
-        if (!card) return;
+        if (!card || !card.classList.contains('pending')) return;
 
         // Plan 28 Phase 3: this card is no longer waiting on anyone. The
         // extension's `permissionResult` reports {action, allowed} and never
@@ -12598,11 +13473,24 @@
             if (card.parentNode) card.remove();
           }, payload.approved ? 2000 : 3000);
 
+        } else if (payload.targetType === 'plan') {
+          var planContainer = Array.prototype.find.call(document.querySelectorAll('.plan-options-container'), function(candidate) {
+            return candidate.getAttribute('data-synthetic-plan-id') === payload.requestId;
+          });
+          if (!planContainer || planContainer._settled) { return; }
+          settlePlanCards(planContainer);
+          var planTimer = planContainer.querySelector('.plan-semi-auto-timer');
+          if (planTimer) { planTimer.remove(); }
+          var planFeedback = document.createElement('div');
+          planFeedback.className = 'semi-autonomous-feedback';
+          planFeedback.textContent = payload.reasoning || 'AI selected this plan';
+          planContainer.appendChild(planFeedback);
         } else if (payload.targetType === 'question') {
           var container = document.querySelector(
             '.ask-user-question-container[data-tool-call-id="' + payload.requestId + '"]'
           );
           if (!container) return;
+          container._settled = true;
 
           // Remove the timer bar if present
           var timerBar = container.querySelector('.auq-semi-auto-timer');
@@ -12659,13 +13547,12 @@
       }
 
       function handleSemiAutoPlanTimer(payload) {
-        var container = document.querySelector(
-          '.plan-options-container[data-message-id]'
-        );
-        if (!container) return;
-
-        // Store syntheticPlanId on container for skip button
-        container.setAttribute('data-synthetic-plan-id', payload.syntheticPlanId);
+        var container = Array.prototype.find.call(document.querySelectorAll('.plan-options-container'), function(candidate) {
+          return candidate.getAttribute('data-synthetic-plan-id') === payload.syntheticPlanId;
+        });
+        if (!container || container._settled) { return; }
+        var priorTimer = container.querySelector('.plan-semi-auto-timer');
+        if (priorTimer) { priorTimer.remove(); }
 
         // Insert timer bar at the top of the container (same style as question timer)
         var timerBar = document.createElement('div');
@@ -12740,7 +13627,7 @@
       // ========================================
 
       // Render plan options as interactive cards
-      function renderPlanOptions(options, messageId, originalQuery, metaQuestions, syntheticPlanId, origin) {
+      function renderPlanOptions(options, messageId, originalQuery, metaQuestions, syntheticPlanId, origin, conversationId, provider) {
         if (!options || options.length === 0) return null;
 
         // Plan 02 Phase 3.5: native plan moments (exit_plan_mode) reuse this
@@ -12753,6 +13640,8 @@
         container.className = 'plan-options-container' + (isNativePlan ? ' native-plan' : '');
         container.setAttribute('data-message-id', messageId);
         container.setAttribute('data-original-query', originalQuery || '');
+        container._conversationId = conversationId === undefined ? (state.conversation && state.conversation.id) : conversationId;
+        container._provider = provider || state.activeAgent;
         if (syntheticPlanId) {
           container.setAttribute('data-synthetic-plan-id', syntheticPlanId);
         }
@@ -12807,10 +13696,12 @@
         skipBtn.onmouseenter = function() { skipBtn.style.opacity = '1'; };
         skipBtn.onmouseleave = function() { skipBtn.style.opacity = '0.6'; };
         skipBtn.onclick = function() {
+          if (!planCardIsCurrent(container)) { return; }
+          settlePlanCards(container);
           var planId = container.getAttribute('data-synthetic-plan-id') || '';
           postMessageWithPanelId({
             type: 'planOptionsSkipped',
-            payload: { syntheticPlanId: planId }
+            payload: { syntheticPlanId: planId, conversationId: container._conversationId }
           });
           container.remove();
         };
@@ -12819,7 +13710,7 @@
         container.appendChild(header);
 
         options.forEach(function(option, index) {
-          var card = createPlanOptionCard(option, messageId, index);
+          var card = createPlanOptionCard(option, messageId, index, container);
           container.appendChild(card);
         });
 
@@ -12827,7 +13718,7 @@
       }
 
       // Create a single plan option card
-      function createPlanOptionCard(option, messageId, index) {
+      function createPlanOptionCard(option, messageId, index, ownerContainer) {
         var card = document.createElement('div');
         card.className = 'plan-option-card plan-option-collapsed';
         card.setAttribute('data-id', option.id);
@@ -12880,6 +13771,7 @@
             '<button class="plan-execute-btn ask-first" data-mode="ask-before-edit">Ask Before Each Edit</button>' +
             '<button class="plan-execute-btn keep-planning" data-mode="quick-plan">Keep Planning</button>' +
           '</div>' +
+          '<div class="plan-execution-hint hidden" role="status"></div>' +
           '<div class="plan-custom-instructions">' +
             '<button class="custom-instructions-toggle">Add custom instructions</button>' +
             '<div class="custom-instructions-input hidden">' +
@@ -12894,7 +13786,7 @@
             var mode = btn.getAttribute('data-mode');
             var textarea = card.querySelector('.custom-instructions-textarea');
             var customInstructions = textarea ? textarea.value : '';
-            handlePlanOptionSelect(option, messageId, mode, customInstructions);
+            handlePlanOptionSelect(option, messageId, mode, customInstructions, ownerContainer);
           };
         });
 
@@ -12925,7 +13817,7 @@
             e.preventDefault();
             var textarea = card.querySelector('.custom-instructions-textarea');
             var customInstructions = textarea ? textarea.value : '';
-            handlePlanOptionSelect(option, messageId, 'edit-automatically', customInstructions);
+            handlePlanOptionSelect(option, messageId, 'edit-automatically', customInstructions, ownerContainer);
           }
         };
 
@@ -12933,9 +13825,61 @@
       }
 
       // Handle plan option selection
-      function handlePlanOptionSelect(option, messageId, executionMode, customInstructions) {
-        var container = document.querySelector('.plan-options-container[data-message-id="' + messageId + '"]');
-        var originalQuery = container ? container.getAttribute('data-original-query') : '';
+      function planCardIsCurrent(container) {
+        return !!(container && container.isConnected && !container._settled
+          && container._conversationId === (state.conversation && state.conversation.id)
+          && container._provider === state.activeAgent);
+      }
+
+      function renderPlanExecutionOptions() {
+        document.querySelectorAll('.plan-options-container').forEach(function(container) {
+          if (container._settled) return;
+          var current = planCardIsCurrent(container);
+          var askReason = modeUnavailableReason('ask', container._provider);
+          var fullReason = modeUnavailableReason('full', container._provider);
+          var full = deriveChatMode() === 'full';
+          container.querySelectorAll('.plan-execute-btn.ask-first').forEach(function(button) {
+            button.disabled = !current || !!askReason;
+            button.title = askReason;
+          });
+          container.querySelectorAll('.plan-execute-btn.edit-auto').forEach(function(button) {
+            button.disabled = !current || (!!askReason && !!fullReason);
+            button.textContent = full ? 'Execute with Full Access' : askReason ? 'Choose execution mode' : 'Execute Automatically';
+          });
+          container.querySelectorAll('.plan-execute-btn.keep-planning').forEach(function(button) {
+            button.disabled = !current || !!modeUnavailableReason('plan', container._provider);
+          });
+          container.querySelectorAll('.plan-execution-hint').forEach(function(hint) {
+            hint.textContent = !current ? 'Switch back to this plan’s agent to continue.' : fullReason ? fullReason : askReason
+              ? 'Execution requires Full Access, which allows edits, commands, and network access. Choose Full, then execute this plan.'
+              : full ? 'Full Access allows edits, commands, and network access.' : '';
+            hint.classList.toggle('hidden', !hint.textContent);
+          });
+        });
+      }
+
+      function settlePlanCards(container) {
+        var containers = container ? [container] : document.querySelectorAll('.plan-options-container');
+        Array.prototype.forEach.call(containers, function(owner) {
+          owner._settled = true;
+          owner.querySelectorAll('button, textarea').forEach(function(control) { control.disabled = true; });
+        });
+      }
+
+      function handlePlanOptionSelect(option, messageId, executionMode, customInstructions, container) {
+        if (!planCardIsCurrent(container)) { return; }
+        var writing = executionMode === 'edit-automatically' || executionMode === 'ask-before-edit';
+        var executionAccessLevel = executionMode === 'edit-automatically' && deriveChatMode() === 'full'
+          ? 'full-access' : 'ask-permission';
+        var requestedMode = !writing ? 'plan' : executionMode === 'ask-before-edit' ? 'ask'
+          : executionAccessLevel === 'full-access' ? 'full' : 'auto';
+        if (modeUnavailableReason(requestedMode, container._provider)) {
+          renderPlanExecutionOptions();
+          showCompatibleModes();
+          return;
+        }
+        settlePlanCards(container);
+        var originalQuery = container.getAttribute('data-original-query');
 
         // Mark as selected
         var cards = document.querySelectorAll('.plan-option-card');
@@ -12952,7 +13896,10 @@
             selectedPlan: option,
             originalQuery: originalQuery,
             messageId: messageId,
+            syntheticPlanId: container.getAttribute('data-synthetic-plan-id'),
+            conversationId: container._conversationId,
             executionMode: executionMode,
+            ...(writing ? { executionAccessLevel: executionAccessLevel } : {}),
             customInstructions: customInstructions || ''
           }
         });
@@ -12961,6 +13908,7 @@
       // Handle planOptions message from backend
       function handlePlanOptionsMessage(payload) {
         if (!payload.options || payload.options.length === 0) return;
+        if (payload.conversationId !== undefined && payload.conversationId !== (state.conversation && state.conversation.id)) { return; }
 
         // Find the message to attach plan options to
         var messageEl = document.querySelector('.message[data-id="' + payload.messageId + '"]');
@@ -12973,6 +13921,7 @@
         if (messageEl) {
           // Remove any existing plan options
           var existing = messageEl.querySelector('.plan-options-container');
+          if (existing && existing._settled && existing.getAttribute('data-synthetic-plan-id') === payload.syntheticPlanId) { return; }
           if (existing) existing.remove();
 
           // Add new plan options (with optional meta-questions). Native
@@ -12985,10 +13934,13 @@
             payload.originalQuery,
             payload.metaQuestions,
             payload.syntheticPlanId,
-            payload.source ? { source: payload.source, planFilePath: payload.planFilePath || null } : undefined
+            payload.source ? { source: payload.source, planFilePath: payload.planFilePath || null } : undefined,
+            payload.conversationId,
+            payload.provider || messageEl.getAttribute('data-provider') || state.activeAgent
           );
           if (planContainer) {
             messageEl.appendChild(planContainer);
+            renderPlanExecutionOptions();
             messagesEl.scrollTop = messagesEl.scrollHeight;
           }
         }
@@ -13000,7 +13952,12 @@
 
       // Handle native AskUserQuestion tool from Claude Code CLI
       function handleAskUserQuestionMessage(payload) {
-        if (!payload || !payload.questions || payload.questions.length === 0) return;
+        var questions = normalizeQuestionItems(payload && payload.questions);
+        if (!questions || typeof payload.toolCallId !== 'string' || !payload.toolCallId.trim()) {
+          showError('The agent returned an invalid question. Please retry your request.');
+          return;
+        }
+        payload = Object.assign({}, payload, { questions: questions });
 
         // Find most recent assistant message
         var messages = document.querySelectorAll('.message.assistant');
@@ -13028,6 +13985,31 @@
             messagesEl.scrollTop = messagesEl.scrollHeight;
           }
         }
+      }
+
+      // Match the host/native transport schema without partially dropping a
+      // malformed question and accidentally answering a different request.
+      function normalizeQuestionItems(questions) {
+        if (!Array.isArray(questions) || questions.length === 0) { return null; }
+        var normalized = [];
+        for (var index = 0; index < questions.length; index++) {
+          var question = questions[index];
+          if (!question || typeof question !== 'object' || Array.isArray(question)
+            || typeof question.question !== 'string' || !question.question.trim()
+            || (question.header !== undefined && typeof question.header !== 'string')
+            || (question.multiSelect !== undefined && typeof question.multiSelect !== 'boolean')
+            || (question.options !== undefined && !Array.isArray(question.options))) { return null; }
+          var options = question.options || [];
+          for (var optionIndex = 0; optionIndex < options.length; optionIndex++) {
+            var option = options[optionIndex];
+            if (!option || typeof option !== 'object' || Array.isArray(option)
+              || typeof option.label !== 'string' || !option.label.trim()
+              || (option.description !== undefined && typeof option.description !== 'string')) { return null; }
+          }
+          normalized.push({ question: question.question, header: question.header || '', multiSelect: question.multiSelect || false,
+            options: options.map(function(option) { return { label: option.label, description: option.description || '' }; }) });
+        }
+        return normalized;
       }
 
       // Hide question text in the response body that duplicates the interactive card
@@ -13105,6 +14087,10 @@
         skipBtn.className = 'auq-skip-btn';
         skipBtn.textContent = 'Skip';
         skipBtn.onclick = function() {
+          // Navigation/replacement removes the question's owner. A retained
+          // control must neither answer the successor nor settle twice.
+          if (!container.isConnected || container._settled) { return; }
+          container._settled = true;
           postMessageWithPanelId({
             type: 'askUserQuestionSkipped',
             payload: { toolCallId: toolCallId }
@@ -13330,6 +14316,8 @@
       }
 
       function submitAuqAnswers(container, toolCallId) {
+        if (!container.isConnected || container._settled) { return; }
+        container._settled = true;
         // Visual feedback
         container.classList.add('submitted');
 
@@ -13377,6 +14365,7 @@
         var quickActionsContainer = document.getElementById('quick-actions-container');
         if (quickActionsContainer) { quickActionsContainer.classList.toggle('ai-running', on); }
         if (!on) {
+          clearProviderProgress();
           currentResponse = '';
           currentThinking = '';
           contentSegmentIndex = 0;
@@ -13385,6 +14374,7 @@
       }
 
       function showLoading() {
+        clearProviderProgress();
         setProcessing(true);
         // The bottom "thinking" spinner is appended on responseStarted (after the
         // user bubble is rendered) so it stays at the end of the transcript.
@@ -13402,6 +14392,11 @@
         setProcessing(false);
         var loading = messagesEl.querySelector('.loading');
         if (loading) loading.remove();
+      }
+
+      function clearProviderProgress() {
+        var progress = messagesEl.querySelector('.response-progress');
+        if (progress) progress.remove();
       }
 
       // Dynamic suggestions functions (ezorro-style cards)
@@ -13494,7 +14489,8 @@
         var conv = state.conversation || {};
         return {
           provider: (msg && msg.provider) || conv.provider || (state.settings && state.settings.provider) || null,
-          model: (msg && msg.model) || conv.model || (state.settings && state.settings.model) || ''
+          model: (msg && msg.model) || conv.model || (state.settings && state.settings.model) || '',
+          requestedModel: msg && msg.requestedModel
         };
       }
 
@@ -13521,6 +14517,9 @@
         }
         var model = getModelDisplayName(attribution.model);
         var agent = getAgentDisplayName(attribution.provider);
+        if (model && typeof attribution.requestedModel === 'string' && attribution.requestedModel !== attribution.model) {
+          model += ' (requested ' + getModelDisplayName(attribution.requestedModel) + ')';
+        }
         if (!agent) return model;
         if (!model) return agent;
         // Don't repeat an agent whose name IS the model (Ollama-style locals).
@@ -13555,19 +14554,18 @@
         return entry.capabilities.emitsToolResults === false;
       }
 
-      // Mark still-running/pending tool cards inside a finished message as
-      // completed with a "not reported" note — never an eternal spinner.
+      // A finished response is not evidence that an unresolved tool executed.
       function autoResolveRunningToolCards(messageEl) {
         if (!messageEl) return;
         var cards = messageEl.querySelectorAll('.tool-call.running, .tool-call.pending');
         cards.forEach(function(card) {
           card.classList.remove('running');
           card.classList.remove('pending');
-          card.classList.add('completed');
+          card.classList.add('unconfirmed');
           var statusEl = card.querySelector('.tool-call-status');
           if (statusEl) {
-            statusEl.className = 'tool-call-status completed';
-            statusEl.textContent = 'completed';
+            statusEl.className = 'tool-call-status unconfirmed';
+            statusEl.textContent = 'result unavailable';
             statusEl.title = 'This agent does not report tool results';
           }
           var header = card.querySelector('.tool-call-header');
@@ -13637,18 +14635,12 @@
 
         // Plan 28 Phase 6 — a team is a verb. Any finished answer can be put
         // to a different backend without retyping the question. This is a
-        // ROUTER over the @-mention path that already fans out (MentionRouter
-        // has handled two or more agent mentions since Plan 14); it adds no
-        // engine, and it deliberately does NOT synthesise an agreement — see
-        // the note on `/team` below.
-        // Only where a footer is being built anyway. `renderMessageFooter` has a
-        // tested contract that a message with no receipt at all — no usage, no
-        // session, no pills — gets NO footer node, and a bare action row would
-        // put an affordance on replayed and non-answer messages that have no
-        // question above them. Consequence, stated rather than hidden: a
-        // backend that reports neither usage nor a session id offers no Second
-        // opinion. Every backend that reports either one does.
-        if (parts.length === 0) return null;
+        // Resend the original question to one selected respondent, preserving
+        // source and files without dispatching its old @assignments again.
+        // An original question is enough to offer another opinion. Providers
+        // without token/session receipts and restored answers still qualify;
+        // standalone notices with neither a question nor receipt stay bare.
+        if (parts.length === 0 && !questionAbove(messageEl)) return null;
 
         parts.push('<span class="message-footer-action" data-second-opinion="1" ' +
           'role="button" tabindex="0" title="Ask a different agent the same question">Second opinion</span>');
@@ -13665,22 +14657,22 @@
         var el = messageEl && messageEl.previousElementSibling;
         while (el) {
           if (el.classList && el.classList.contains('message') && el.classList.contains('user')) {
-            var body = el.querySelector('.message-content');
-            return body ? (body.textContent || '').trim() : '';
+            return el._mystiQuestion || null;
           }
           el = el.previousElementSibling;
         }
-        return '';
+        return null;
       }
 
       /** Offer the agents that are NOT the one that just answered. */
-      function showSecondOpinionMenu(anchorEl, messageEl) {
+      function showSecondOpinionMenu(anchorEl, messageEl, answeredProvider) {
         var existing = document.getElementById('second-opinion-menu');
         if (existing) { existing.remove(); }
-        var question = questionAbove(messageEl);
-        if (!question) { showToast('Nothing to ask again — no question above this answer.', 'error'); return; }
+        var question = messageEl._mystiQuestion || questionAbove(messageEl);
+        if (!question || !question.id) { showToast('Nothing to ask again — no question above this answer.', 'error'); return; }
+        var questionConversation = state.conversation;
 
-        var answered = (messageEl.getAttribute('data-provider') || '').trim();
+        var answered = (answeredProvider || messageEl.getAttribute('data-provider') || '').trim();
         var menu = document.createElement('div');
         menu.id = 'second-opinion-menu';
         menu.className = 'second-opinion-menu';
@@ -13726,14 +14718,32 @@
           if (!btn) { return; }
           ev.stopPropagation();
           menu.hidePopover();
-          // Straight down the existing @-mention path — no new dispatch route.
-          inputEl.value = '@' + btn.getAttribute('data-short') + ' ' + question;
-          sendMessage();
+          if (state.conversation !== questionConversation || !messageEl.isConnected) { return; }
+          // The action asks the previous question; the composer's current
+          // draft and attachments still belong to the user's next message.
+          var draft = inputEl.value;
+          var draftAttachments = state.attachments;
+          try {
+            inputEl.value = question.content || '';
+            state.attachments = (question.attachments || []).slice();
+            var options = { secondOpinion: { provider: btn.getAttribute('data-agent'), messageId: question.id } };
+            if (state.isLoading) { enqueueMessage(inputEl.value, options); } else { sendMessage(options); }
+          } finally {
+            inputEl.value = draft;
+            state.attachments = draftAttachments;
+            renderAttachmentPreviews();
+            autoResizeTextarea();
+          }
         });
       }
 
       function finalizeStreamingMessage(msg) {
         var streamingEl = messagesEl.querySelector('.message.streaming:not([data-brainstorm-synthesis])');
+        // Some providers deliver only a final message. It must be visible even
+        // when no text/thinking chunk created a streaming bubble first.
+        if (!streamingEl && msg.role === 'assistant') {
+          return addMessage(msg);
+        }
         if (streamingEl) {
           // Remove streaming class from thinking block
           var streamingThinking = streamingEl.querySelector('.thinking-block.streaming-thinking');
@@ -13748,15 +14758,78 @@
           // (post-@-mention-switch values, not the dropdown selection)
           updateMessageAttributionChip(streamingEl, msg);
 
+          // A streamed answer has the same actions as a final-only/restored
+          // answer once its persisted identity is known.
+          var header = streamingEl.querySelector('.message-header');
+          if (header && msg.id && !header.querySelector('.message-copy-btn')) {
+            var copy = document.createElement('button');
+            copy.type = 'button';
+            copy.className = 'message-copy-btn';
+            copy.dataset.messageId = msg.id;
+            copy.title = 'Copy message as Markdown';
+            copy.setAttribute('aria-label', 'Copy message as Markdown');
+            copy.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3z"/></svg>';
+            header.appendChild(copy);
+          }
+
+          // The terminal snapshot may contain results never streamed by the
+          // provider. Preserve existing cards (and their expanded state) while
+          // resolving their actual final status and output.
+          (msg.toolCalls || []).forEach(handleToolResult);
+
           // Re-render all content segments with final markdown
           var messageBody = streamingEl.querySelector('.message-body');
-          if (messageBody && msg.content) {
+          if (messageBody && Array.isArray(msg.segments) && msg.segments.length) {
+            var liveSegments = Array.from(messageBody.querySelectorAll('.message-content'));
+            var textIndex = 0;
+            var previous = null;
+            msg.segments.forEach(function(segment) {
+              if (!segment) return;
+              if (segment.type === 'thinking') {
+                previous = messageBody.querySelector('.thinking-zone') || previous;
+              } else if (segment.type === 'tool') {
+                var tool = Array.from(messageBody.querySelectorAll('.tool-call')).find(function(card) { return card.dataset.id === segment.toolCallId; });
+                if (tool) {
+                  previous = tool;
+                  var report = Array.from(messageBody.querySelectorAll('.edit-report-card')).find(function(card) { return card.dataset.toolId === segment.toolCallId; });
+                  if (report) previous = report;
+                }
+              } else if (segment.type === 'text' && segment.content) {
+                var content = liveSegments[textIndex++];
+                if (!content) {
+                  content = document.createElement('div');
+                  content.className = 'message-content';
+                  messageBody.insertBefore(content, previous ? previous.nextSibling : messageBody.firstChild);
+                }
+                content.innerHTML = formatContent(segment.content);
+                content._markdownSource = segment.content;
+                previous = content;
+              }
+            });
+            liveSegments.slice(textIndex).forEach(function(segment) { segment.remove(); });
+          } else if (messageBody && msg.content) {
             var segments = messageBody.querySelectorAll('.message-content');
-            if (segments.length === 1) {
+            if (segments.length === 0) {
+              // A thinking-only or tool-only stream can still finish with an
+              // answer; retain its activity and append the final text.
+              var finalContent = document.createElement('div');
+              finalContent.className = 'message-content';
+              finalContent.innerHTML = formatContent(msg.content);
+              messageBody.appendChild(finalContent);
+            } else if (segments.length === 1) {
               // Single segment - render full content
               segments[0].innerHTML = formatContent(msg.content);
+            } else {
+              var prefix = Array.from(segments).slice(0, -1).map(function(segment) { return segment._markdownSource || ''; }).join('');
+              if (prefix && msg.content.indexOf(prefix) === 0) {
+                segments[segments.length - 1].innerHTML = formatContent(msg.content.slice(prefix.length));
+              } else {
+                // Legacy flat finals have no ordering metadata. Show their
+                // authoritative text once while retaining the activity cards.
+                segments[0].innerHTML = formatContent(msg.content);
+                Array.from(segments).slice(1).forEach(function(segment) { segment.remove(); });
+              }
             }
-            // For multiple segments, leave them as-is (already rendered during streaming)
           }
         }
         return streamingEl;
@@ -13765,7 +14838,8 @@
       function showError(error) {
         var div = document.createElement('div');
         div.className = 'message error';
-        div.innerHTML = '<div class="message-content" style="color: var(--vscode-errorForeground);">Error: ' + escapeHtml(error) + '</div>';
+        var prefix = /^\s*error:/i.test(String(error == null ? '' : error)) ? '' : 'Error: ';
+        div.innerHTML = '<div class="message-content" style="color: var(--vscode-errorForeground);">' + prefix + escapeHtml(error) + '</div>';
         messagesEl.appendChild(div);
         messagesEl.scrollTop = messagesEl.scrollHeight;
       }
@@ -13810,13 +14884,17 @@
       }
 
       function showAuthError(data) {
-        var div = document.createElement('div');
+        var providerId = data.providerId || '';
+        var div = Array.from(messagesEl.querySelectorAll('.auth-error')).find(function(card) {
+          return card.dataset.authProvider === providerId;
+        }) || document.createElement('div');
         div.className = 'message error auth-error';
+        div.dataset.authProvider = providerId;
         div.innerHTML = '<div class="message-content">' +
           '<div style="color: var(--vscode-errorForeground); margin-bottom: 8px;">' +
             '<strong>Authentication Required</strong>' +
           '</div>' +
-          '<p style="margin: 8px 0;">' + escapeHtml(data.providerName) + ' is not authenticated.</p>' +
+          '<p class="auth-recovery-status" style="margin: 8px 0;">' + escapeHtml(data.providerName) + ' is not authenticated.</p>' +
           '<div style="margin: 12px 0; padding: 8px; background: var(--vscode-textCodeBlock-background); border-radius: 4px; font-family: monospace;">' +
             '<strong>' + (data.apiKeySetup ? 'Configure provider:' : 'To authenticate, run:') + '</strong><br>' +
             '<code style="color: var(--vscode-textPreformat-foreground);">' + escapeHtml(data.authCommand) + '</code>' +
@@ -13832,13 +14910,24 @@
         var authBtn = div.querySelector('#auth-terminal-btn');
         if (authBtn) {
           authBtn.addEventListener('click', function() {
-            vscode.postMessage(data.providerId
+            this.disabled = true;
+            rearmSetupOverlay();
+            if (data.providerId) { showAuthenticationWait(data.providerId); }
+            postMessageWithPanelId(data.providerId
               ? { type: 'authConfirm', payload: { providerId: data.providerId } }
               : { type: 'openTerminal', payload: data.authCommand });
           });
         }
 
         messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+
+      function setAuthRecoveryPending(providerId, pending) {
+        messagesEl.querySelectorAll('.auth-error').forEach(function(card) {
+          if (card.dataset.authProvider !== providerId) return;
+          var button = card.querySelector('#auth-terminal-btn');
+          if (button) button.disabled = pending;
+        });
       }
 
       /**
@@ -13912,7 +15001,34 @@
         scrollToBottom();
       }
 
+      // Drafts are scoped to conversations for this webview's lifetime. They
+      // are intentionally not persisted across disposal or editor shutdown.
+      var conversationDrafts = new Map();
+      function switchConversationDraft(conversation) {
+        var previousId = state.conversation && state.conversation.id;
+        var nextId = conversation && conversation.id;
+        if (previousId === nextId) { return; }
+        cancelComposerAttachmentReads();
+        if (previousId && (inputEl.value || state.attachments.length)) {
+          conversationDrafts.set(previousId, { text: inputEl.value, attachments: state.attachments.slice() });
+        } else if (previousId) {
+          conversationDrafts.delete(previousId);
+        }
+        var draft = (nextId && conversationDrafts.get(nextId)) || { text: '', attachments: [] };
+        if (nextId) { conversationDrafts.delete(nextId); }
+        inputEl.value = draft.text;
+        state.attachments = draft.attachments;
+        clearAutocomplete();
+        renderAttachmentPreviews();
+        autoResizeTextarea();
+      }
+
       function clearMessages() {
+        clearConversationTransfers();
+        pendingStallHandoff = null;
+        var opinionMenu = document.getElementById('second-opinion-menu');
+        if (opinionMenu) { opinionMenu.remove(); }
+        if (typeof clearPendingSlashCommand === 'function') { clearPendingSlashCommand(); }
         subAgentCards.reset();
         messagesEl.innerHTML = '<div class="welcome-container"><div class="welcome-header"><img src="' + LOGO_URI + '" alt="Mysti" class="welcome-logo" /><h2>Welcome to Mysti</h2><p>Your AI coding team. Choose an action or ask anything!</p></div><div class="welcome-suggestions" id="welcome-suggestions"></div><div class="welcome-spread"><h3>Spread the Word</h3><div class="about-links spread-links"><a href="https://github.com/DeepMyst/Mysti" target="_blank" rel="noopener" class="spread-link"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25z"/></svg> Star on GitHub</a><a href="https://marketplace.visualstudio.com/items?itemName=DeepMyst.mysti&ssr=false#review-details" target="_blank" rel="noopener" class="spread-link"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm.93-9.412-1 4.705c-.07.34.029.533.304.533.194 0 .487-.07.686-.246l-.088.416c-.287.346-.92.598-1.465.598-.703 0-1.002-.422-.808-1.319l.738-3.468c.064-.293.006-.399-.287-.399l-.254.008.045-.236 2.101-.574.028.166-.978 4.607z"/><circle cx="8" cy="4.5" r="1"/></svg> Rate on Marketplace</a><a id="share-on-x" href="#" class="spread-link" title="Share on X / Twitter"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg> Share on X</a></div></div></div>';
         renderWelcomeSuggestions();
@@ -13932,6 +15048,21 @@
         var t = Math.round(chars / 4);
         if (t >= 1000) { return '~' + (t / 1000).toFixed(t >= 10000 ? 0 : 1) + 'k'; }
         return '~' + t;
+      }
+
+      // Static browser equivalent of src/utils/contextRange.ts. The browser
+      // conformance suite uses the same raw selection vectors as prompt tests.
+      function formatContextLineRange(item) {
+        var startLine = item.startLine, endLine = item.endLine, endCharacter = item.endCharacter;
+        if (!Number.isSafeInteger(startLine) || !Number.isSafeInteger(endLine) ||
+            startLine < 0 || endLine < startLine ||
+            startLine >= Number.MAX_SAFE_INTEGER || endLine >= Number.MAX_SAFE_INTEGER ||
+            (endCharacter !== undefined && (!Number.isSafeInteger(endCharacter) || endCharacter < 0))) {
+          return undefined;
+        }
+        // Missing end columns retain the explicit legacy endpoint fallback.
+        var lastLine = endCharacter === 0 && endLine > startLine ? endLine : endLine + 1;
+        return (startLine + 1) + '-' + lastLine;
       }
 
       function updateContext(context) {
@@ -13956,8 +15087,8 @@
           // aggregate was already being computed here, just never shown per item.
           var itemChars = item.content ? item.content.length : 0;
           var itemCost = itemChars ? approxTokenLabel(itemChars) : '';
-          var name = getFileName(item.path) +
-            (item.type === 'selection' ? ':' + (item.startLine || '') + '-' + (item.endLine || '') : '');
+          var range = item.type === 'selection' ? formatContextLineRange(item) : undefined;
+          var name = getFileName(item.path) + (range ? ':' + range : '');
           var icon = item.type === 'selection' ? '⌷' : (item.type === 'folder' ? '📁' : '📄');
           return '<div class="context-item' + (on ? '' : ' off') + '" data-id="' + item.id + '">' +
             '<button class="context-item-toggle" data-id="' + item.id + '" aria-pressed="' + on + '" title="' +
@@ -14035,7 +15166,7 @@
       }
       function applyChatMode(id) {
         var def = chatModeById(id);
-        if (!def || IS_HUB) return;
+        if (!def || IS_HUB || modeUnavailableReason(id)) return;
         // Mirrors `authorityForTrust(stop, current)`: a user already on
         // detailed-plan keeps it when they land on Plan, rather than being
         // silently downgraded to quick-plan by a round trip through the pill.
@@ -14057,15 +15188,71 @@
         renderModeOptions();
         syncUnattendedAvailability();
       }
+      function modeUnavailableReason(id, providerId) {
+        var provider = providerId || state.activeAgent;
+        if (provider === 'mysti' || provider === 'brainstorm') { return ''; }
+        var entry = getManifestEntry(provider);
+        var caps = entry && entry.capabilities;
+        if (!caps || !caps._authorityKnown) { return 'Provider capabilities are unavailable. Refresh provider detection or switch agents.'; }
+        if (id === 'plan' && caps.supportsReadOnly === false) { return 'This backend cannot enforce Read Only. Choose Full Access or switch agents.'; }
+        if ((id === 'ask' || id === 'auto') && caps.supportsAskPermission === false) {
+          return 'This backend cannot pause tools for approval. ' + (caps.supportsReadOnly === false
+            ? 'Choose Full Access or switch agents.'
+            : 'Choose Read Only or Full Access, or switch agents.');
+        }
+        return '';
+      }
+
       function renderModeOptions() {
+        renderPlanExecutionOptions();
         var active = deriveChatMode();
         var opts = document.querySelectorAll('#behavior-popup .mode-option');
         for (var i = 0; i < opts.length; i++) {
-          opts[i].classList.toggle('active', opts[i].getAttribute('data-mode') === active);
+          var id = opts[i].getAttribute('data-mode');
+          var unavailable = modeUnavailableReason(id);
+          opts[i].classList.toggle('active', id === active);
+          opts[i].disabled = !!unavailable;
+          opts[i].title = unavailable || '';
         }
+        var hint = document.getElementById('mode-capability-hint');
+        if (hint) {
+          var reason = modeUnavailableReason(active);
+          hint.textContent = reason ? 'Current mode is unavailable. ' + reason : '';
+          hint.classList.toggle('hidden', !reason);
+        }
+        updateBehaviorHint();
+        renderComposerModeNotice();
+      }
+
+      function renderComposerModeNotice() {
+        var notice = document.getElementById('composer-mode-notice');
+        if (!notice) { return; }
+        var active = deriveChatMode();
+        var reason = modeUnavailableReason(active);
+        notice.classList.toggle('hidden', IS_HUB || !reason);
+        if (!reason || IS_HUB) { return; }
+        var entry = getManifestEntry(state.activeAgent);
+        var name = entry ? entry.displayName : 'This agent';
+        var def = chatModeById(active);
+        var canPlan = !modeUnavailableReason('plan');
+        document.getElementById('composer-mode-text').textContent = name + ' cannot use ' + def.label + ' mode. ' +
+          (canPlan ? 'Use Plan to chat without changing files, or choose another mode or agent.' :
+            !modeUnavailableReason('full') ? 'Choose Full to allow edits and commands, or switch agents.' :
+              'Refresh provider detection or switch agents to continue.');
+        document.getElementById('composer-mode-plan').classList.toggle('hidden', !canPlan);
+      }
+
+      function showCompatibleModes() {
+        renderModeOptions();
+        syncUnattendedAvailability();
+        if (!behaviorPopup) { return; }
+        behaviorPopup.classList.remove('hidden');
+        var firstSupported = behaviorPopup.querySelector('.mode-option:not(:disabled)');
+        if (firstSupported) { firstSupported.focus(); }
       }
 
       function updateBehaviorIndicator() {
+        renderComposerModeNotice();
         if (!behaviorIndicator) return;
         var id = deriveChatMode();
         var def = chatModeById(id);
@@ -14081,6 +15268,9 @@
         } else {
           behaviorIndicator.textContent = label;
         }
+        var unavailable = modeUnavailableReason(id);
+        if (unavailable) { behaviorIndicator.textContent += ' · unavailable'; }
+        behaviorIndicator.title = unavailable || (def && def.desc) || '';
       }
 
       /**
@@ -14092,7 +15282,7 @@
         var hint = document.getElementById('popup-autonomy-hint');
         if (!sel) return;
         var id = deriveChatMode();
-        var allowed = (id === 'auto' || id === 'full');
+        var allowed = (id === 'auto' || id === 'full') && !modeUnavailableReason(id);
         sel.disabled = !allowed;
         sel.value = state.autonomyLevel || 'manual';
         if (hint) {
@@ -14105,8 +15295,9 @@
       function updateBehaviorHint() {
         var hint = document.getElementById('behavior-hint');
         if (!hint) return;
-        var def = chatModeById(deriveChatMode());
-        hint.textContent = def ? def.desc : '';
+        var mode = deriveChatMode();
+        var def = chatModeById(mode);
+        hint.textContent = modeUnavailableReason(mode) || (def ? def.desc : '');
       }
 
       /**
@@ -14282,7 +15473,7 @@
        * the number left behind belongs to a DIFFERENT provider's context window,
        * so keeping it on screen is worse than admitting we don't know.
        */
-      function setContextUsageUnavailable() {
+      function setContextUsageUnavailable(reason) {
         state.contextUsage.unavailable = true;
         state.contextUsage.usedTokens = 0;
         state.contextUsage.percentage = 0;
@@ -14293,7 +15484,7 @@
         pieFill.setAttribute('d', '');
         usageText.textContent = 'n/a';
         usageContainer.classList.remove('warning', 'danger', 'threshold-warning');
-        usageContainer.title = 'This backend does not report token usage, so context fill is unknown. Compaction is threshold-driven and stays off for it — use /compact to compact manually.';
+        usageContainer.title = reason || 'This backend does not report token usage, so context fill is unknown. Compaction is threshold-driven and stays off for it — use /compact to compact manually.';
       }
 
       /**
@@ -14454,8 +15645,16 @@
       }
 
       function showSlashMenu(query) {
-        state.slashMenuQuery = query || '';
-        state.slashMenuIndex = 0;
+        var nextQuery = query || '';
+        if (!state.slashMenuVisible || nextQuery !== state.slashMenuQuery) {
+          // An Enter before the new catalog arrives must submit the current
+          // typed command, never a selected row belonging to the old query.
+          state.slashMenuIndex = 0;
+          state.slashMenuItems = [];
+          state.slashMenuSelectedId = null;
+          if (slashMenu) { slashMenu.classList.add('hidden'); }
+        }
+        state.slashMenuQuery = nextQuery;
         state.slashMenuVisible = true;
 
         // Request commands from extension (resolves dynamic values per panel)
@@ -14472,6 +15671,7 @@
         state.slashMenuQuery = '';
         state.slashMenuIndex = 0;
         state.slashMenuItems = [];
+        state.slashMenuSelectedId = null;
         state.sessionPicker = null;
       }
 
@@ -14485,6 +15685,8 @@
         // Plan 29: the shape catalog rides with the menu so the picker can gate
         // Run and price the session without another round trip.
         if (data && data.sessions) state.sessionCatalog = data.sessions;
+        // Catalog requests may finish after Enter, Escape or a menu click.
+        if (!state.slashMenuVisible) return;
 
         // Picking agents for a session takes over the same menu — the row
         // anatomy is identical, the icon column just holds a checkbox.
@@ -14520,6 +15722,24 @@
         var sortedSections = data.sections.slice().sort(function(a, b) {
           return a.order - b.order;
         });
+        sortedSections.forEach(function(section) {
+          (grouped[section.id] || []).forEach(function(cmd) { flatItems.push(cmd); });
+        });
+        state.slashMenuItems = flatItems;
+        // Exact slash names take precedence over descriptive substring hits:
+        // typing /clear means the command, even though "Clear context" occurs
+        // in an earlier section. An explicit arrow choice remains authoritative
+        // across asynchronous catalog refreshes, keyed by ID rather than index.
+        var chosenIndex = state.slashMenuSelectedId
+          ? flatItems.findIndex(function(cmd) { return cmd.id === state.slashMenuSelectedId; }) : -1;
+        if (chosenIndex < 0) {
+          state.slashMenuSelectedId = null;
+          chosenIndex = query.trim() ? flatItems.findIndex(function(cmd) {
+            return String(cmd.label || '').toLowerCase() === '/' + query.trim();
+          }) : -1;
+        }
+        state.slashMenuIndex = chosenIndex >= 0 ? chosenIndex : 0;
+        var nextIndex = 0;
 
         sortedSections.forEach(function(section) {
           var cmds = grouped[section.id];
@@ -14528,7 +15748,7 @@
           html += '<div class="slash-menu-section-header">' + escapeHtml(section.label) + '</div>';
 
           cmds.forEach(function(cmd) {
-            var globalIdx = flatItems.length;
+            var globalIdx = nextIndex++;
             var selectedClass = globalIdx === state.slashMenuIndex ? ' selected' : '';
 
             var iconHtml = cmd.icon
@@ -14558,12 +15778,8 @@
               + '</span>'
               + rightHtml
               + '</div>';
-
-            flatItems.push(cmd);
           });
         });
-
-        state.slashMenuItems = flatItems;
 
         if (flatItems.length === 0) {
           sectionsEl.innerHTML = '';
@@ -14784,6 +16000,7 @@
 
       /** Send the picked session; the brief is whatever is in the composer. */
       function startPickedSession() {
+        if (!ensureInitialState()) return;
         var picker = state.sessionPicker;
         if (!picker) return;
         var agentIds = sessionPickedIds();
@@ -14797,12 +16014,14 @@
         brief = brief.replace(/^\/[\w-]+\s*/, '').trim();
 
         var shapeId = picker.shape.id;
+        var submissionId = captureComposerSubmission('/' + shapeId + (brief ? ' ' + brief : ''), []);
         hideSlashMenu();
         if (inputEl) { inputEl.value = ''; inputEl.style.height = 'auto'; }
 
         postMessageWithPanelId({
           type: 'startSession',
           payload: {
+            submissionId: submissionId,
             shape: shapeId,
             agentIds: agentIds,
             brief: brief,
@@ -14817,6 +16036,8 @@
       var ORIGIN_LABELS = { project: 'project', user: 'user', agent: 'agent' };
 
       function executeSlashMenuItem(cmd) {
+        if (!ensureInitialState()) return;
+        if (dictationRequest) { finishDictation(); return; }
         // A session command does not run on pick — it asks who should answer.
         // The menu stays open and becomes the agent list; nothing is dispatched
         // until Run, because who answers IS the decision the command is for.
@@ -14824,6 +16045,8 @@
           openSessionPicker(cmd.id);
           return;
         }
+
+        if (cmd.action !== 'external' && !composerAttachmentsReady()) { return; }
 
         hideSlashMenu();
         var inputEl = document.getElementById('message-input');
@@ -14845,16 +16068,14 @@
         // pick used to be silently undeliverable while typing the same name
         // worked. `nativeName` lets the extension resolve it as that backend's
         // command rather than guessing from the label.
-        postMessageWithPanelId({
-          type: 'executeSlashCommand',
-          payload: {
-            commandId: cmd.id,
-            command: cmd.nativeName || undefined,
-            args: '',
-            settings: state.settings,
-            context: state.context
-          }
-        });
+        var command = { commandId: cmd.id, command: cmd.nativeName || undefined, args: '' };
+        var commandText = '/' + (cmd.nativeName || cmd.id);
+        if (state.isLoading) {
+          enqueueMessage(commandText, { slashCommand: command });
+        } else {
+          inputEl.value = commandText;
+          sendMessage({ slashCommand: command });
+        }
       }
 
       function updateSlashMenuSelection() {
@@ -15497,7 +16718,7 @@
         return html;
       }
 
-      function renderEditReportCard(editInfo, thinkingContent) {
+      function renderEditReportCard(editInfo, thinkingContent, canRevert, historicalOnly) {
         var actionClass = editInfo.action;
         var actionLabel = editInfo.action.charAt(0).toUpperCase() + editInfo.action.slice(1);
         var bullet = '●';
@@ -15560,7 +16781,8 @@
 
         // Actions
         html += '<div class="edit-report-actions">' +
-          '<button class="edit-report-btn edit-report-btn-revert" title="Revert changes (git checkout)">Revert</button>' +
+          '<button class="edit-report-btn edit-report-btn-revert"' + (canRevert ? '' : ' disabled') + ' title="' +
+            (historicalOnly ? 'Imported history cannot revert workspace files' : canRevert ? 'Revert this edit while preserving other changes' : 'Automatic revert is unavailable for this tool result; review the file and undo manually') + '">Revert</button>' +
           '<button class="edit-report-btn edit-report-btn-copy" title="Copy file path">Copy path</button>' +
           '<button class="edit-report-btn edit-report-btn-open" title="Open file in editor">Open file</button>' +
         '</div>';
@@ -15609,13 +16831,13 @@
         return html;
       }
 
-      function formatContent(content) {
+      function formatContent(content, options) {
         if (!content) return '';
 
         // Use marked for full markdown parsing if available
         if (typeof marked !== 'undefined') {
           try {
-            var html = renderMarkdownSafe(content);
+            var html = renderMarkdownSafe(content, options);
 
             // Schedule syntax highlighting and mermaid rendering
             setTimeout(function() {
@@ -15676,15 +16898,19 @@
           e.stopPropagation();
           var toolCall = copyBtn.closest('.tool-call');
           if (toolCall && toolCall.dataset.summary) {
-            postMessageWithPanelId({
-              type: 'copyToClipboard',
-              payload: toolCall.dataset.summary
-            });
-            // Visual feedback
-            copyBtn.classList.add('copied');
-            setTimeout(function() {
-              copyBtn.classList.remove('copied');
-            }, 1500);
+            requestConversationTransfer('copyToClipboard', { text: toolCall.dataset.summary }, copyBtn);
+          }
+          return;
+        }
+
+        // These buttons are generated after Markdown sanitization. Only the
+        // code in this block is copied; no model-supplied payload is evaluated.
+        var codeCopyBtn = e.target.closest('.message-code-copy');
+        if (codeCopyBtn && messagesEl.contains(codeCopyBtn)) {
+          var codeBlock = codeCopyBtn.closest('.message-code-block');
+          var code = codeBlock && codeBlock.querySelector('pre > code');
+          if (code) {
+            requestConversationTransfer('copyToClipboard', { text: code.textContent }, codeCopyBtn);
           }
           return;
         }
@@ -15695,15 +16921,7 @@
           e.stopPropagation();
           var messageId = msgCopyBtn.dataset.messageId;
           if (messageId) {
-            postMessageWithPanelId({
-              type: 'copyMessageMarkdown',
-              payload: { messageId: messageId }
-            });
-            // Visual feedback
-            msgCopyBtn.classList.add('copied');
-            setTimeout(function() {
-              msgCopyBtn.classList.remove('copied');
-            }, 1500);
+            requestConversationTransfer('copyMessageMarkdown', { messageId: messageId }, msgCopyBtn);
           }
           return;
         }
@@ -15785,16 +17003,7 @@
         if (editReportCopyBtn) {
           var editCard = editReportCopyBtn.closest('.edit-report-card');
           if (editCard && editCard.dataset.filePath) {
-            postMessageWithPanelId({
-              type: 'copyToClipboard',
-              payload: editCard.dataset.filePath
-            });
-            // Visual feedback
-            var originalText = editReportCopyBtn.textContent;
-            editReportCopyBtn.textContent = 'Copied!';
-            setTimeout(function() {
-              editReportCopyBtn.textContent = originalText;
-            }, 1500);
+            requestConversationTransfer('copyToClipboard', { text: editCard.dataset.filePath }, editReportCopyBtn);
           }
           return;
         }
@@ -15818,12 +17027,12 @@
         var editReportRevertBtn = e.target.closest('.edit-report-btn-revert');
         if (editReportRevertBtn) {
           var editCard = editReportRevertBtn.closest('.edit-report-card');
-          if (editCard && editCard.dataset.filePath) {
+          if (editCard && editCard.dataset.filePath && editCard.dataset.toolId && !editReportRevertBtn.disabled) {
             editReportRevertBtn.textContent = 'Reverting...';
             editReportRevertBtn.disabled = true;
             postMessageWithPanelId({
               type: 'revertFileEdit',
-              payload: { path: editCard.dataset.filePath }
+              payload: { path: editCard.dataset.filePath, toolCallId: editCard.dataset.toolId }
             });
           }
           return;
@@ -15870,9 +17079,10 @@
         if (!card) return;
 
         var filePath = card.dataset.filePath;
+        if (!card.dataset.toolId) return;
         postMessageWithPanelId({
           type: 'revertFileEdit',
-          payload: { path: filePath }
+          payload: { path: filePath, toolCallId: card.dataset.toolId }
         });
 
         // Visual feedback
@@ -15911,5 +17121,8 @@
           console.error('Failed to expand edit report diff:', e);
         }
       }
+      // Signal only after the message listener and controls exist. Host-side
+      // initial state must not race script download or a webview reload.
+      postMessageWithPanelId({ type: 'webviewReady', payload: { documentId: String(Date.now()) + ':' + Math.random().toString(36).slice(2) } });
     })();
   

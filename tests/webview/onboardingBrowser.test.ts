@@ -22,6 +22,12 @@ import * as os from 'os';
 import * as path from 'path';
 import type { Browser, Page } from 'playwright';
 import { composeChatHtml, INITIAL_STATE } from './chatPageHtml';
+import { ProviderRegistry } from '../../src/providers/ProviderRegistry';
+import { buildProviderManifestPayload } from '../../src/providers/base/ProviderManifest';
+
+// Construct the shipped registry without initializing providers or probing the
+// machine. Wizard coverage must follow registrations, not a second ID list.
+const registry = new ProviderRegistry({ subscriptions: [], globalState: { get: () => undefined }, secrets: {} } as any);
 
 // Each test boots its own multi-MB panel page; under a full parallel run that
 // alone can pass the 5 s default, which is load, not a defect.
@@ -48,7 +54,7 @@ async function panel(initial: Record<string, unknown> = {}): Promise<Page> {
   const file = path.join(dir, 'chat.html');
   fs.writeFileSync(file, composeChatHtml(), 'utf8');
   await pg.goto(`file://${file}`, { waitUntil: 'load' });
-  await send(pg, { type: 'initialState', payload: { ...INITIAL_STATE, ...initial } });
+  await send(pg, { type: 'initialState', payload: { ...INITIAL_STATE, providerManifest: buildProviderManifestPayload(registry), ...initial } });
   await pg.waitForSelector('#init-loading-overlay.hidden', { state: 'attached' });
   return pg;
 }
@@ -61,6 +67,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await browser?.close();
+  registry.dispose();
   for (const d of dirs) { fs.rmSync(d, { recursive: true, force: true }); }
 });
 
@@ -99,12 +106,62 @@ const cardIds = (pg: Page, sel: string) =>
   pg.$$eval(sel, (c) => c.map((x) => x.getAttribute('data-provider')));
 
 describe('wizard step 1', () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('offers every registered ready provider exactly once and selects its own identity', async () => {
+    const pg = await panel();
+    const providers = registry.getAll().map(provider => ({
+      providerId: provider.id, installed: true, authenticated: true,
+      supportsAutoInstall: provider.capabilities.supportsAutoInstall,
+    }));
+    await wizard(pg, { providers, anyReady: true });
+    expect((await cardIds(pg, '#wizard-found-list .provider-card')).sort()).toEqual(registry.getIds().sort());
+    for (const provider of providers) {
+      await pg.locator(`#wizard-found-list .provider-card[data-provider="${provider.providerId}"] .provider-action-btn`).click();
+    }
+    expect((await posted(pg)).filter(message => message.type === 'selectProvider').map(message => message.payload.providerId))
+      .toEqual(providers.map(provider => provider.providerId));
+  });
+
+  it.skipIf(CHROMIUM_UNAVAILABLE)('connects MiniMax through authentication without installing a CLI, then makes it selectable', async () => {
+    const pg = await panel();
+    pg.setDefaultTimeout(5_000);
+    const provider = registry.get('minimax')!;
+    const discovery = await provider.discoverCli();
+    const status = {
+      providerId: provider.id, installed: discovery.found, authenticated: false,
+      supportsAutoInstall: provider.capabilities.supportsAutoInstall,
+    };
+    await wizard(pg, { providers: [status] });
+    const card = pg.locator('#wizard-found-list .provider-card[data-provider="minimax"]');
+    expect(await card.count()).toBe(1);
+    expect(await card.locator('.provider-status').getAttribute('data-status')).toBe('not-authenticated');
+    expect(await card.locator('.provider-action-btn').getAttribute('data-action')).toBe('auth');
+    await card.locator('.provider-action-btn').click();
+    expect((await posted(pg)).filter(message => message.type === 'startProviderSetup')).toEqual([
+      expect.objectContaining({ panelId: 'sidebar', payload: { providerId: 'minimax', autoInstall: false } }),
+    ]);
+    expect((await posted(pg)).some(message => message.type === 'requestProviderInstallInfo' || message.type === 'openTerminal')).toBe(false);
+
+    await send(pg, { type: 'authPrompt', payload: { providerId: 'minimax', displayName: 'MiniMax', message: 'Sign in to MiniMax to continue' } });
+    await pg.locator('#auth-confirm-btn').click();
+    expect((await posted(pg)).filter(message => message.type === 'authConfirm')).toEqual([
+      expect.objectContaining({ panelId: 'sidebar', payload: { providerId: 'minimax' } }),
+    ]);
+    await send(pg, { type: 'setupComplete', payload: { providerId: 'minimax' } });
+    await send(pg, { type: 'wizardStatus', payload: { providers: [{ ...status, authenticated: true }], anyReady: true, npmAvailable: true } });
+    expect(await card.locator('.provider-status').getAttribute('data-status')).toBe('ready');
+    await card.locator('.provider-action-btn').click();
+    expect((await posted(pg)).filter(message => message.type === 'selectProvider')).toEqual([
+      expect.objectContaining({ panelId: 'sidebar', payload: { providerId: 'minimax' } }),
+    ]);
+    expect(await pg.locator('#wizard-next-btn').isEnabled()).toBe(true);
+  });
+
   it.skipIf(CHROMIUM_UNAVAILABLE)('puts found CLIs first, suggestions next, the rest behind See all', async () => {
     const pg = await panel();
     await wizard(pg, { providers: PROVIDERS(['openai-codex'], []) });
     expect(await cardIds(pg, '#wizard-found-list .provider-card')).toEqual(['openai-codex']);
     expect(await cardIds(pg, '#wizard-recommended .provider-card')).toEqual(['claude-code', 'google-gemini', 'ollama']);
-    expect(await pg.$$eval('#wizard-all .provider-card', (c) => c.length)).toBe(11);
+    expect(await pg.$$eval('#wizard-all .provider-card', (c) => c.length)).toBe(registry.getIds().length - 4);
     expect(await pg.isVisible('#wizard-found')).toBe(true);
     expect(errors).toEqual([]);
   });

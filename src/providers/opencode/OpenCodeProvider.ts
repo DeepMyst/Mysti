@@ -12,10 +12,12 @@
  */
 
 import * as vscode from 'vscode';
+import { showAuthenticationInput } from '../base/authenticationInput';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { BaseCliProvider, type PanelSessionState } from '../base/BaseCliProvider';
+import { allowsUnrestrictedNativeTools } from '../base/NativeApprovalPolicy';
 import type {
   CliDiscoveryResult,
   AuthConfig,
@@ -26,11 +28,12 @@ import type {
   StreamChunk,
   ProviderConfig,
   AuthStatus,
-  ModelInfo, ContextItem, Conversation, AgentConfiguration, Attachment
+  ModelInfo, ContextItem, Conversation, AgentConfiguration, Attachment, UsageStats
 } from '../../types';
 import { OpenCodeRemote, remoteConnection, remoteSecretKey } from './OpenCodeRemote';
 import { validateModelName } from '../../utils/validation';
 import { normalizeToolName, toolKind } from '../../utils/toolNames';
+import { hasUsageSignal } from '../../services/TokenAccounting';
 
 /**
  * Per-panel session state for OpenCode, extending base with tool call tracking.
@@ -38,7 +41,8 @@ import { normalizeToolName, toolKind } from '../../utils/toolNames';
 export interface OpenCodeSessionState extends PanelSessionState {
   activeToolCalls: Map<string, { id: string; name: string; input: Record<string, unknown> }>;
   completedToolCalls: Set<string>;
-  lastUsageStats: { input_tokens: number; output_tokens: number } | null;
+  lastUsageStats: UsageStats | null;
+  lastContextUsageStats?: UsageStats | null;
 }
 
 /**
@@ -81,6 +85,8 @@ export class OpenCodeProvider extends BaseCliProvider {
   readonly id = 'opencode';
   readonly displayName = 'OpenCode';
 
+  protected override captureDetachedToolProcesses(): boolean { return true; }
+
   readonly config: ProviderConfig = {
     name: 'opencode',
     displayName: 'OpenCode',
@@ -96,6 +102,8 @@ export class OpenCodeProvider extends BaseCliProvider {
   };
 
   private readonly _cliCapabilities: ProviderCapabilities = {
+    supportsAskPermission: false,
+    supportsReadOnly: false,
     supportsStreaming: true,
     supportsThinking: true,
     supportsToolUse: true,
@@ -110,16 +118,17 @@ export class OpenCodeProvider extends BaseCliProvider {
     // Plan 02 Phase 1 capability matrix
     thinkingStyle: 'complete-blocks',
     thinkingLevelEffective: false,
-    planMode: 'detected',
+    planMode: 'none',
     sessionKind: 'cli-resume',
     nativeInstructionFile: 'AGENTS.md',  // loaded by the CLI itself; Mysti does not resend it
     emitsToolResults: true,
     emitsUsage: true,
-    usageConvention: 'none',   // step-finish tokens are flat input/output.
+    usageConvention: 'anthropic', // OpenCode normalizes backends into disjoint input/cache buckets.
     modelSelection: 'custom-only'  // provider/model free-form — no meaningful static dropdown
   };
 
   private readonly _remote = new OpenCodeRemote(this._extensionContext.secrets);
+  private readonly _usageSteps = new WeakMap<PanelSessionState, Set<string>>();
   private _remoteHost?: NativeApprovalHost;
   private get remoteEnabled(): boolean { return !!vscode.workspace.getConfiguration('mysti').get<string>('opencodeEndpoint', '').trim(); }
   private connection() {
@@ -127,35 +136,50 @@ export class OpenCodeProvider extends BaseCliProvider {
     return remoteConnection(config.get<string>('opencodeEndpoint', ''), config.get<string>('opencodeRemoteDirectory', ''), config.get<string>('opencodeRemoteUsername', 'opencode'));
   }
   get capabilities(): ProviderCapabilities {
-    return this.remoteEnabled ? { ...this._cliCapabilities, supportsAutoInstall: false, supportsNativeApproval: true,
+    return this.remoteEnabled ? { ...this._cliCapabilities, supportsAutoInstall: false, supportsNativeApproval: true, supportsAskPermission: true,
+      supportsReadOnly: true, planMode: 'detected',
       supportsImages: false, supportsFileAttachments: false, supportsSessions: false, sessionKind: 'prompt-history',
-      modelSelection: 'full', thinkingStyle: 'streamed', emitsUsage: false } : this._cliCapabilities;
+      modelSelection: 'full', thinkingStyle: 'streamed', emitsUsage: false, usageConvention: 'none' } : this._cliCapabilities;
   }
   override setNativeApprovalHost(host: NativeApprovalHost | undefined): void { super.setNativeApprovalHost(host); this._remoteHost = host; }
-  get configureAuthentication(): (() => Promise<AuthStatus>) | undefined {
+  get configureAuthentication(): ((signal?: AbortSignal) => Promise<AuthStatus>) | undefined {
     if (!this.remoteEnabled) { return undefined; }
-    return async () => {
+    return async (signal?: AbortSignal) => {
+      const cancelled = (): AuthStatus => ({ authenticated: false, error: 'Setup cancelled.' });
+      if (signal?.aborted) { return cancelled(); }
       const c = this.connection();
-      const password = await vscode.window.showInputBox({ title: 'OpenCode server password', password: true,
-        prompt: 'OPENCODE_SERVER_PASSWORD for ' + c.endpoint + '. Leave empty for a server without authentication.', ignoreFocusOut: true });
-      if (password === undefined) { return { authenticated: false, error: 'Setup cancelled.' }; }
+      const password = await showAuthenticationInput({ title: 'OpenCode server password', password: true,
+        prompt: 'OPENCODE_SERVER_PASSWORD for ' + c.endpoint + '. Leave empty for a server without authentication.', ignoreFocusOut: true }, signal);
+      if (signal?.aborted || password === undefined) { return cancelled(); }
       if (password) { await this._extensionContext.secrets.store(remoteSecretKey(c), password); }
       else { await this._extensionContext.secrets.delete(remoteSecretKey(c)); }
-      return this.checkAuthentication();
+      if (signal?.aborted) { return cancelled(); }
+      const status = await this.checkAuthentication();
+      return signal?.aborted ? cancelled() : status;
     };
   }
   override getSlashCommands(panelId?: string) { return this.remoteEnabled ? [] : super.getSlashCommands(panelId); }
   override cancelCurrentRequest(panelId?: string): void { this._remote.cancel(panelId); super.cancelCurrentRequest(panelId); }
   override dispose(): void { this._remote.cancel(); super.dispose(); }
   override async *sendMessage(content: string, context: ContextItem[], settings: Settings, conversation: Conversation | null,
-    persona?: PersonaConfig, panelId?: string, providerManager?: unknown, agentConfig?: AgentConfiguration, attachments?: Attachment[]): AsyncGenerator<StreamChunk> {
-    if (!this.remoteEnabled) { yield* super.sendMessage(content, context, settings, conversation, persona, panelId, providerManager, agentConfig, attachments); return; }
+    persona?: PersonaConfig, panelId?: string, providerManager?: unknown, agentConfig?: AgentConfiguration, attachments?: Attachment[],
+    resolveInput?: import('../base/IProvider').ProviderInputResolver): AsyncGenerator<StreamChunk> {
+    if (resolveInput && !resolveInput()) { return; }
+    if (!this.remoteEnabled) {
+      this._assertCliPermissionSupport(settings);
+      yield* super.sendMessage(content, context, settings, conversation, persona, panelId, providerManager, agentConfig, attachments, resolveInput);
+      return;
+    }
     try {
       if (attachments?.length) { throw new Error('OpenCode remote mode supports text context, but not local file or image attachments.'); }
       const session = this._getSession(panelId);
       const model = this._getEffectiveModel(settings);
       yield* this._remote.send(this.connection(), session.panelId, settings,
-        () => this.buildPromptAsync(content, context, conversation, settings, persona, agentConfig, undefined, session.channelSystemContext), model, this._remoteHost);
+        async () => {
+          if (!resolveInput) { return this.buildPromptAsync(content, context, conversation, settings, persona, agentConfig, undefined, session.channelSystemContext); }
+          const render = await this.preparePromptRenderer(conversation, settings, persona, agentConfig, undefined, session.channelSystemContext);
+          return () => { const input = resolveInput(); return input ? render(input.content, input.context) : undefined; };
+        }, model, this._remoteHost);
     } catch (error) { yield { type: 'error', content: error instanceof Error ? error.message : String(error) }; }
   }
 
@@ -172,6 +196,7 @@ export class OpenCodeProvider extends BaseCliProvider {
       activeToolCalls: new Map(),
       completedToolCalls: new Set(),
       lastUsageStats: null,
+      lastContextUsageStats: null,
     };
   }
 
@@ -302,6 +327,8 @@ export class OpenCodeProvider extends BaseCliProvider {
   }
 
   protected buildCliArgs(settings: Settings, session: PanelSessionState): string[] {
+    this._assertCliPermissionSupport(settings);
+    this._resetCliTurn(session as OpenCodeSessionState);
     // OpenCode uses: opencode run --format json [--model <model>] [--session <id>] [--agent <agent>]
     // Prompt is sent via stdin
     const args: string[] = [
@@ -316,8 +343,8 @@ export class OpenCodeProvider extends BaseCliProvider {
       args.push('-m', effectiveModel);
     }
 
-    // Map Mysti modes to OpenCode agents
-    this._addModeFlags(args, settings);
+    // Only explicitly unrestricted authority is supported by this CLI transport.
+    args.push('--agent', 'build');
 
     // Session resume
     if (session.sessionId) {
@@ -334,22 +361,13 @@ export class OpenCodeProvider extends BaseCliProvider {
     return undefined;
   }
 
-  /**
-   * Map Mysti operation modes to OpenCode agent modes
-   */
-  private _addModeFlags(args: string[], settings: Settings): void {
-    const { mode, accessLevel } = settings;
-
-    // Plan modes or read-only → use plan agent (read-only analysis)
-    if (mode === 'quick-plan' || mode === 'detailed-plan' || accessLevel === 'read-only') {
-      args.push('--agent', 'plan');
-      console.log('[Mysti] OpenCode: Using plan agent (read-only)');
-      return;
+  private _assertCliPermissionSupport(settings: Settings): void {
+    // Native Plan permits shell tools; configured agent and resumed-session
+    // rules can override global permission settings. The CLI has no final
+    // per-request policy channel equivalent to our remote session transport.
+    if (!allowsUnrestrictedNativeTools(settings)) {
+      throw new Error('OpenCode CLI cannot enforce Plan, Read Only, or approval-based modes safely. Use an OpenCode remote server with native approvals, choose another provider, or explicitly select Edit Automatically with Full Access.');
     }
-
-    // Default: use build agent (full access)
-    args.push('--agent', 'build');
-    console.log(`[Mysti] OpenCode: Using build agent [mode=${mode}, access=${accessLevel}]`);
   }
 
   /**
@@ -392,9 +410,17 @@ export class OpenCodeProvider extends BaseCliProvider {
         console.log('[Mysti] OpenCode: Session ID:', data.sessionID);
       }
 
+      // Current CLI tool_use events contain a complete native ToolPart, often
+      // already terminal. Keep the older flat events and string-state parts below.
+      if (data.part?.type === 'tool' && (data.type === 'tool_use' || data.type === 'tool_result'
+        || (data.type === 'message.part.updated' && typeof data.part.state === 'object'))) {
+        return this._nativeToolPart(data.part, ocSession);
+      }
+
       switch (data.type) {
         // Step start — emit session_active on first event
         case 'step_start':
+          ocSession.lastContextUsageStats = null;
           if (data.sessionID && !session.sessionId) {
             return { type: 'session_active', sessionId: data.sessionID };
           }
@@ -406,6 +432,10 @@ export class OpenCodeProvider extends BaseCliProvider {
             return { type: 'text', content: data.part.text };
           }
           return null;
+
+        case 'reasoning':
+          return typeof data.part?.text === 'string' && data.part.text
+            ? { type: 'thinking', content: data.part.text } : null;
 
         // Incremental part updates (thinking, tool use, text deltas)
         case 'message.part.updated': {
@@ -428,8 +458,8 @@ export class OpenCodeProvider extends BaseCliProvider {
 
             case 'tool': {
               // Normalize OpenCode's lowercase native names (bash, edit,
-              // write, patch, ...) to the canonical names the permission
-              // gate classifies — the gate is the sole enforcement point.
+              // write, patch, ...) for consistent display and classification.
+              // CLI notifications cannot provide native approval.
               const toolName = normalizeToolName(part.name || '');
               const toolId = part.id || `tool-${Date.now()}`;
               const state = part.state || 'running';
@@ -493,10 +523,26 @@ export class OpenCodeProvider extends BaseCliProvider {
         // Step finish — capture usage stats
         case 'step_finish':
           if (data.part?.tokens) {
+            let seen = this._usageSteps.get(session);
+            if (!seen) { seen = new Set(); this._usageSteps.set(session, seen); }
+            const id = typeof data.part.id === 'string' ? data.part.id : '';
+            if (id && seen.has(id)) { return null; }
+            if (id) { seen.add(id); }
             const tokens = data.part.tokens;
+            const count = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
+            const cacheRead = count(tokens.cache?.read);
+            const cacheCreate = count(tokens.cache?.write);
+            const call: UsageStats = { input_tokens: count(tokens.input), output_tokens: count(tokens.output),
+              ...(cacheRead > 0 ? { cache_read_input_tokens: cacheRead } : {}),
+              ...(cacheCreate > 0 ? { cache_creation_input_tokens: cacheCreate } : {}) };
+            ocSession.lastContextUsageStats = hasUsageSignal(call) ? call : null;
+            const totalRead = (ocSession.lastUsageStats?.cache_read_input_tokens ?? 0) + cacheRead;
+            const totalCreate = (ocSession.lastUsageStats?.cache_creation_input_tokens ?? 0) + cacheCreate;
             ocSession.lastUsageStats = {
-              input_tokens: tokens.input || 0,
-              output_tokens: tokens.output || 0
+              input_tokens: (ocSession.lastUsageStats?.input_tokens ?? 0) + call.input_tokens,
+              output_tokens: (ocSession.lastUsageStats?.output_tokens ?? 0) + call.output_tokens,
+              ...(totalRead > 0 ? { cache_read_input_tokens: totalRead } : {}),
+              ...(totalCreate > 0 ? { cache_creation_input_tokens: totalCreate } : {})
             };
             console.log('[Mysti] OpenCode: Captured usage stats:', ocSession.lastUsageStats);
           }
@@ -566,6 +612,79 @@ export class OpenCodeProvider extends BaseCliProvider {
     return null;
   }
 
+  private _nativeToolPart(part: {
+    id?: string; callID?: string; tool?: string;
+    state?: { status?: string; input?: Record<string, unknown>; output?: string; error?: string };
+  }, session: OpenCodeSessionState): StreamChunk | null {
+    const state = part.state;
+    const id = part.callID || part.id;
+    if (typeof id !== 'string' || !id || !state || typeof state !== 'object' || session.completedToolCalls.has(id)) { return null; }
+    const active = session.activeToolCalls.get(id);
+    const name = normalizeToolName(typeof part.tool === 'string' && part.tool ? part.tool : active?.name || 'tool');
+    const input = state.input && typeof state.input === 'object' && !Array.isArray(state.input) ? state.input : active?.input ?? {};
+    const toolCall = { id, name, input, kind: toolKind(name) };
+    if (state.status === 'running' || state.status === 'pending') {
+      session.activeToolCalls.set(id, { id, name, input });
+      return { type: 'tool_use', toolCall: { ...toolCall, status: 'running' } };
+    }
+    if (state.status !== 'completed' && state.status !== 'error') { return null; }
+    session.activeToolCalls.delete(id);
+    session.completedToolCalls.add(id);
+    const output = state.status === 'error'
+      ? (typeof state.error === 'string' ? state.error : 'Tool execution failed')
+      : (typeof state.output === 'string' ? state.output : '');
+    return { type: 'tool_result', content: output,
+      toolCall: { ...toolCall, output, status: state.status === 'error' ? 'failed' : 'completed' } };
+  }
+
+  private _resetCliTurn(session: OpenCodeSessionState): void {
+    session.activeToolCalls.clear();
+    session.completedToolCalls.clear();
+    session.lastUsageStats = null;
+    session.lastContextUsageStats = null;
+    this._usageSteps.delete(session);
+  }
+
+  protected override async *processStream(
+    stderrRef: { output: string }, session: PanelSessionState, drainOnReturn = false,
+  ): AsyncGenerator<StreamChunk> {
+    const issuingProcess = session.process;
+    const isCurrent = () => session.process === issuingProcess && !session.cancelled;
+    const local: Pick<OpenCodeSessionState, 'activeToolCalls' | 'completedToolCalls' | 'lastUsageStats' | 'lastContextUsageStats'> = {
+      activeToolCalls: new Map(), completedToolCalls: new Set(), lastUsageStats: null, lastContextUsageStats: null,
+    };
+    // A buffered line from a cancelled reader must not change its replacement's
+    // usage/tools. Session IDs still become available immediately to the owner.
+    const reader = new Proxy(session, {
+      get: (target, key, receiver) => key === 'process' ? issuingProcess
+        : Object.prototype.hasOwnProperty.call(local, key) ? Reflect.get(local, key) : Reflect.get(target, key, receiver),
+      set: (target, key, value, receiver) => {
+        if (Object.prototype.hasOwnProperty.call(local, key)) { return Reflect.set(local, key, value); }
+        if (isCurrent()) { return Reflect.set(target, key, value, receiver); }
+        return true;
+      },
+    });
+    const announced = new Set<string>();
+    try {
+      for await (const chunk of super.processStream(stderrRef, reader, drainOnReturn)) {
+        if (!isCurrent()) { return; }
+        if (chunk.type === 'tool_use' && chunk.toolCall) { announced.add(chunk.toolCall.id); }
+        if (chunk.type === 'tool_result' && chunk.toolCall && !announced.has(chunk.toolCall.id)) {
+          announced.add(chunk.toolCall.id);
+          // The host creates/persists cards on tool_use. Announce the actual
+          // terminal status; this notification is not an approval request.
+          yield { type: 'tool_use', toolCall: { ...chunk.toolCall } };
+          if (!isCurrent()) { return; }
+        }
+        yield chunk;
+        if (!isCurrent()) { return; }
+      }
+    } finally {
+      if (isCurrent()) { Object.assign(session, local); }
+      this._usageSteps.delete(reader);
+    }
+  }
+
   /**
    * Check if a non-JSON line is CLI diagnostic noise that should be suppressed
    */
@@ -581,11 +700,19 @@ export class OpenCodeProvider extends BaseCliProvider {
   /**
    * Get stored usage stats from the last message and clear them
    */
-  getStoredUsage(panelId?: string): { input_tokens: number; output_tokens: number } | null {
+  getStoredUsage(panelId?: string): UsageStats | null {
     const session = this._getSession(panelId) as OpenCodeSessionState;
     const usage = session.lastUsageStats;
     session.lastUsageStats = null;
     return usage;
+  }
+
+  protected override _doneChunk(panelId?: string): StreamChunk {
+    const done = super._doneChunk(panelId);
+    const session = this._getSession(panelId) as OpenCodeSessionState;
+    const contextUsage = session.lastContextUsageStats ?? null;
+    session.lastContextUsageStats = null;
+    return { ...done, contextUsage };
   }
 
   /**
@@ -593,13 +720,8 @@ export class OpenCodeProvider extends BaseCliProvider {
    */
   clearSession(panelId?: string): void {
     super.clearSession(panelId);
-    if (panelId) {
-      const session = this._panelSessions.get(panelId) as OpenCodeSessionState | undefined;
-      if (session) {
-        session.activeToolCalls.clear();
-        session.completedToolCalls.clear();
-        session.lastUsageStats = null;
-      }
+    for (const session of this._panelSessions.values()) {
+      if (!panelId || session.panelId === panelId) { this._resetCliTurn(session as OpenCodeSessionState); }
     }
   }
 }

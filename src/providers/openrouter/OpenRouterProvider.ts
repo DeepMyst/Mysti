@@ -28,6 +28,7 @@ import type {
   AuthConfig,
   ProviderCapabilities,
   PersonaConfig,
+  ProviderInputResolver,
 } from '../base/IProvider';
 import type {
   Settings,
@@ -37,6 +38,7 @@ import type {
   ContextItem,
   Conversation,
   AgentConfiguration,
+  Attachment,
   InstallMethod,
   UsageStats,
   ModelInfo,
@@ -52,7 +54,7 @@ const OPENROUTER_EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high'];
 
 export interface OpenRouterSessionState extends PanelSessionState {
   abortController: AbortController | null;
-  /** Usage from OpenRouter's final SSE frame, buffered until the `done` chunk. */
+  /** Legacy session shape; sendMessage keeps reported usage request-local. */
   lastUsage?: UsageStats | null;
 }
 
@@ -252,7 +254,10 @@ export class OpenRouterProvider extends BaseCliProvider {
     panelId?: string,
     _providerManager?: unknown,
     agentConfig?: AgentConfiguration,
+    _attachments?: Attachment[],
+    resolveInput?: ProviderInputResolver,
   ): AsyncGenerator<StreamChunk> {
+    if (resolveInput && !resolveInput()) { return; }
     if (!this._getApiKey()) {
       yield {
         type: 'auth_error',
@@ -264,29 +269,46 @@ export class OpenRouterProvider extends BaseCliProvider {
     }
 
     const session = this._getSession(panelId) as OpenRouterSessionState;
-    const prompt = await this.buildPromptAsync(content, context, conversation, settings, persona, agentConfig);
+    // Snapshot request controls before prompt construction can yield to a
+    // later settings change in the same panel.
     const model = this._getEffectiveModel(settings) || this.config.defaultModel;
-
-    session.abortController = new AbortController();
-    let sawText = false;
-    let errored = false;
-    let servedModel: string | undefined;
-
     // Reasoning effort → OpenRouter `reasoning.effort` (solid tier set is
     // low/medium/high; xhigh/max clamp to high).
     const effort = clampEffort(settings.effortLevel, OPENROUTER_EFFORT_LEVELS) as
       'low' | 'medium' | 'high' | undefined;
+    const requestController = new AbortController();
+    session.abortController = requestController;
+    let sawText = false;
+    let errored = false;
+    let servedModel: string | undefined;
+    let requestUsage: UsageStats | undefined;
+    let revoked = false;
 
     try {
+      const render = resolveInput ? await this.preparePromptRenderer(conversation, settings, persona, agentConfig) : undefined;
+      const prompt = render ? render(content, context) : await this.buildPromptAsync(content, context, conversation, settings, persona, agentConfig);
+      if (resolveInput && (requestController.signal.aborted || session.abortController !== requestController)) { return; }
       const stream = this._client.streamChat({
         model,
         messages: [{ role: 'user', content: prompt }],
         reasoningEffort: effort,
-        signal: session.abortController.signal,
+        signal: requestController.signal,
+        ...(resolveInput && render ? {
+          isCancelled: () => requestController.signal.aborted || session.abortController !== requestController,
+          resolveMessages: () => {
+            const input = resolveInput();
+            if (!input || requestController.signal.aborted || session.abortController !== requestController) {
+              revoked = true;
+              throw new Error('Request cancelled before dispatch');
+            }
+            return [{ role: 'user' as const, content: render(input.content, input.context) }];
+          },
+        } : {}),
       });
 
       for await (const ev of stream) {
-        if (session.abortController.signal.aborted) {
+        if (resolveInput && (revoked || requestController.signal.aborted || session.abortController !== requestController)) { return; }
+        if (requestController.signal.aborted) {
           break;
         }
         if (ev.error) {
@@ -304,34 +326,42 @@ export class OpenRouterProvider extends BaseCliProvider {
         }
         if (ev.usage) {
           // Buffer usage until the done chunk (emitted below).
-          session.lastUsage = { input_tokens: ev.usage.inputTokens ?? 0, output_tokens: ev.usage.outputTokens ?? 0 };
+          requestUsage = { input_tokens: ev.usage.inputTokens ?? 0, output_tokens: ev.usage.outputTokens ?? 0 };
+        }
+      }
+      if (resolveInput && (revoked || requestController.signal.aborted || session.abortController !== requestController)) { return; }
+      if (!errored) {
+        // Keep Stop connected while final model metadata is pending. Static
+        // streams already delivered in parallel retain their independent
+        // usage completion, but a current turn overtaken during this wait
+        // must not publish a late terminal for the replacement.
+        const ownedAtMetadataStart = session.abortController === requestController;
+        const abortedAtMetadataStart = requestController.signal.aborted;
+        const contextWindow = await this._contextWindowOf(servedModel, model);
+        if ((!abortedAtMetadataStart && requestController.signal.aborted)
+          || (ownedAtMetadataStart && session.abortController !== requestController)) { return; }
+        yield {
+          type: 'done',
+          ...(requestUsage ? { usage: requestUsage } : {}),
+          ...(contextWindow ? { contextWindow } : {}),
+        };
+        if (!sawText) {
+          console.warn('[Mysti] OpenRouter: model returned no text (possibly rate-limited or an unsupported model).');
         }
       }
     } catch (err) {
-      errored = true;
+      if (resolveInput && (revoked || requestController.signal.aborted || session.abortController !== requestController)) { return; }
       yield { type: 'error', content: err instanceof Error ? err.message : String(err) };
     } finally {
       // Plan 18 (2.4 audit): abort on the way out — generator abandonment
       // otherwise leaks the SSE connection (billable on paid models). No-op
       // if the stream already finished.
-      session.abortController?.abort();
-      session.abortController = null;
-    }
-
-    if (!errored) {
-      // Exactly-one-done stream contract; attach usage when OpenRouter reported
-      // it, and the window of the model that answered.
-      const contextWindow = await this._contextWindowOf(servedModel, model);
-      yield {
-        type: 'done',
-        ...(session.lastUsage ? { usage: session.lastUsage } : {}),
-        ...(contextWindow ? { contextWindow } : {}),
-      };
-      // A blank response (no text, no error) — surface a hint rather than silence.
-      if (!sawText) {
-        console.warn('[Mysti] OpenRouter: model returned no text (possibly rate-limited or an unsupported model).');
+      requestController.abort();
+      if (session.abortController === requestController) {
+        session.abortController = null;
       }
     }
+
   }
 
   override cancelCurrentRequest(panelId?: string): void {

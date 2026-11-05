@@ -22,7 +22,12 @@ function fakePanel() {
   const webview = {
     html: '',
     postMessage: vi.fn(async (_m: unknown) => true),
-    onDidReceiveMessage: (cb: Listener) => { on.message = cb; return { dispose() { /* noop */ } }; },
+    onDidReceiveMessage: (cb: Listener) => {
+      on.message = cb;
+      // The production chat announces readiness after installing its listener.
+      queueMicrotask(() => { void cb({ type: 'webviewReady', payload: { documentId: 'owned-hub-document' } }); });
+      return { dispose() { /* noop */ } };
+    },
   };
   const panel = {
     webview,
@@ -73,6 +78,8 @@ function harness(overrides: Record<string, unknown> = {}) {
   });
   const provider = Object.assign(Object.create(ChatViewProvider.prototype), {
     _modelCliUpgrades: new Map(),
+    _brainstormPreparations: new Map(),
+    _editorContextTracker: { focusPanel: vi.fn(), dispose: vi.fn() },
     _hub: null,
     _sidebarId: 'sidebar',
     _extensionUri: vscode.Uri.file('/mock'),
@@ -294,6 +301,7 @@ describe('Plan 31 — clicks that land while the tab is still loading', () => {
   it("never shows one chat's state under another chat's title when a rebind overtakes a load", async () => {
     const h = loading();
     const first = h.provider.openSettingsHub('settings', 'sidebar');
+    await h.settle(); // The ready first document must actually start its probe.
     const second = h.provider.openSettingsHub('agents', 'tab');
     await h.settle();
     h.release.tab();

@@ -28,6 +28,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 // Claude CLI processes — never acceptable in a unit test run.
 vi.mock('../../src/managers/PlanOptionManager', () => ({
   PlanOptionManager: class {
+    dispose() {}
     async classifyResponse() {
       return { questions: [], planOptions: [], context: '' };
     }
@@ -35,11 +36,13 @@ vi.mock('../../src/managers/PlanOptionManager', () => ({
 }));
 
 import { ChatViewProvider } from '../../src/providers/ChatViewProvider';
+import { ContextManager } from '../../src/managers/ContextManager';
 import { PermissionManager } from '../../src/managers/PermissionManager';
 import { BoostManager } from '../../src/managers/BoostManager';
 import { clearMockConfig, setMockConfig, Uri } from '../helpers/mockVscode';
 import type { Settings, StreamChunk, WebviewMessage, BoostTurnRecord } from '../../src/types';
 import { createModelRegistryStub } from '../helpers/modelRegistryStub';
+import { readOpenClawRunMetadata } from '../../src/providers/openclaw/OpenClawRunMetadata';
 
 const SETTINGS: Settings = {
   mode: 'edit-automatically',
@@ -53,13 +56,15 @@ const SETTINGS: Settings = {
 interface Harness {
   provider: ChatViewProvider;
   records: BoostTurnRecord[];
+  messages: WebviewMessage[];
+  contextRecords: unknown[][];
   boost: BoostManager;
   /** How many times the real compaction path ran (Phase 5 proof). */
   nativeCompactions(): number;
   setStream(chunks: StreamChunk[]): void;
   /** Force the compaction evaluator to say "compact now". */
   setCompactionActs(act: boolean): void;
-  dispose(): void;
+  dispose(): Promise<void>;
 }
 
 function createHarness(): Harness {
@@ -84,6 +89,8 @@ function createHarness(): Harness {
   let streamChunks: StreamChunk[] = [];
   let compactionActs = false;
   let nativeCompactions = 0;
+  const messages: WebviewMessage[] = [];
+  const contextRecords: unknown[][] = [];
 
   const conversationManager = {
     getCurrentConversation: () => null,
@@ -99,11 +106,12 @@ function createHarness(): Harness {
   const providerManager = {
     setNativeApprovalHandler: () => ({ dispose() {} }), setAgentContextManager: () => undefined,
     getProvider: () => undefined,
-    getProviderInstance: () => ({ capabilities: { supportsImages: true, thinkingStyle: 'streamed' } }),
+    getProviderInstance: () => ({ capabilities: { supportsImages: true, thinkingStyle: 'streamed', usageConvention: 'auto' } }),
     getModelContextWindow: () => 200000,
     setChannelSystemContext: () => undefined,
     getAllProviderIds: () => ['claude-code', 'openai-codex'],
     cancelRequest: () => undefined,
+    dispose: () => undefined,
     sendMessage: vi.fn(async function* () {
       for (const chunk of streamChunks) { yield chunk; }
     }),
@@ -115,7 +123,7 @@ function createHarness(): Harness {
     shouldCompact: () => compactionActs,
     retrieveContext: vi.fn(async () => ''),
     keepsNoHistory: () => false,
-    recordUsage: () => undefined,
+    recordUsage: (...args: unknown[]) => { contextRecords.push(args); },
     appendHistory: () => undefined,
     isSmartActive: () => false,
     evaluateCompaction: () => ({ act: compactionActs, smart: false }),
@@ -146,7 +154,7 @@ function createHarness(): Harness {
   const provider = new ChatViewProvider({
     extensionUri,
     extensionContext,
-    contextManager: { getContext: () => [], setAutoContext: () => undefined, clearPanelContext: () => undefined } as any,
+    contextManager: new ContextManager(extensionContext),
     conversationManager,
     providerManager,
     suggestionManager: { generateSuggestions: async () => [] } as any,
@@ -198,20 +206,30 @@ function createHarness(): Harness {
 
   (provider as any)._panelStates.set('sidebar', {
     id: 'sidebar',
-    webview: { postMessage: (_m: WebviewMessage) => Promise.resolve(true) },
+    webview: { postMessage: (message: WebviewMessage) => { messages.push(message); return Promise.resolve(true); } },
     currentConversationId: null,
     isSidebar: true,
   });
 
   return {
-    provider, records, boost,
+    provider, records, boost, messages, contextRecords,
     nativeCompactions: () => nativeCompactions,
     setStream(chunks) { streamChunks = chunks; },
     setCompactionActs(act) { compactionActs = act; },
-    dispose() {
-      (provider as any)._channelBridge?.dispose?.();
-      permissionManager.dispose();
-      boost.dispose();
+    async dispose() {
+      // Construction launches real asynchronous agent loading; sends may also
+      // start a post-turn compaction. The fixture must join its own work before
+      // Vitest closes the worker's console/RPC channel. Disposing only the
+      // channel bridge left both init callbacks and the job heartbeat alive.
+      try {
+        await (provider as any)._agentInitPromise;
+        await Promise.all((provider as any)._panelCompactions.values());
+      } finally {
+        provider.dispose();
+        for (const subscription of extensionContext.subscriptions) { subscription.dispose(); }
+        permissionManager.dispose();
+        boost.dispose();
+      }
     },
   };
 }
@@ -226,7 +244,66 @@ async function send(h: Harness, content = 'do the thing'): Promise<void> {
 describe('Boost ledger wiring on the CLI path (Plan 24 Phase 1)', () => {
   let h: Harness;
   beforeEach(() => { clearMockConfig(); h = createHarness(); });
-  afterEach(() => { h.dispose(); });
+  afterEach(async () => { await h.dispose(); });
+
+  it('carries native OpenClaw metadata into model attribution, context fill and turn totals independently', async () => {
+    const metadata = readOpenClawRunMetadata({ meta: { agentMeta: {
+      provider: 'openai-codex', model: 'owned-native-model', contextTokens: 128000,
+      usage: { input: 20000, output: 1000, cacheRead: 180000, cacheWrite: 50000 },
+      lastCallUsage: { input: 500, output: 60, cacheRead: 8000, cacheWrite: 1500 }, promptTokens: 10000,
+    } } })!;
+    h.setStream([{ type: 'model_info', reportedModel: metadata.reportedModel }, { type: 'text', content: 'Owned reply' },
+      { type: 'done', ...metadata }]);
+    await (h.provider as any)._handleSendMessage({ content: 'owned request', context: [],
+      settings: { ...SETTINGS, provider: 'openclaw', model: 'picker-not-used' } }, 'sidebar');
+    const receipt = h.messages.find(message => message.type === 'responseComplete')?.payload;
+    expect(receipt.usage).toMatchObject({ input_tokens: 20000, output_tokens: 1000, cache_read_input_tokens: 180000, cache_creation_input_tokens: 50000, contextTokens: 10000 });
+    expect(h.messages).toContainEqual({ type: 'contextWindowInfo', payload: { contextWindow: 128000 } });
+    expect(h.contextRecords).toEqual([['sidebar', metadata.contextUsage, 128000, metadata.usage]]);
+    expect(h.records).toHaveLength(1);
+    expect(h.records[0]).toMatchObject({ provider: 'openclaw', model: 'openai-codex/owned-native-model', contextTokens: 10000, outputTokens: 1000, cacheReadTokens: 180000, cacheCreationTokens: 50000 });
+  });
+
+  it('can report a context measurement without inventing missing turn totals', async () => {
+    const latest = { input_tokens: 367, output_tokens: 90, cache_read_input_tokens: 96256, normalized: true };
+    h.setStream([{ type: 'text', content: 'ok' }, { type: 'done', contextUsage: latest }]);
+    await send(h);
+    const receipt = h.messages.find(message => message.type === 'responseComplete')?.payload;
+    expect(receipt.contextTokens).toBe(96623);
+    expect(receipt.usage).toBeUndefined();
+    expect(receipt.contextUsageUnavailable).toBeUndefined();
+    expect(h.contextRecords[0][1]).toEqual(latest);
+    expect(h.contextRecords[0][3]).toBeNull();
+    expect(h.records).toEqual([]);
+  });
+
+  it('keeps multi-call totals in the footer and ledger while using latest context for fill and compaction', async () => {
+    const total = { input_tokens: 95797, output_tokens: 311, cache_read_input_tokens: 193088, normalized: true, reportedCostUsd: 0.0249780735 };
+    const latest = { input_tokens: 367, output_tokens: 90, cache_read_input_tokens: 96256, normalized: true };
+    h.setStream([{ type: 'text', content: 'ok' }, { type: 'done', usage: total, contextUsage: latest }]);
+    await send(h);
+    const receipt = h.messages.find(message => message.type === 'responseComplete')?.payload;
+    expect(receipt.usage).toMatchObject({ ...total, contextTokens: 96623 });
+    expect(receipt.promptCache.ttlMs).toBeGreaterThan(0);
+    expect(h.contextRecords[0][1]).toEqual(latest);
+    expect(h.contextRecords[0][3]).toEqual(total);
+    expect(h.records[0]).toMatchObject({ contextTokens: 96623, outputTokens: 311, cacheReadTokens: 193088 });
+  });
+
+  it.each([
+    { input_tokens: 95797, output_tokens: 311, cache_read_input_tokens: 193088, normalized: true },
+    { input_tokens: 0, output_tokens: 20, normalized: true },
+  ])('retains totals but explicitly clears unknown latest context: %j', async totals => {
+    h.setStream([{ type: 'text', content: 'ok' }, { type: 'done', usage: totals, contextUsage: null }]);
+    await send(h);
+    const receipt = h.messages.find(message => message.type === 'responseComplete')?.payload;
+    expect(receipt.usage).toEqual(totals);
+    expect(receipt.contextUsageUnavailable).toBe(true);
+    expect(receipt.usageUnavailable).toBeUndefined();
+    expect(h.contextRecords).toEqual([['sidebar', null, 200000, totals]]);
+    expect(h.records[0].outputTokens).toBe(totals.output_tokens);
+    expect(h.records[0].contextTokens).toBeUndefined();
+  });
 
   it('records exactly one turn per done chunk, with context = every prompt bucket', async () => {
     h.setStream([
@@ -320,11 +397,12 @@ describe('Boost ledger wiring on the CLI path (Plan 24 Phase 1)', () => {
 
   it('works when no BoostManager is wired at all (optional-chained call site)', async () => {
     const bare = createHarness();
-    (bare.provider as any)._boostManager = undefined;
-    bare.setStream([{ type: 'done', usage: { input_tokens: 1, output_tokens: 1 } }]);
-    await expect(send(bare)).resolves.toBeUndefined();
-    expect(bare.records).toHaveLength(0);
-    bare.dispose();
+    try {
+      (bare.provider as any)._boostManager = undefined;
+      bare.setStream([{ type: 'done', usage: { input_tokens: 1, output_tokens: 1 } }]);
+      await expect(send(bare)).resolves.toBeUndefined();
+      expect(bare.records).toHaveLength(0);
+    } finally { await bare.dispose(); }
   });
 });
 
@@ -340,7 +418,9 @@ describe('Boost cold-resume interception (Plan 24 Phase 5)', () => {
     nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => clock);
     h = createHarness();
   });
-  afterEach(() => { nowSpy.mockRestore(); h.dispose(); });
+  afterEach(async () => {
+    try { await h.dispose(); } finally { nowSpy.mockRestore(); }
+  });
 
   /** One turn that leaves the panel holding a large context. */
   async function bigTurn(): Promise<void> {
@@ -447,11 +527,13 @@ describe('one compaction per panel, and sends wait for it', () => {
     const first = (h.provider as any)._executeCompaction('sidebar', { ...SETTINGS }, null, usage, 200_000);
     const second = (h.provider as any)._executeCompaction('sidebar', { ...SETTINGS }, null, usage, 200_000);
     const sending = send(h);
-    await new Promise(r => setTimeout(r, 25));
-    expect(order).toEqual(['compact-start']);   // the send has not reached the CLI
-
-    release();
-    await Promise.all([first, second, sending]);
+    try {
+      await new Promise(r => setTimeout(r, 25));
+      expect(order).toEqual(['compact-start']);   // the send has not reached the CLI
+    } finally {
+      release();
+      await Promise.all([first, second, sending]);
+    }
     expect(order).toEqual(['compact-start', 'compact-end', 'send']);
     expect(nativeCalls).toHaveBeenCalledTimes(1);
     expect((h.provider as any)._panelCompactions.size).toBe(0);
@@ -502,14 +584,16 @@ describe('Mysti compacts only where it may, and Stop still means stop', () => {
 
     const compaction = (h.provider as any)._executeCompaction('sidebar', { ...SETTINGS }, null, usage, 200_000);
     const sending = send(h);
-    await settle();
-    // What the webview's Stop button does to the panel.
-    (h.provider as any)._cancelQueuedChannelTurn('sidebar');
-    (h.provider as any)._cancelledPanels.add('sidebar');
-    posted.length = 0;
-    release();
-    await Promise.all([compaction, sending]);
-    post.mockRestore();
+    try {
+      await settle();
+      // What the webview's Stop button does to the panel.
+      (h.provider as any)._cancelQueuedChannelTurn('sidebar');
+      (h.provider as any)._cancelledPanels.add('sidebar');
+      posted.length = 0;
+    } finally {
+      release();
+      try { await Promise.all([compaction, sending]); } finally { post.mockRestore(); }
+    }
 
     // The stopped turn is not revived: its message is never shown or
     // persisted, no reply starts (a spinner nobody clears), and nothing

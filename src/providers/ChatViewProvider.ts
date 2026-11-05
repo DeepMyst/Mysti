@@ -12,11 +12,13 @@
  */
 
 import * as vscode from 'vscode';
+import { EditorContextTracker } from '../chat/EditorContextTracker';
 import { DictationManager } from '../managers/DictationManager';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
+import { fileURLToPath } from 'url';
 import { SubAgentQuestionBroker, parseSubAgentResponse } from '../chat/SubAgentQuestionBroker';
 import { bindIncomingMessage } from '../chat/incomingMessage';
 import {
@@ -28,6 +30,7 @@ import {
   isTipId, isWizardStep, hasChosenMode, type WizardStep,
 } from '../chat/onboarding';
 import { settleWithin } from '../utils/settleWithin';
+import { applyStreamText, updateTextSegments } from '../utils/streamText';
 import { clampEffort } from '../utils/effort';
 import { installerShell } from '../utils/installerShell';
 import { MystiTagScanner, type MystiDirective, ALL_MYSTI_KINDS, MYSTI_EXEC_KINDS, MYSTI_MCP_KINDS, MYSTI_SKILL_KINDS, MYSTI_CAPABILITY_KINDS, MYSTI_CONNECT_KINDS, MYSTI_VISUAL_KINDS, MYSTI_VISUAL_ACT_KINDS, MYSTI_CANVAS_KINDS } from '../utils/mystiDelegateParser';
@@ -57,19 +60,23 @@ import { CoordinatorTurnRunner } from '../coordinator/CoordinatorTurnRunner';
 import { runMystiSubagent, SUBAGENT_MAX_TURNS, type SubagentTrace } from '../coordinator/MystiSubagentRunner';
 import { elideStaleToolResults } from '../coordinator/elideToolResults';
 import { capAttachedFiles, clampHeadTail } from '../coordinator/promptBudget';
+import { formatReferenceData } from '../utils/contextReference';
+import { AttachmentTooLargeError, MAX_ATTACHMENT_BYTES, readAttachmentBytes } from '../services/AttachmentReader';
+import { MAX_CONTEXT_FILE_BYTES, type ContextFileFailure } from '../services/ContextFileReader';
 import { extractSubagentSummary, SUMMARY_INSTRUCTIONS, ADVISOR_INSTRUCTIONS } from '../coordinator/subagentSummary';
 import { PaidSpendGuard, estimateCallUsd, rateFromCatalog } from '../coordinator/PaidSpendGuard';
 import { advisorCandidates, ADVISOR_DEFAULT_AGENTS, ADVISOR_DEFAULT_MODEL, ADVISOR_MAX_CALLS } from '../coordinator/advisor';
 import { getModelRate } from '../services/ModelPricing';
 import { runBounded } from '../utils/boundedConcurrency';
 import { selectToolBatch } from '../utils/toolBatching';
+import { normalizeAskUserQuestions } from '../utils/askUserQuestions';
 import { MystiLocalExec, type LocalExecContext } from '../services/MystiLocalExec';
 import { MystiLocalTools } from '../services/MystiLocalTools';
 import { MystiMemoryStore } from '../services/MystiMemoryStore';
 import { clampSettingsToUserPolicy, normalizeAuthoritySettings } from '../utils/settingsClamp';
 import { pickCrossVendorReviewer } from '../utils/vendorFamily';
 import type { GatewayChatMessage } from '../services/DeepMystGatewayClient';
-import { ContextManager } from '../managers/ContextManager';
+import { ContextManager, type ContextSendPreparation } from '../managers/ContextManager';
 import { ConversationManager } from '../managers/ConversationManager';
 import { ProviderManager, PromptEnhancementUnsupportedError } from '../managers/ProviderManager';
 import { SuggestionManager } from '../managers/SuggestionManager';
@@ -88,6 +95,8 @@ import { CollaboratorPool } from '../services/CollaboratorPool';
 import { CollaborationManager } from '../managers/CollaborationManager';
 import { runExplicitMentions } from '../managers/ExplicitMentionRunner';
 import { planExplicitMentions, resolveExplicitMentions } from '../services/ExplicitMentionPlan';
+import { validateFileMentionBindings } from '../services/FileMentionBindings';
+import type { FileMentionReference } from '../services/FileMentionBindings';
 import { SessionManager } from '../managers/SessionManager';
 import { getSessionShape } from '../managers/sessionShapes';
 import { MystiOrchestratorManager } from '../managers/MystiOrchestratorManager';
@@ -174,6 +183,7 @@ import type { ProviderManifestPayload, ModelsUpdatedPayload, PromptEnhanceUnavai
 import type { AnnouncedModelPayload, CliUpdatePayload, ModelCliUpgradePayload } from '../types';
 import { normalizeUsage, resolveUsageConvention, hasUsageSignal, contextFillTokens, touchedPromptCache } from '../services/TokenAccounting';
 import type { UsageConvention } from '../services/TokenAccounting';
+import { resolveWorkspaceEditPath, reverseToolEdit } from '../services/FileEditSafety';
 import type { CollaboratorGateCallback, CollaboratorSpec, CollaboratorFailure } from '../types';
 import { validateModelName, validateProfileName } from '../utils/validation';
 import { filterInstallMethodsForOS } from '../utils/platform';
@@ -245,8 +255,47 @@ interface PanelState {
    * pseudo-agent; `provider` is always a registered backend (Plan 25).
    */
   settingsOverrides?: Partial<Pick<Settings, 'provider' | 'model'>> & { agent?: AgentSelection };
+  /** Latest provider/model choice; async persistence cannot replace a newer one. */
+  settingsRevision?: number;
+  pendingSettingsUpdates?: Set<Promise<void>>;
+  /** Latest navigation intent, including reselecting the current history row. */
+  navigationRevision?: number;
 }
 
+interface WebviewReadiness {
+  ready: Promise<string | undefined>;
+  resolve: (documentId?: string) => void;
+  documentId?: string;
+}
+
+
+interface ComposerSendRequest {
+  submissionId?: string;
+  content: string;
+  context: ContextItem[];
+  settings: Settings;
+  mentions?: Mention[];
+  attachments?: Attachment[];
+  secondOpinion?: { provider: string; messageId: string };
+}
+
+/** Host-captured, turn-only editor context; never supplied by a webview. */
+interface ComposerEditorContext {
+  item?: ContextItem;
+  isCurrent: () => boolean;
+}
+
+interface ComposerSlashRequest {
+  command?: string;
+  commandId?: string;
+  args?: string;
+  requestId?: string;
+  settings?: Settings;
+  context?: ContextItem[];
+  attachments?: Attachment[];
+}
+
+type ComposerSlashOutcome = { kind: 'action' | 'prefill' | 'turn'; prefill?: string };
 
 /**
  * The Desk rail's optional dependency group. Keep its policy callback live so
@@ -287,7 +336,14 @@ export interface ChatViewDependencies {
   desk?: DeskDependencies;
 }
 
+interface PanelSetupRun {
+  signal: AbortSignal;
+  isCurrent: () => boolean;
+  cancel: () => void;
+}
+
 export class ChatViewProvider implements vscode.WebviewViewProvider {
+  private _webviewReadiness = new WeakMap<vscode.Webview, WebviewReadiness>();
   private _dictationManager?: DictationManager;
   private get _dictation(): DictationManager {
     return this._dictationManager ??= new DictationManager((panelId, event) => {
@@ -301,6 +357,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private _view?: vscode.WebviewView;
   private _panelStates: Map<string, PanelState> = new Map();
+  /** Prevent overlapping editor writes from applying stale ranges to one file. */
+  private _fileActionsInFlight = new Set<string>();
+  /** Request IDs live with their panel, never with a replacement webview. */
+  private _slashCommandRequests = new WeakMap<object, Set<string>>();
+  /** Only the latest helper for a live panel and turn may replace its suggestions. */
+  private _suggestionOperations = new WeakMap<object, object>();
+  private _globalSettingsRevision = 0;
   private readonly _sidebarId = 'sidebar';
   /** Plan 33: a Get Started request that arrived before the sidebar view existed. */
   private _pendingOnboardingStep?: WizardStep;
@@ -346,6 +409,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Ownership, not a transient flag, is what stops a superseded agentic loop.
    */
   private _mystiRunGen = new Map<string, number>();
+  /** Pending brainstorm submissions must not revoke a foreground compaction. */
+  private readonly _brainstormPreparations = new Map<string, object>();
   /** Active delegation pool runId keyed by cancel-key (panelId fg / jobId bg). */
   private _mystiActiveDelegationRuns = new Map<string, string>();
   /** Background Mysti jobs (Phase D) — detached runs that report when done. */
@@ -376,6 +441,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private _modelAnnouncements?: ModelAnnouncementService;
   private _cliUpdates?: CliUpdateService;
+  private _cliUpdateRefreshTask?: Promise<void>;
+  private _cliUpdateRefreshAgain = false;
   private _modelCliUpgrades = new Map<string, { panelId: string; providerId: string; minimum: string; state: ModelCliUpgradePayload['state'] }>();
   private _upgradingClis = new Set<string>();
   // Code checkpoints — shadow git repo backing "rewind code to here".
@@ -485,6 +552,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _pendingUiReadyPanels: Set<string> = new Set();
   // Track which panels have an active stream (for ChannelBridge inbound routing)
   private _runningPanels: Set<string> = new Set();
+  private _responseStops?: Map<string, { generation: number; stop: () => Message | undefined }>;
   // The in-flight compaction per panel; sends wait on it (see _executeCompaction).
   private _panelCompactions: Map<string, Promise<void>> = new Map();
   // Panels whose in-flight native /compact was ended by Stop (not completed).
@@ -494,6 +562,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _lastSendSettings: Map<string, Settings> = new Map();
   // Track most recently active panel for channel message routing
   private _lastActivePanelId: string | null = null;
+  private readonly _editorContextTracker = new EditorContextTracker(vscode.window);
   // Track last user message per panel for plan selection follow-up
   private _lastUserMessage: Map<string, string> = new Map();
   // Store mention context per panel for sub-agent retry support
@@ -503,20 +572,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _agentInitPromise: Promise<void>;
   // Track panels with pending AskUserQuestion (to suppress plan options/suggestions)
   /**
-   * Panels with a question awaiting an answer, mapped to the toolCallId that
-   * question belongs to. Plan 21 Phase 0: this was a Set of panelIds, so the
-   * channel-reply path had to guess which toolCallId a panel meant and picked
-   * the first entry of a global map — with two panels awaiting questions, a
-   * reply could be applied to the wrong panel's tool call.
+   * Panels with a question awaiting an answer, mapped to its unique UI
+   * delivery ID. Native tool IDs may repeat across panels or restarted agents.
    */
   private _pendingAskUserQuestions: Map<string, string> = new Map();
-  // Store pending question data for memory learning when user answers
-  private _pendingQuestionData: Map<string, AskUserQuestionData> = new Map();
+  // UI delivery IDs are unique across panels and backend session restarts.
+  private _pendingQuestionData = new Map<string, { question: AskUserQuestionData; isCurrent: () => boolean }>();
   /** Desk wiring, or undefined when the feature was never constructed. */
   private _desk?: DeskDependencies;
   /** The in-flight pairing ceremony, if any. One at a time by design. */
   private _deskSession: string | null = null;
-  // Semi-autonomous question timeout handles (toolCallId -> timeout)
+  // Semi-autonomous question timeout handles (deliveryId -> timeout)
   private _semiAutoQuestionTimeouts: Map<string, NodeJS.Timeout> = new Map();
   private readonly _subAgentQuestions = new SubAgentQuestionBroker();
   // Track panels with pending plan option selections (to block autonomous continuation)
@@ -665,15 +731,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     // Listen for lifecycle events and forward to all active panels
     this._lifecycleManager.onLifecycleEvent(event => {
+      // The completed request's transient panel owner may already be gone.
+      // Reclaim the provider named by the lifecycle event before notifying the
+      // webview, which may immediately begin another turn in this panel.
+      if (event.type === 'session-expired' || event.type === 'session-shutdown') {
+        this._providerManager.disposePersistentProcessForProvider(event.providerId, event.panelId);
+      }
       this._postToPanel(event.panelId, {
         type: 'lifecycleEvent',
         payload: event
       });
-
-      // Clean up persistent processes when session expires or shuts down
-      if (event.type === 'session-expired' || event.type === 'session-shutdown') {
-        this._providerManager.disposePersistentProcess(event.panelId);
-      }
     });
 
     // Register semi-autonomous timeout callback on permission manager
@@ -753,19 +820,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return this._pendingQuestionData.has(toolCallId) ? toolCallId : null;
       },
       answerPendingQuestion: (panelId: string, toolCallId: string, answer: string) => {
-        // Clear semi-autonomous timer if running
-        const timer = this._semiAutoQuestionTimeouts.get(toolCallId);
-        if (timer) {
-          clearTimeout(timer);
-          this._semiAutoQuestionTimeouts.delete(toolCallId);
-        }
-        const originalQuestion = this._pendingQuestionData.get(toolCallId);
-        this._pendingQuestionData.delete(toolCallId);
-        this._handleAskUserQuestionResponse(
-          { toolCallId, answers: { '0': answer } },
-          panelId,
-          originalQuestion
-        );
+        void this._answerPendingQuestion(panelId, { toolCallId, answers: { '0': answer } });
       },
       cancelPanelRequest: (panelId: string) => {
         void this._handleMessage({ type: 'cancelRequest', panelId } as WebviewMessageWithPanel).catch(error => {
@@ -1110,8 +1165,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * means "the CLI chooses", which the catalog could never match, and every
    * miss read as a 200k window.
    */
-  private _contextWindowFor(settings: Settings): number {
-    const model = this._attributionModel(settings);
+  /**
+   * The chat as a provider should receive it: prior history only, separate
+   * from the current prompt. Excludes only the just-persisted user message by
+   * ID (an earlier unanswered request may have identical text), and copies the
+   * messages so later saved revisions/appends cannot change dispatched history.
+   */
+  private _promptConversation(conversation: Conversation | null | undefined, excludeMessageId: string): Conversation | null {
+    return conversation ? {
+      ...conversation,
+      messages: conversation.messages
+        .filter(message => message.id !== excludeMessageId)
+        .map(message => ({ ...message })),
+    } : null;
+  }
+
+  private _contextWindowFor(settings: Settings, model = this._attributionModel(settings)): number {
     return this._reportedContextWindows.get(`${settings.provider}\u0000${model}`)
       ?? this._providerManager.getModelContextWindow(settings.provider, model);
   }
@@ -1130,8 +1199,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /**
    * The per-provider custom model (`mysti.<provider>Model`), but only when that
    * provider actually runs it. Claude, Codex and Gemini let it outrank the
-   * picker; Ollama and LocalAI use it only without a picker model; Cline,
-   * OpenClaw and Hermes never read theirs. Sending it regardless made the
+   * picker; Ollama and LocalAI use it only without a picker model; Cline
+   * honors it only on modern CLIs. OpenClaw and Hermes never read theirs. Sending it regardless made the
    * picker name a model that does not run.
    */
   private _honouredCustomModel(providerId: string, model: string, customModel: string): string {
@@ -1170,7 +1239,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const provider = settings.provider as unknown as string;
     if (!provider || isPseudoAgentId(provider) || !settings.model) { return settings; }
     const resolved = this._resolveModelForProvider(settings.model, provider);
-    return resolved === settings.model ? settings : { ...settings, model: resolved };
+    const settled = resolved === settings.model ? settings : { ...settings, model: resolved };
+    if (provider === 'openai-codex' && !settings.routedModel && this._providerManager.getProvider(provider)) {
+      const custom = vscode.workspace.getConfiguration('mysti').get<string>('codexModel', '');
+      const actual = this._providerManager.getProviderInstance(provider)?.getEffectiveModelForSettings?.(settled);
+      // A real provider-owned choice can share an ID with another backend's
+      // custom catalog. Preserve that explicit ownership through the adapter's
+      // foreign-default guard, without outranking an honoured custom override.
+      if (actual && actual !== resolved && !(custom && validateModelName(custom).valid)) {
+        const selections = this._extensionContext.globalState.get<Record<string, string>>('mysti.providerModelSelections', {});
+        const owned = selections[provider] === resolved || this._providerManager.getModels(provider).some(model => model.id === resolved);
+        if (owned) { return { ...settled, routedModel: resolved }; }
+      }
+    }
+    return settled;
   }
 
   /**
@@ -1238,8 +1320,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       localResourceRoots: [this._extensionUri]
     };
 
-    const version = this._extensionContext.extension.packageJSON.version || '0.0.0';
-    webviewView.webview.html = getWebviewContent(webviewView.webview, this._extensionUri, version);
+    const releaseReadiness = this._trackWebviewReadiness(webviewView.webview);
 
     // Register sidebar in panel states
     const currentConversation = this._conversationManager.getCurrentConversation();
@@ -1263,9 +1344,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // (which overwrote the entry with a new webview) is not removed by the old
     // view's late dispose event.
     webviewView.onDidDispose(() => {
+      releaseReadiness();
       void this._dictationManager?.cancelPanel(this._sidebarId);
       if (this._panelStates.get(this._sidebarId)?.webview === webviewView.webview) {
         this._panelStates.delete(this._sidebarId);
+        this._cancelPanelSetup(this._sidebarId);
         this._unbindHubFrom(this._sidebarId);
         this._cancelQueuedChannelTurn(this._sidebarId);
         this._providerManager.cancelRequest(this._sidebarId);
@@ -1279,7 +1362,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     });
 
-    // Send initial state with panelId
+    const version = this._extensionContext.extension.packageJSON.version || '0.0.0';
+    webviewView.webview.html = getWebviewContent(webviewView.webview, this._extensionUri, version);
+
+    // Initial state waits for this document's message listener, not a timer.
     this._sendInitialState(this._sidebarId);
 
     // Pre-spawn persistent process so first message is instant
@@ -1287,15 +1373,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async _sendInitialState(panelId: string, forHub = false) {
+    const owner = this._panelStates.get(panelId);
+    const hub = forHub ? this._hub : undefined;
+    const webview = forHub ? hub?.panel.webview : owner?.webview;
+    if (!webview) { return; }
+    const readiness = this._webviewReadiness?.get(webview);
+    // Preserve the document that released this wait: a reload can announce
+    // itself before the first wait's continuation gets its turn.
+    const documentId = readiness?.documentId ?? await readiness?.ready;
+    const isCurrent = () => this._panelStates.get(panelId) === owner
+      && (!forHub || (this._hub === hub && hub?.originPanelId === panelId))
+      && (!readiness || (this._webviewReadiness.get(webview) === readiness && readiness.documentId === documentId));
+    if (!isCurrent()) { return; }
     // Critical: Wait for agents to load before building initial state
     await this._agentInitPromise;
+    if (!isCurrent()) { return; }
 
     // Plan 07 A5: restore this panel's persisted context files (re-reading
     // content fresh) off the critical path; broadcast when ready.
     if (!forHub) {
-      void this._contextManager.restorePanelContext(panelId)
+      const target = this._captureContextTarget(panelId);
+      const restoreIsCurrent = () => isCurrent() && !!target?.isCurrent();
+      void this._contextManager.restorePanelContext(panelId, failures => {
+        if (restoreIsCurrent()) {
+          this._postToPanel(panelId, { type: 'contextWarning', payload: {
+            message: failures.map(failure => this._contextFileWarning(failure)).join(' '),
+          } });
+        }
+      })
         .then((items) => {
-          if (items.length) {
+          if (items.length && restoreIsCurrent()) {
             this._postToPanel(panelId, { type: 'contextUpdated', payload: items });
           }
         })
@@ -1313,6 +1420,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const activeProviderId = this._getPanelProvider(panelId);
     // Bound the active-provider refresh (cold cache → single CLI probe).
     await this._withTimeout(this._setupManager.ensureProviderStatusFresh(activeProviderId), 4000);
+    if (!isCurrent()) { return; }
 
     let wizardStatus: WizardStatusResult = this._setupManager.getWizardStatusCached();
 
@@ -1327,6 +1435,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const mystiReady = this._mystiCoordinator?.status().ready === true;
     if (!forHub && !wizardDismissed && !wizardStatus.anyReady && !mystiReady) {
       const fullStatus = await this._withTimeout(this._setupManager.getWizardStatus(), 6000);
+      if (!isCurrent()) { return; }
       if (fullStatus) {
         if (!fullStatus.anyReady) {
           // No providers installed — show the setup wizard. Include panelId so
@@ -1378,6 +1487,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const fromName = this._providerManager.getProvider(demotedFrom)?.displayName ?? demotedFrom;
         const toName = this._providerManager.getProvider(selectedProvider)?.displayName ?? selectedProvider;
         setTimeout(() => {
+          if (!isCurrent()) { return; }
           this._postToPanel(panelId, {
             type: 'systemNotice',
             payload: {
@@ -1485,6 +1595,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         messagesSent: Number(this._engagementManager.getUsageStats()?.totalMessages) || 0,
       });
     }
+    if (!isCurrent()) { return; }
 
     const initialState: WebviewMessage = {
       type: 'initialState',
@@ -1559,7 +1670,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // feature enabled + workspace open) so it can hide the code-rewind menu
     // items when they're not. Non-blocking — fork always works regardless.
     void this._checkpointManager.isAvailable()
-      .then(available => this._postToPanel(panelId, {
+      .then(available => isCurrent() && this._postToPanel(panelId, {
         type: 'checkpointAvailability',
         payload: { available }
       }))
@@ -1638,6 +1749,37 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
+  /** A webview can accept postMessage before its chat script has a listener. */
+  private _trackWebviewReadiness(webview: vscode.Webview): () => void {
+    const readiness = this._webviewReadiness ??= new WeakMap();
+    readiness.get(webview)?.resolve();
+    let resolve!: (documentId?: string) => void;
+    const state: WebviewReadiness = { ready: new Promise<string | undefined>(done => { resolve = done; }), resolve: documentId => resolve(documentId) };
+    readiness.set(webview, state);
+    return () => {
+      state.resolve();
+      if (readiness.get(webview) === state) { readiness.delete(webview); }
+    };
+  }
+
+  private async _acceptWebviewReady(webview: vscode.Webview, payload: unknown, panelId: string | null, forHub = false): Promise<void> {
+    const documentId = payload && typeof payload === 'object' ? (payload as { documentId?: unknown }).documentId : undefined;
+    if (typeof documentId !== 'string' || !documentId || documentId.length > 128) { return; }
+    const state = this._webviewReadiness?.get(webview);
+    if (!state || state.documentId === documentId) { return; }
+    const reloaded = state.documentId !== undefined;
+    state.documentId = documentId;
+    state.resolve(documentId);
+    // The first signal releases the load already started by the mount path.
+    // A later document (webview reload) needs its own fresh state snapshot.
+    if (reloaded && panelId) {
+      await this._sendInitialState(panelId, forHub);
+      if (forHub && this._hub?.panel.webview === webview && this._hub.originPanelId === panelId) {
+        this._postHubShow(this._hub.section);
+      }
+    }
+  }
+
   private async _receivePanelMessage(message: unknown, panelId: string, sender: vscode.Webview): Promise<void> {
     const state = this._panelStates.get(panelId);
     if (!state || state.webview !== sender) { return; }
@@ -1645,6 +1787,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (!bound) { return; }
     const conversationBefore = state.currentConversationId;
     try {
+      if (bound.type === 'webviewReady') {
+        await this._acceptWebviewReady(sender, bound.payload, panelId);
+        return;
+      }
       await this._handleMessage(bound as unknown as WebviewMessage);
       await this._syncHubAfterChatMessage(panelId, bound, conversationBefore);
     } catch (error) {
@@ -1691,20 +1837,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         break;
       case 'sendMessage':
-        await this._handleSendMessage(
+        await this._withComposerSubmission(msg.payload as ComposerSendRequest, msg.panelId, accepted => this._handleSendMessage(
           msg.payload as {
             content: string;
             context: ContextItem[];
             settings: Settings;
             mentions?: Mention[];
           },
-          msg.panelId
-        );
+          msg.panelId,
+          this._captureComposerEditorContext(msg.payload as ComposerSendRequest, msg.panelId),
+          accepted
+        ));
         break;
 
       // Plan 29 — run a session (several agents, one problem).
       case 'startSession':
-        await this._handleStartSession(
+        await this._withComposerSubmission(msg.payload as ComposerSendRequest, msg.panelId, accepted => this._handleStartSession(
           msg.payload as {
             shape: string;
             agentIds: string[];
@@ -1712,8 +1860,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             settings: Settings;
             context?: ContextItem[];
           },
-          msg.panelId
-        );
+          msg.panelId,
+          this._captureComposerEditorContext({ settings: (msg.payload as { settings: Settings }).settings }, msg.panelId),
+          accepted
+        ));
         break;
 
       // Plan 29 — stop ONE lane, leaving the rest of the session running.
@@ -1771,6 +1921,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         {
           const panelId = msg.panelId;
           if (panelId) {
+            // Snapshot the interrupted answer before invalidating its turn.
+            // A provider may never yield again after cancellation.
+            const responseStop = this._responseStops?.get(panelId);
+            const partial = responseStop?.stop();
+            if (this._responseStops?.get(panelId) === responseStop) { this._responseStops?.delete(panelId); }
             // Add to cancelled panels set for per-panel tracking
             this._cancelQueuedChannelTurn(panelId);
             this._cancelledPanels.add(panelId);
@@ -1796,8 +1951,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             this._cancelPendingSubAgentQuestions(panelId);
             this._pendingPlans.clearPanel(panelId);
             this._pendingPlanSelections.delete(panelId);
+            this._runningPanels.delete(panelId);
+            this._lifecycleManager.markIdle(panelId);
             // Notify webview to reset UI state
-            this._postToPanel(panelId, { type: 'requestCancelled' });
+            this._postToPanel(panelId, { type: 'requestCancelled', ...(partial ? { payload: { message: partial } } : {}) });
           }
         }
         break;
@@ -1974,14 +2131,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'sendBrainstormMessage':
-        await this._handleBrainstormMessage(
+        await this._withComposerSubmission(msg.payload as ComposerSendRequest, msg.panelId, accepted => this._handleBrainstormMessage(
           msg.payload as {
             content: string;
             context: ContextItem[];
             settings: Settings;
+            mentions?: Mention[];
           },
-          msg.panelId
-        );
+          msg.panelId,
+          accepted
+        ));
         break;
 
       case 'updateSettings':
@@ -1999,45 +2158,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this._handleRequestFileAttachment(msg.panelId);
         break;
 
+      case 'addContextUris':
+        {
+          const target = this._captureContextTarget(msg.panelId);
+          if (target) { await this._addContextUris(msg.payload, target); }
+        }
+        break;
+
       case 'addContextPaths':
         {
           // Plan 07: files dropped onto the context panel.
-          const panelId = msg.panelId;
+          const target = this._captureContextTarget(msg.panelId);
+          if (!target) { break; }
           const paths = Array.isArray(msg.payload) ? (msg.payload as string[]) : [];
-          let added = false;
-          for (const p of paths) {
-            const item = await this._contextManager.addFileToContext(p, panelId);
-            if (item) { added = true; }
-          }
-          if (added && panelId) {
-            this._postToPanel(panelId, {
-              type: 'contextUpdated',
-              payload: this._contextManager.getContext(panelId)
-            });
-          }
+          await this._addContextPaths(paths, target);
         }
         break;
 
       case 'addContextFile':
         {
           // Plan 07: pick file(s) to add as persistent context.
-          const panelId = msg.panelId;
+          const target = this._captureContextTarget(msg.panelId);
+          if (!target) { break; }
           const uris = await vscode.window.showOpenDialog({
             canSelectMany: true,
             canSelectFiles: true,
             canSelectFolders: false,
             openLabel: 'Add to context',
           });
-          if (uris && uris.length) {
-            for (const uri of uris) {
-              await this._contextManager.addFileToContext(uri.fsPath, panelId);
-            }
-            if (panelId) {
-              this._postToPanel(panelId, {
-                type: 'contextUpdated',
-                payload: this._contextManager.getContext(panelId)
-              });
-            }
+          if (uris?.length && target.isCurrent()) {
+            await this._addContextPaths(uris.map(uri => uri.fsPath), target);
           }
         }
         break;
@@ -2218,10 +2368,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const rcuCommand = rcuProvider ? this._cliUpdates?.getUpdateCommand(rcuProvider) : undefined;
         if (rcuCommand) {
           const terminal = vscode.window.createTerminal({
-            name: `Mysti: update ${getProviderDisplayName(rcuProvider) || rcuProvider}`
+            name: `Mysti: update ${getProviderDisplayName(rcuProvider) || rcuProvider}`,
+            shellPath: installerShell(rcuCommand),
           });
           terminal.show();
           terminal.sendText(rcuCommand);
+        } else if (rcuProvider) {
+          const reason = this._cliUpdates?.getUpdateError(rcuProvider);
+          if (reason) { await vscode.window.showWarningMessage(reason); }
         }
         break;
       }
@@ -2246,7 +2400,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'executeSlashCommand':
         this._emitBadgeUnlocks(msg.panelId, this._engagementManager.trackSlashCommandUsed());
         await this._handleSlashCommand(
-          msg.payload as { command?: string; commandId?: string; args?: string },
+          msg.payload as ComposerSlashRequest,
           msg.panelId
         );
         break;
@@ -2297,73 +2451,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'newConversation':
-        await this._dictationManager?.cancelPanel(msg.panelId);
-        {
-          const panelId = msg.panelId;
-          const panelState = this._panelStates.get(panelId);
-
-          // Cancel any running request on this panel before starting fresh
-          this._cancelQueuedChannelTurn(panelId);
-          this._cancelledPanels.add(panelId);
-          this._providerManager.cancelRequest(panelId);
-          this._abortMystiDirect(panelId);
-          this._brainstormManager.cancelSession(panelId);
-          // S1/S4: drop the brainstorm record AND its child provider sessions
-          // (composite `-brainstorm-` panels) so the new conversation can't
-          // resume a previous brainstorm's CLI sessions.
-          this._brainstormManager.clearSession(panelId);
-          // Plan 18 (1.3): stop any live collab/orchestrate children too.
-          this._collaborationManager.cancelPanel(panelId);
-          this._sessionManager.cancelPanel(panelId);
-          this._mystiOrchestrator?.cancelPanel(panelId);
-          // C2: derive ids from the registry, never a hard-coded list
-          this._mentionRouter.cancelSubAgents(panelId, this._providerManager.getAllProviderIds());
-          this._cancelPendingSubAgentQuestions(panelId);
-          this._pendingPlans.clearPanel(panelId);
-          this._pendingPlanSelections.delete(panelId);
-          // Plan 21 Phase 0: consent does not survive the conversation it was
-          // given in. An "always allow" click was previously permanent and
-          // process-wide, so a fresh conversation silently inherited it.
-          this._permissionManager.clearSessionUpgrade(panelId);
-
-          this._providerManager.clearSession(panelId);  // Clear provider session for this panel
-          this._compactionManager.resetUsage(panelId);  // Reset compaction tracking (sweeps -brainstorm- child keys)
-          this._lifecycleManager.removeSession(panelId);  // Clear lifecycle tracking
-          const newConv = this._conversationManager.createNewConversation();
-
-          if (panelState) {
-            panelState.currentConversationId = newConv.id;
-          }
-
-          // Track engagement: new conversation started
-          this._emitBadgeUnlocks(panelId, this._engagementManager.trackConversationStarted());
-
-          this._postToPanel(panelId, {
-            type: 'conversationChanged',
-            payload: newConv
-          });
-          this._postToPanel(panelId, {
-            type: 'sessionCleared',
-            payload: { message: vscode.l10n.t('Session cleared') }
-          });
-        }
+        await this._handleNewConversation(msg.panelId);
         break;
 
       case 'clearSession':
         {
           const panelId = msg.panelId;
           if (panelId) {
-            this._cancelQueuedChannelTurn(panelId);
-            this._cancelPendingSubAgentQuestions(panelId);
-            this._pendingPlans.clearPanel(panelId);
-            this._pendingPlanSelections.delete(panelId);
-            // Cancel any running request before clearing the session
-            this._cancelledPanels.add(panelId);
-            this._providerManager.cancelRequest(panelId);
-            this._abortMystiDirect(panelId);
-            this._brainstormManager.cancelSession(panelId);
+            this._resetConversationWork(panelId);
+          } else {
+            this._providerManager.clearSession();
           }
-          this._providerManager.clearSession(panelId);
           if (panelId) {
             this._postToPanel(panelId, {
               type: 'sessionCleared',
@@ -2376,23 +2474,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'shutdownAgent':
         {
           const panelId = msg.panelId;
+          const owner = this._panelStates.get(panelId);
+          if (!owner) { break; }
+          const conversationId = owner.currentConversationId;
+          const generation = this._mystiRunGen.get(panelId) ?? 0;
+          const providerId = this._getPanelProvider(panelId);
           const force = (msg.payload as { force?: boolean } | undefined)?.force === true;
           const result = await this._lifecycleManager.requestShutdown(panelId, force);
-          if (result.blocked) {
-            this._postToPanel(panelId, {
-              type: 'lifecycleEvent',
-              payload: {
-                type: 'shutdown-blocked',
-                panelId,
-                // C3: report the panel's actual provider, not a hard-coded id
-                providerId: this._getPanelProvider(panelId),
-                detail: result.reason,
-                childPids: result.childPids,
-              }
-            });
-          } else if (result.success) {
-            this._providerManager.disposePersistentProcess(panelId);
-            this._providerManager.clearSession(panelId);
+          if (this._panelStates.get(panelId) !== owner || owner.currentConversationId !== conversationId
+            || (this._mystiRunGen.get(panelId) ?? 0) !== generation || this._getPanelProvider(panelId) !== providerId) { break; }
+          // All blocked diagnostics are emitted once by the lifecycle manager,
+          // including busy-turn and child-protection failures.
+          if (result.success) {
+            // The synchronous lifecycle callback already reclaimed the exact
+            // provider session. Never repeat destructive cleanup after await.
             this._postToPanel(panelId, {
               type: 'sessionCleared',
               // The conversation stays on screen, so the agent map must not reset.
@@ -2493,12 +2588,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'copyToClipboard':
-        await vscode.env.clipboard.writeText(msg.payload as string);
+        await this._handleConversationTransfer(msg.panelId, 'copyToClipboard', msg.payload);
         break;
 
       case 'revertFileEdit':
         await this._handleRevertFileEdit(
-          msg.payload as { path: string },
+          msg.payload as { path: string; toolCallId?: string },
           msg.panelId
         );
         break;
@@ -2506,11 +2601,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'getFileLineNumber':
         {
           // Support both msg.payload and direct properties on message
-          const fileLinePayload = (msg.payload || msg) as { filePath: string; searchText: string };
+          const fileLinePayload = (msg.payload || msg) as { filePath: string; searchText: string; toolCallId?: string };
           await this._handleGetFileLineNumber(
             {
               filePath: fileLinePayload.filePath,
-              searchText: fileLinePayload.searchText
+              searchText: fileLinePayload.searchText,
+              toolCallId: fileLinePayload.toolCallId
             },
             msg.panelId
           );
@@ -2700,56 +2796,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       case 'forkConversation':
         {
-          const messageId = (msg.payload as { messageId: string }).messageId;
-          this._forkConversation(msg.panelId, messageId);
+          const payload = msg.payload as { messageId?: string; conversationId?: string } | undefined;
+          const owner = this._panelStates.get(msg.panelId);
+          if (payload?.messageId && (!payload.conversationId || payload.conversationId === owner?.currentConversationId)) {
+            this._forkConversation(msg.panelId, payload.messageId);
+          }
         }
         break;
 
       case 'rewindToCheckpoint':
-        {
-          const { commit, messageId } = msg.payload as { commit: string; messageId?: string };
-          await this._rewindCode(msg.panelId, commit, messageId);
-        }
-        break;
-
       case 'forkAndRewind':
         {
-          const { messageId, commit } = msg.payload as { messageId: string; commit?: string };
-          const forked = this._forkConversation(msg.panelId, messageId);
-          // Rewind the forked branch's anchor message (id is preserved across fork).
-          if (forked && commit) {
-            await this._rewindCode(msg.panelId, commit, messageId);
-          }
+          const payload = msg.payload as { commit?: string; messageId?: string; conversationId?: string } | undefined;
+          await this._rewindCode(msg.panelId, payload?.commit, payload?.messageId,
+            msg.type === 'forkAndRewind', payload?.conversationId);
         }
         break;
 
       case 'switchConversation':
-        await this._dictationManager?.cancelPanel(msg.panelId);
-        {
-          const panelId = msg.panelId;
-          const switchId = (msg.payload as { id: string }).id;
-          const panelState = this._panelStates.get(panelId);
-
-          if (panelState) {
-            const conversation = this._conversationManager.getConversation(switchId);
-            if (conversation) {
-              if (panelState.currentConversationId !== switchId) {
-                this._cancelQueuedChannelTurn(panelId);
-                this._providerManager.cancelRequest(panelId);
-                this._abortMystiDirect(panelId);
-                this._pendingPlans.clearPanel(panelId);
-                this._pendingPlanSelections.delete(panelId);
-                this._cancelPendingSubAgentQuestions(panelId);
-              }
-              // Validate the target before changing the active view.
-              panelState.currentConversationId = switchId;
-              this._postToPanel(panelId, {
-                type: 'conversationChanged',
-                payload: conversation
-              });
-            }
-          }
-        }
+        await this._handleSwitchConversation(msg.panelId, (msg.payload as { id: string }).id);
         break;
 
       case 'updateAgentConfig':
@@ -2787,19 +2852,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           const deleteId = (msg.payload as { id: string }).id;
           const panelState = this._panelStates.get(panelId);
 
-          this._conversationManager.deleteConversation(deleteId);
-
-          // If this panel was viewing the deleted conversation, create a new one
-          if (panelState?.currentConversationId === deleteId) {
-            const newConv = this._conversationManager.createNewConversation();
-            this._cancelQueuedChannelTurn(panelId);
-            this._providerManager.cancelRequest(panelId);
-            this._abortMystiDirect(panelId);
-            this._pendingPlans.clearPanel(panelId);
-            this._pendingPlanSelections.delete(panelId);
-            this._cancelPendingSubAgentQuestions(panelId);
-            panelState.currentConversationId = newConv.id;
-            this._postToPanel(panelId, {
+          const previousIds = new Set(this._conversationManager.getAllConversations().map(conversation => conversation.id));
+          if (!this._conversationManager.deleteConversation(deleteId)) { break; }
+          for (const job of this._backgroundJobManager.listAll()) {
+            if (job.conversationId === deleteId && job.status === 'running' && this._backgroundJobManager.isExecutingHere(job.id)) {
+              this._abortMystiJob(job.id);
+            }
+          }
+          // Deleting the last stored chat already creates a replacement. Reuse
+          // it once instead of adding an invisible extra empty history entry.
+          let replacement = this._conversationManager.getAllConversations().find(conversation => !previousIds.has(conversation.id));
+          for (const [ownerId, owner] of this._panelStates) {
+            if (owner.currentConversationId !== deleteId) { continue; }
+            owner.navigationRevision = (owner.navigationRevision ?? 0) + 1;
+            // cancelPanel marks dictation cancelled synchronously; its editor
+            // cleanup can finish later without holding deleted work open.
+            void this._dictationManager?.cancelPanel(ownerId).catch(error => {
+              console.error('[Mysti] Failed to close deleted conversation dictation:', error);
+            });
+            this._resetConversationWork(ownerId);
+            this._compactionManager.resetUsage(ownerId);
+            this._lifecycleManager.removeSession(ownerId);
+            const newConv = replacement ?? this._conversationManager.createNewConversation();
+            replacement = undefined;
+            owner.currentConversationId = newConv.id;
+            this._postToPanel(ownerId, {
               type: 'conversationChanged',
               payload: newConv
             });
@@ -2901,48 +2978,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'askUserQuestionResponse':
-        {
-          const aqPayload = msg.payload as { toolCallId: string; answers: Record<string, string | string[]> };
-
-          // Cancel semi-autonomous timer if running (user answered in time)
-          const semiAutoTimeout = this._semiAutoQuestionTimeouts.get(aqPayload.toolCallId);
-          if (semiAutoTimeout) {
-            clearTimeout(semiAutoTimeout);
-            this._semiAutoQuestionTimeouts.delete(aqPayload.toolCallId);
-          }
-
-          const originalQuestion = this._pendingQuestionData.get(aqPayload.toolCallId);
-          this._pendingQuestionData.delete(aqPayload.toolCallId);
-          await this._handleAskUserQuestionResponse(
-            aqPayload,
-            msg.panelId,
-            originalQuestion
-          );
-        }
+        await this._answerPendingQuestion(msg.panelId, msg.payload);
         break;
 
       case 'askUserQuestionSkipped':
-        {
-          const skipPayload = msg.payload as { toolCallId: string };
-          const skipPanelId = msg.panelId;
-          const skipTimer = this._semiAutoQuestionTimeouts.get(skipPayload.toolCallId);
-          if (skipTimer) {
-            clearTimeout(skipTimer);
-            this._semiAutoQuestionTimeouts.delete(skipPayload.toolCallId);
-          }
-          const skippedQuestion = this._pendingQuestionData.get(skipPayload.toolCallId);
-          this._pendingQuestionData.delete(skipPayload.toolCallId);
-          this._pendingAskUserQuestions.delete(skipPanelId);
-
-          // Send a decline response so the CLI process doesn't hang waiting for input
-          if (skippedQuestion) {
-            await this._handleAskUserQuestionResponse(
-              { toolCallId: skipPayload.toolCallId, answers: { '0': 'User declined to answer this question. Please continue without this information or make a reasonable assumption.' } },
-              skipPanelId,
-              skippedQuestion
-            );
-          }
-        }
+        await this._answerPendingQuestion(msg.panelId, msg.payload, true);
         break;
 
       case 'subAgentQuestionResponse':
@@ -2957,9 +2997,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       case 'planOptionsSkipped':
         {
-          const skipPlanPayload = msg.payload as { syntheticPlanId: string };
+          const skipPlanPayload = msg.payload as { syntheticPlanId?: string; conversationId?: string | null } | undefined;
           const skipPlanPanelId = msg.panelId;
-          if (this._pendingPlans.take(skipPlanPanelId, skipPlanPayload.syntheticPlanId)) {
+          if (!skipPlanPayload || typeof skipPlanPayload.syntheticPlanId !== 'string') { break; }
+          const skippedPlan = this._pendingPlans.peek(skipPlanPanelId, skipPlanPayload.syntheticPlanId);
+          if (skippedPlan?.isCurrent?.() && skippedPlan.conversationId === skipPlanPayload.conversationId
+            && this._pendingPlans.take(skipPlanPanelId, skipPlanPayload.syntheticPlanId)) {
             this._pendingPlanSelections.delete(skipPlanPanelId);
           }
         }
@@ -3099,129 +3142,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         break;
 
-      // ---- Conversation Export Messages ----
-
+      // Transfer results belong to the panel and conversation that requested them.
       case 'exportConversation':
-        await this._handleExportConversation(msg.panelId);
+        await this._handleExportConversation(msg.panelId, msg.payload);
         break;
-
       case 'copyMessageMarkdown':
-        {
-          const copyMsgPanelId = msg.panelId;
-          const copyPayload = msg.payload as { messageId: string };
-          const copyPanelState = this._panelStates.get(copyMsgPanelId);
-          const copyConvId = copyPanelState?.currentConversationId;
-          if (copyConvId && copyPayload?.messageId) {
-            const markdown = this._conversationManager.exportMessageToMarkdown(
-              copyConvId,
-              copyPayload.messageId
-            );
-            if (markdown) {
-              await vscode.env.clipboard.writeText(markdown);
-              this._postToPanel(copyMsgPanelId, {
-                type: 'exportResult',
-                payload: { success: true, markdown }
-              });
-              console.log('[Mysti] Message exported to clipboard');
-            } else {
-              this._postToPanel(copyMsgPanelId, {
-                type: 'exportResult',
-                payload: { success: false, error: vscode.l10n.t('Message not found') }
-              });
-            }
-          }
-        }
-        break;
-
-      // ---- File Import/Export Messages ----
-
       case 'exportToFile':
-        {
-          const expPanelId = msg.panelId;
-          const expFormat = (msg.payload as { format: string })?.format || 'json';
-          const expPanelState = this._panelStates.get(expPanelId);
-          const expConvId = expPanelState?.currentConversationId;
-          if (expConvId) {
-            const isMarkdown = expFormat === 'markdown';
-            const content = isMarkdown
-              ? this._conversationManager.exportToMarkdown(expConvId)
-              : this._conversationManager.exportToJson(expConvId);
-            if (content) {
-              const uri = await vscode.window.showSaveDialog({
-                filters: isMarkdown
-                  ? { [vscode.l10n.t('Markdown')]: ['md'] }
-                  : { [vscode.l10n.t('Mysti JSON')]: ['mysti.json'], [vscode.l10n.t('JSON')]: ['json'] },
-                defaultUri: vscode.Uri.file(`conversation.${isMarkdown ? 'md' : 'mysti.json'}`)
-              });
-              if (uri) {
-                await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf-8'));
-                this._emitBadgeUnlocks(expPanelId, this._engagementManager.trackExport());
-                this._postToPanel(expPanelId, {
-                  type: 'exportResult',
-                  payload: { success: true }
-                });
-                console.log(`[Mysti] Conversation exported to file: ${uri.fsPath}`);
-              }
-            }
-          }
-        }
-        break;
-
       case 'importFromFile':
-        {
-          const impPanelId = msg.panelId;
-          const uris = await vscode.window.showOpenDialog({
-            canSelectFiles: true,
-            canSelectMany: false,
-            filters: {
-              [vscode.l10n.t('Conversation Files')]: ['mysti.json', 'json', 'jsonl', 'md']
-            }
-          });
-          if (uris && uris.length > 0) {
-            const fileContent = await vscode.workspace.fs.readFile(uris[0]);
-            const text = Buffer.from(fileContent).toString('utf-8');
-            const fileName = uris[0].fsPath;
-            const imported = this._conversationManager.importFromContent(text, fileName);
-            if (imported) {
-              const impPanelState = this._panelStates.get(impPanelId);
-              if (impPanelState) {
-                impPanelState.currentConversationId = imported.id;
-              }
-              this._postToPanel(impPanelId, {
-                type: 'conversationChanged',
-                payload: imported
-              });
-              console.log(`[Mysti] Conversation imported from: ${fileName}`);
-            } else {
-              vscode.window.showErrorMessage(vscode.l10n.t('Failed to import conversation: unrecognized format'));
-            }
-          }
-        }
-        break;
-
       case 'triggerShareLink':
-        {
-          const sharePanelId = msg.panelId;
-          const sharePanelState = this._panelStates.get(sharePanelId);
-          const shareConvId = sharePanelState?.currentConversationId;
-          if (shareConvId) {
-            const data = this._conversationManager.exportToShareable(shareConvId);
-            if (data) {
-              const uri = `vscode://DeepMyst.mysti/import?data=${data}`;
-              if (uri.length > 2000) {
-                // Too long for a URI — fall back to clipboard with JSON
-                const json = this._conversationManager.exportToJson(shareConvId);
-                await vscode.env.clipboard.writeText(json);
-                vscode.window.showInformationMessage(vscode.l10n.t('Conversation too long for a deep link — full JSON copied to clipboard instead.'));
-              } else {
-                await vscode.env.clipboard.writeText(uri);
-                vscode.window.showInformationMessage(vscode.l10n.t('Share link copied to clipboard!'));
-              }
-              this._emitBadgeUnlocks(sharePanelId, this._engagementManager.trackConversationShared());
-              console.log('[Mysti] Share link generated');
-            }
-          }
-        }
+        await this._handleConversationTransfer(msg.panelId, msg.type, msg.payload);
         break;
 
       case 'triggerInitTeam':
@@ -3676,7 +3605,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async _handleGetFileLineNumber(
-    payload: { filePath: string; searchText: string },
+    payload: { filePath: string; searchText: string; toolCallId?: string },
     panelId?: string
   ) {
     // Guard against missing filePath
@@ -3700,7 +3629,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (panelId) {
         this._postToPanel(panelId, {
           type: 'fileLineNumber',
-          payload: { filePath: payload.filePath, lineNumber }
+          payload: { filePath: payload.filePath, toolCallId: payload.toolCallId, lineNumber }
         });
       }
     } catch {
@@ -3708,28 +3637,50 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (panelId) {
         this._postToPanel(panelId, {
           type: 'fileLineNumber',
-          payload: { filePath: payload.filePath, lineNumber: 1 }
+          payload: { filePath: payload.filePath, toolCallId: payload.toolCallId, lineNumber: 1 }
         });
       }
     }
   }
 
-  private async _handleRevertFileEdit(payload: { path: string }, panelId?: string) {
+  private async _handleRevertFileEdit(payload: { path: string; toolCallId?: string }, panelId?: string) {
+    let ownedPath: string | undefined;
     try {
-      const uri = vscode.Uri.file(this._resolveFilePath(payload.path));
-
-      // Try to use git to revert the file
-      try {
-        await vscode.commands.executeCommand('git.clean', uri);
-      } catch {
-        // If git clean fails, try checkout
-        await vscode.commands.executeCommand('git.checkout', uri);
-      }
+      const conversationId = panelId && this._panelStates.get(panelId)?.currentConversationId;
+      const conversation = conversationId && this._conversationManager.getConversation(conversationId);
+      if (!conversation || !payload.toolCallId) { throw new Error('This action has no recorded edit in the current conversation.'); }
+      const matches = conversation.messages.flatMap(message => (message.toolCalls ?? []).map(tool => ({ tool, provider: message.provider ?? conversation.provider })))
+        .filter(record => record.tool.id === payload.toolCallId);
+      if (matches.length !== 1) { throw new Error('The recorded edit could not be identified in this conversation.'); }
+      const { tool, provider } = matches[0];
+      if (tool.historicalOnly) { throw new Error('Imported historical edits cannot revert files in this workspace.'); }
+      const proposalProvider = provider && this._providerManager?.getProviderInstance?.(provider)?.capabilities.toolCallsAreProposals;
+      if (tool.proposalOnly || tool.status === 'proposed' || proposalProvider) { throw new Error('A proposed edit was not executed and cannot revert files.'); }
+      const recordedPath = tool.input.file_path ?? tool.input.path;
+      if (typeof recordedPath !== 'string') { throw new Error('The recorded edit has no file path.'); }
+      const resolvedPath = this._resolveWorkspaceFileAction(payload.path);
+      if (this._resolveWorkspaceFileAction(recordedPath) !== resolvedPath) { throw new Error('The selected file does not belong to this edit.'); }
+      this._fileActionsInFlight ??= new Set();
+      if (this._fileActionsInFlight.has(resolvedPath)) { throw new Error('Another edit to this file is still running.'); }
+      this._fileActionsInFlight.add(resolvedPath);
+      ownedPath = resolvedPath;
+      const uri = vscode.Uri.file(resolvedPath);
+      const document = await vscode.workspace.openTextDocument(uri);
+      const version = document.version;
+      const content = document.getText();
+      const inverse = reverseToolEdit(content, tool);
+      await vscode.window.showTextDocument(document);
+      if (this._panelStates.get(panelId!)?.currentConversationId !== conversationId) { throw new Error('The conversation changed before the edit could be reverted.'); }
+      if (document.version !== version || document.getText() !== content) { throw new Error('The file changed before the edit could be reverted. Please review it again.'); }
+      if (this._resolveWorkspaceFileAction(payload.path) !== resolvedPath) { throw new Error('The file location changed before the edit could be reverted.'); }
+      const edit = new vscode.WorkspaceEdit();
+      edit.replace(uri, new vscode.Range(document.positionAt(inverse.start), document.positionAt(inverse.end)), inverse.replacement);
+      if (!await vscode.workspace.applyEdit(edit)) { throw new Error('The editor rejected the revert. The file was not changed by this action.'); }
 
       if (panelId) {
         this._postToPanel(panelId, {
           type: 'fileReverted',
-          payload: { path: payload.path, success: true }
+          payload: { path: payload.path, toolCallId: payload.toolCallId, success: true }
         });
       }
 
@@ -3740,6 +3691,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           type: 'fileReverted',
           payload: {
             path: payload.path,
+            toolCallId: payload.toolCallId,
             success: false,
             error: error instanceof Error ? error.message : 'Failed to revert'
           }
@@ -3747,6 +3699,75 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
 
       vscode.window.showErrorMessage(vscode.l10n.t('Failed to revert {0}: {1}', payload.path, error instanceof Error ? error.message : vscode.l10n.t('Unknown error')));
+    } finally {
+      if (ownedPath) { this._fileActionsInFlight.delete(ownedPath); }
+    }
+  }
+
+  /** Revoke both the card capability and its timer before a panel moves on. */
+  private _clearPendingQuestion(panelId: string): void {
+    const deliveryId = this._pendingAskUserQuestions?.get(panelId);
+    if (!deliveryId) { return; }
+    const timer = this._semiAutoQuestionTimeouts?.get(deliveryId);
+    if (timer) { clearTimeout(timer); }
+    this._semiAutoQuestionTimeouts?.delete(deliveryId);
+    this._pendingQuestionData?.delete(deliveryId);
+    this._pendingAskUserQuestions.delete(panelId);
+  }
+
+  private _takePendingQuestion(panelId: string, deliveryId: string): AskUserQuestionData | undefined {
+    if (this._pendingAskUserQuestions.get(panelId) !== deliveryId) { return undefined; }
+    const pending = this._pendingQuestionData.get(deliveryId);
+    this._clearPendingQuestion(panelId);
+    return pending?.isCurrent() ? pending.question : undefined;
+  }
+
+  private async _answerPendingQuestion(panelId: string, payload: unknown, skipped = false): Promise<void> {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) { return; }
+    const { toolCallId, answers } = payload as { toolCallId?: unknown; answers?: unknown };
+    if (typeof toolCallId !== 'string') { return; }
+    if (!skipped && (!answers || typeof answers !== 'object' || Array.isArray(answers)
+      || Object.keys(answers).length === 0 || !Object.values(answers).every(value => typeof value === 'string'
+        || (Array.isArray(value) && value.every(item => typeof item === 'string'))))) { return; }
+    const question = this._takePendingQuestion(panelId, toolCallId);
+    if (!question) { return; }
+    await this._handleAskUserQuestionResponse({
+      toolCallId: question.toolCallId,
+      answers: skipped
+        ? { '0': 'User declined to answer this question. Please continue without this information or make a reasonable assumption.' }
+        : answers as Record<string, string | string[]>,
+    }, panelId, question);
+  }
+
+  private _showPendingQuestion(panelId: string, question: AskUserQuestionData): void {
+    const state = this._panelStates.get(panelId);
+    if (!state || this._cancelledPanels.has(panelId)) { return; }
+    const questions = normalizeAskUserQuestions(question?.questions);
+    if (!questions || typeof question?.toolCallId !== 'string' || !question.toolCallId.trim()) {
+      this._postToPanel(panelId, { type: 'error', payload: 'The agent returned an invalid question. Please retry your request.' });
+      return;
+    }
+    question = { ...question, questions };
+    this._clearPendingQuestion(panelId);
+    const deliveryId = crypto.randomUUID();
+    const conversationId = state.currentConversationId;
+    const webview = state.webview;
+    const generation = this._mystiRunGen?.get(panelId) ?? 0;
+    this._pendingAskUserQuestions.set(panelId, deliveryId);
+    this._pendingQuestionData.set(deliveryId, { question, isCurrent: () =>
+      this._panelStates.get(panelId) === state && state.webview === webview
+      && state.currentConversationId === conversationId && !this._cancelledPanels.has(panelId)
+      && (this._mystiRunGen?.get(panelId) ?? 0) === generation,
+    });
+    this._postToPanel(panelId, { type: 'askUserQuestion', payload: { ...question, toolCallId: deliveryId } });
+    if (this._isSemiAutonomousEnabled(panelId)) {
+      const timeout = this._getSemiAutonomousTimeout();
+      this._postToPanel(panelId, { type: 'semiAutonomousQuestionTimer', payload: {
+        toolCallId: deliveryId, timeout, expiresAt: Date.now() + timeout * 1000,
+      } });
+      this._semiAutoQuestionTimeouts.set(deliveryId, setTimeout(() => {
+        void this._handleSemiAutonomousQuestionTimeout(panelId, question, deliveryId);
+      }, timeout * 1000));
     }
   }
 
@@ -3755,8 +3776,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     panelId: string,
     originalQuestion?: AskUserQuestionData
   ): Promise<void> {
-    // Clear the pending AskUserQuestion tracking
-    this._pendingAskUserQuestions.delete(panelId);
+    // Autonomous answers also supersede any earlier pending question.
+    this._clearPendingQuestion(panelId);
 
     // Learn from the user's answer (passive memory building)
     if (originalQuestion) {
@@ -3785,17 +3806,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     parts.push('\nPlease proceed based on these choices.');
 
-    // Get settings from config (use per-panel provider/model)
+    // Answering continues this panel's turn. Another chat may have changed
+    // shared defaults while this question was waiting (including access level).
     const config = vscode.workspace.getConfiguration('mysti');
+    const provider = this._getPanelProvider(panelId) as Settings['provider'];
+    const previous = this._lastSendSettings?.get(panelId);
+    const last = previous?.provider === provider ? previous : undefined;
     const settings: Settings = {
-      mode: config.get('defaultMode', 'ask-before-edit') as Settings['mode'],
-      thinkingLevel: config.get('defaultThinkingLevel', 'none') as Settings['thinkingLevel'],
-      effortLevel: config.get('defaultEffortLevel', 'high') as Settings['effortLevel'],
-      ultracode: config.get<boolean>('claudeUltracode', false),
-      accessLevel: config.get('accessLevel', 'ask-permission') as Settings['accessLevel'],
-      contextMode: config.get('autoContext', true) ? 'auto' : 'manual',
+      mode: previous?.mode ?? config.get('defaultMode', 'ask-before-edit') as Settings['mode'],
+      thinkingLevel: last?.thinkingLevel ?? config.get('defaultThinkingLevel', 'none') as Settings['thinkingLevel'],
+      effortLevel: last?.effortLevel ?? config.get('defaultEffortLevel', 'high') as Settings['effortLevel'],
+      ultracode: last?.ultracode ?? config.get<boolean>('claudeUltracode', false),
+      accessLevel: previous?.accessLevel ?? config.get('accessLevel', 'ask-permission') as Settings['accessLevel'],
+      contextMode: previous?.contextMode ?? (config.get('autoContext', true) ? 'auto' : 'manual'),
       model: this._getPanelModel(panelId),
-      provider: this._getPanelProvider(panelId) as Settings['provider']
+      provider,
     };
 
     // Send as follow-up message
@@ -3846,6 +3871,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private _cancelPendingSubAgentQuestions(panelId: string): void {
     this._subAgentQuestions.cancelPanel(panelId);
+    this._clearPendingQuestion(panelId);
   }
 
   /**
@@ -3860,12 +3886,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     context: ContextItem[],
     settings: Settings,
     conversation: Conversation | null,
-    panelId: string
+    panelId: string,
+    automatic?: ComposerEditorContext,
   ): Promise<string> {
+    const generation = this._mystiRunGen.get(panelId) ?? 0;
+    const owner = this._panelStates.get(panelId);
+    const owns = () => (this._mystiRunGen.get(panelId) ?? 0) === generation
+      && this._panelStates.get(panelId) === owner && (!automatic || automatic.isCurrent());
+    const isCancelled = () => !owns() || this._cancelledPanels.has(panelId);
     const collaborators = collabMentions
       .filter(m => m.type === 'agent' && m.role)
       .map(m => ({ agentId: m.value as AgentType, roleId: m.role as string }));
-    if (collaborators.length === 0) {
+    if (isCancelled() || collaborators.length === 0) {
       return '';
     }
 
@@ -3876,8 +3908,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const onGate: CollaboratorGateCallback = (spec, toolCall, nativeRequest) =>
       this._requestCollaboratorPermission(spec, toolCall, panelId, panelId, nativeRequest);
 
-    // A new send does not stop this run, so its late chunks must not land in
-    // the next turn's group: every post names the run it belongs to.
+    // Every post names its run; the ownership guard suppresses late output
+    // after a replacement send or a conversation change.
     const runId = crypto.randomUUID();
     this._postToPanel(panelId, {
       type: 'collaborationStarted',
@@ -3890,6 +3922,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         brief,
         collaborators,
         context,
+        resolveContext: automatic ? () => this._withComposerEditorContext(context, automatic) : undefined,
+        isCancelled,
         settings,
         panelId,
         conversation,
@@ -3898,7 +3932,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       });
       let next = await gen.next();
       while (!next.done) {
-        if (this._cancelledPanels.has(panelId)) {
+        if (isCancelled()) {
           await gen.return?.(undefined as never);
           break;
         }
@@ -3911,6 +3945,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         result = next.value;
       }
     } catch (error) {
+      if (!owns()) { return ''; }
       console.error('[Mysti] Collaboration run failed:', error);
       this._postToPanel(panelId, {
         type: 'collaborationError',
@@ -3918,7 +3953,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       });
     }
 
-    this._postToPanel(panelId, { type: 'collaborationComplete', payload: { runId } });
+    if (owns()) { this._postToPanel(panelId, { type: 'collaborationComplete', payload: { runId } }); }
     return result.contextBlock;
   }
 
@@ -4010,7 +4045,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     settings: Settings,
     panelId: string
   ): Promise<boolean> {
-    if (chunk.agentId && this._providerManager.getProviderInstance(chunk.agentId)?.capabilities.supportsNativeApproval) {
+    const capabilities = chunk.agentId && this._providerManager.getProviderInstance(chunk.agentId)?.capabilities;
+    if (capabilities && (capabilities.supportsNativeApproval || capabilities.toolCallsAreProposals)) {
       return true;
     }
     if (!chunk.toolCall || !this._shouldGateToolUse(settings, chunk.toolCall.name)) {
@@ -4095,6 +4131,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       context?: ContextItem[];
     },
     panelId?: string,
+    automatic?: ComposerEditorContext,
+    onAccepted?: () => void,
   ): Promise<void> {
     if (!panelId || !this._panelStates.has(panelId)) { return; }
 
@@ -4124,29 +4162,59 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
+    const panelState = this._panelStates.get(panelId)!;
+    const conversationId = panelState.currentConversationId;
+    const navigation = panelState.navigationRevision ?? 0;
+    // Keep explicit input private to this turn across compaction and later
+    // rounds. Automatic editor bytes remain in the host's captured closure.
+    let context = (payload.context ?? []).map(item => ({ ...item }));
+    const prepareContext = this._contextManager.captureContextForSend(context, panelId);
+    const settings = { ...payload.settings };
+    const brief = (payload.brief || '').trim();
+    const preparationGeneration = this._mystiRunGen.get(panelId) ?? 0;
+    const preparationCurrent = this._delayedChannelTurns.capture(panelId);
     // Before cancelRequest below: it would kill an in-flight native /compact.
     await this._waitForPanelCompaction(panelId);
+    if (!preparationCurrent() || this._panelStates.get(panelId) !== panelState
+      || panelState.currentConversationId !== conversationId
+      || (panelState.navigationRevision ?? 0) !== navigation
+      || (automatic && !automatic.isCurrent())
+      || (this._mystiRunGen.get(panelId) ?? 0) !== preparationGeneration) { return; }
     this._cancelQueuedChannelTurn(panelId);
+    const scopeCurrent = this._delayedChannelTurns.capture(panelId);
+    const generation = preparationGeneration + 1;
+    this._mystiRunGen.set(panelId, generation);
+    const ownsRun = () => this._panelStates.get(panelId) === panelState
+      && this._mystiRunGen.get(panelId) === generation;
+    const isCurrent = () => ownsRun() && scopeCurrent()
+      && panelState.currentConversationId === conversationId
+      && (panelState.navigationRevision ?? 0) === navigation
+      && (!automatic || automatic.isCurrent());
     this._providerManager.cancelRequest(panelId);
+    this._sessionManager.cancelPanel(panelId);
     this._abortMystiDirect(panelId);
     this._pendingPlans.clearPanel(panelId);
     this._pendingPlanSelections.delete(panelId);
     this._cancelPendingSubAgentQuestions(panelId);
     this._cancelledPanels.delete(panelId);
 
-    const panelState = this._panelStates.get(panelId);
-    const conversationId = panelState?.currentConversationId;
+    const contextCurrent = () => isCurrent() && !this._cancelledPanels.has(panelId);
+    const refreshedContext = await this._refreshContextForSend(prepareContext, panelId, contextCurrent);
+    if (!refreshedContext || !contextCurrent()) { return; }
+    context = refreshedContext;
+
     const conversation = conversationId
       ? this._conversationManager.getConversation(conversationId)
       : null;
 
-    const brief = (payload.brief || '').trim();
     const userText = brief || `${shape.command} (${agentIds.length} agents)`;
     const userMessage = this._conversationManager.addMessageToConversation(
-      conversationId, 'user', userText, payload.context,
+      conversationId, 'user', userText, context.map(item => ({ ...item })),
     );
+    onAccepted?.();
     this._postToPanel(panelId, { type: 'messageAdded', payload: userMessage });
 
+    this._runningPanels.add(panelId);
     this._lifecycleManager.touchSession(panelId);
     this._lifecycleManager.markBusy(panelId);
     this._postToPanel(panelId, {
@@ -4162,28 +4230,42 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         shape: shape.id,
         agentIds,
         brief: brief || 'Use the conversation so far as the brief.',
-        settings: payload.settings,
+        settings,
         panelId,
         runId,
-        context: payload.context,
+        context,
+        resolveContext: automatic ? () => this._withComposerEditorContext(context, automatic) : undefined,
+        isCancelled: () => !isCurrent() || this._cancelledPanels.has(panelId),
         conversation,
         onQuestion: this._createSubAgentQuestionCallback(panelId),
         onGate: (spec, toolCall, nativeRequest) =>
-          this._requestCollaboratorPermission(spec, toolCall, panelId, panelId, nativeRequest),
+          isCurrent() ? this._requestCollaboratorPermission(spec, toolCall, panelId, panelId, nativeRequest) : Promise.resolve(false),
       });
 
       for await (const event of stream) {
+        if (!isCurrent()) { return; }
         if (this._cancelledPanels.has(panelId)) { break; }
         if (event.type === 'session_complete') { markdown = event.markdown; }
         this._postToPanel(panelId, { type: 'sessionEvent', payload: { runId, ...event } });
       }
     } catch (err) {
+      if (!isCurrent()) { return; }
       const message = err instanceof Error ? err.message : 'The session failed.';
       this._postToPanel(panelId, { type: 'sessionError', payload: { runId, message } });
     } finally {
-      this._lifecycleManager.markIdle(panelId);
+      // Navigation can revoke dispatch while this generation still owns the
+      // busy state. Release only that state, never a successor's lifecycle.
+      if (ownsRun()) {
+        this._runningPanels.delete(panelId);
+        this._lifecycleManager.markIdle(panelId);
+        if (!isCurrent() && !this._cancelledPanels.has(panelId)
+          && panelState.currentConversationId === conversationId) {
+          this._postToPanel(panelId, { type: 'requestCancelled' });
+        }
+      }
     }
 
+    if (!isCurrent()) { return; }
     if (this._cancelledPanels.has(panelId)) {
       this._postToPanel(panelId, { type: 'requestCancelled' });
       return;
@@ -4204,27 +4286,413 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._postToPanel(panelId, { type: 'responseComplete', payload: { message: assistantMessage } });
   }
 
+  /** Command palette and editor context actions share the selected chat owner. */
+  private _getCommandPanelId(): string | undefined {
+    const activePanel = [...this._panelStates.values()].find(state => state.panel?.active);
+    const hubOwner = this._hub?.panel.active ? this._hub.originPanelId : null;
+    return activePanel?.id ?? (hubOwner && this._panelStates.has(hubOwner) ? hubOwner : undefined) ??
+      (this._lastActivePanelId && this._panelStates.has(this._lastActivePanelId) ? this._lastActivePanelId : undefined) ??
+      (this._panelStates.has(this._sidebarId) ? this._sidebarId : undefined);
+  }
+
+  /** Command-palette route shares the same ownership/reset path as the button. */
+  public async newConversation(): Promise<void> {
+    const panelId = this._getCommandPanelId();
+    if (panelId) { await this._handleNewConversation(panelId); }
+    else { this.openInNewTab(); }
+  }
+
+  /** Capture intent before a picker, directory lookup or batch can yield. */
+  private _captureContextTarget(panelId?: string): { panelId: string; isCurrent: () => boolean } | undefined {
+    if (!panelId) { return undefined; }
+    const owner = this._panelStates.get(panelId);
+    if (!owner) { return undefined; }
+    const conversationId = owner.currentConversationId;
+    const navigation = owner.navigationRevision ?? 0;
+    const contextIsCurrent = this._contextManager.captureContextGuard(panelId);
+    return {
+      panelId,
+      isCurrent: () => this._panelStates.get(panelId) === owner
+        && owner.currentConversationId === conversationId
+        && (owner.navigationRevision ?? 0) === navigation && contextIsCurrent(),
+    };
+  }
+
+  private _contextFileWarning(failure: ContextFileFailure, folder?: string): string {
+    const name = folder ? path.relative(folder, failure.path) : path.basename(failure.path);
+    if (failure.reason === 'too-large') {
+      return `Could not add "${name}" to Context: exceeds the ${MAX_CONTEXT_FILE_BYTES / 1024 / 1024} MiB file limit.`;
+    }
+    if (failure.reason === 'not-text') {
+      return `Could not add "${name}" to Context: expected UTF-8 text without NUL bytes. Use Attach for binary files.`;
+    }
+    return `Could not read file "${name}".`;
+  }
+
+  private async _addContextPath(filePath: string, target: { panelId: string; isCurrent: () => boolean }, warnings: string[]): Promise<boolean> {
+    if (!target.isCurrent()) { return false; }
+    try {
+      const stat = await fs.promises.stat(filePath);
+      if (!target.isCurrent()) { return false; }
+      if (stat.isDirectory()) {
+        const result = await this._contextManager.addFolderToContextWithReport(filePath, target.panelId, target.isCurrent);
+        if (!target.isCurrent()) { return false; }
+        if (result.limitReached) {
+          warnings.push(`Folder scan reached the ${result.fileLimit}-file limit for "${path.basename(filePath)}". More files may remain; add individual files with + Add.`);
+        }
+        const scanLimits: string[] = [];
+        if (result.scan.directoryLimitReached) { scanLimits.push(`${result.scan.directoryLimit} folders`); }
+        if (result.scan.entryLimitReached) { scanLimits.push(`${result.scan.entryLimit.toLocaleString('en-US')} entries`); }
+        if (scanLimits.length) {
+          warnings.push(`Folder scan reached its limit of ${scanLimits.join(' and ')} for "${path.basename(filePath)}". More files may remain; add a smaller folder or individual files.`);
+        }
+        for (const folder of result.unreadableFolders) {
+          warnings.push(`Could not read folder "${path.relative(filePath, folder) || path.basename(filePath)}".`);
+        }
+        for (const failure of result.fileFailures) {
+          warnings.push(this._contextFileWarning(failure, filePath));
+        }
+        if (result.filesConsidered === 0 && result.unreadableFolders.length === 0 && scanLimits.length === 0) {
+          warnings.push(`No files to add from "${path.basename(filePath)}". Generated folders and symbolic links are skipped.`);
+        }
+        return result.items.length > 0;
+      }
+      if (stat.isFile()) {
+        const item = await this._contextManager.addFileToContext(filePath, target.panelId, target.isCurrent,
+          failure => { if (target.isCurrent()) { warnings.push(this._contextFileWarning(failure)); } });
+        return !!item && target.isCurrent();
+      }
+    } catch (error) {
+      console.error('Failed to add path to context:', error);
+    }
+    if (target.isCurrent()) { warnings.push(`Could not read "${path.basename(filePath)}" for Context.`); }
+    return false;
+  }
+
+  private async _addContextUris(payload: unknown, target: { panelId: string; isCurrent: () => boolean }): Promise<void> {
+    const paths: string[] = [];
+    const warnings: string[] = [];
+    const uris = Array.isArray(payload) ? payload : [payload];
+    for (const [index, uri] of uris.entries()) {
+      try {
+        // URL normalizes relative file forms, backslashes and raw controls.
+        // Reject those, and query/fragment suffixes, before that normalization.
+        if (typeof uri !== 'string' || !/^file:\/\//i.test(uri)
+          || /[\\?#]/.test(uri)
+          || Array.from(uri).some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)) { throw new Error('Invalid file URI'); }
+        const filePath = fileURLToPath(new URL(uri));
+        if (!path.isAbsolute(filePath) || filePath.includes('\0')) { throw new Error('Invalid file path'); }
+        paths.push(filePath);
+      } catch {
+        warnings.push(`File link ${index + 1} is invalid or unsupported. Use a local file link or + Add in Context.`);
+      }
+    }
+    await this._addContextPaths(paths, target, warnings);
+  }
+
+  private async _addContextPaths(paths: string[], target: { panelId: string; isCurrent: () => boolean }, warnings: string[] = []): Promise<void> {
+    let added = false;
+    for (const filePath of new Set(paths)) {
+      if (!target.isCurrent()) { return; }
+      if (typeof filePath !== 'string' || !filePath) { continue; }
+      if (this._contextManager.getContext(target.panelId).some(item => item.type === 'file' && item.path === filePath)) { continue; }
+      if (await this._addContextPath(filePath, target, warnings)) {
+        added = true;
+      }
+    }
+    if (warnings.length && target.isCurrent()) {
+      this._postToPanel(target.panelId, { type: 'contextWarning', payload: { message: warnings.join(' ') } });
+    }
+    if (added && target.isCurrent()) {
+      this._postToPanel(target.panelId, {
+        type: 'contextUpdated', payload: this._contextManager.getContext(target.panelId),
+      });
+    }
+  }
+
+  public async addToContext(uri?: vscode.Uri): Promise<void> {
+    // Capture the editor before opening a first chat can move editor focus.
+    const editor = uri ? undefined : vscode.window.activeTextEditor;
+    const filePath = uri?.fsPath ?? editor?.document.uri.fsPath;
+    if (!filePath) { return; }
+    const panelId = this._getCommandPanelId() ?? this.openInNewTab();
+    const target = this._captureContextTarget(panelId);
+    if (!target) { return; }
+    if (!editor || editor.selection.isEmpty) {
+      await this._addContextPaths([filePath], target);
+      return;
+    }
+    await this._contextManager.addSelectionToContext(filePath, editor.document.getText(editor.selection),
+      editor.selection.start.line, editor.selection.end.line, editor.document.languageId, panelId,
+      editor.selection.end.character);
+    if (!target.isCurrent()) { return; }
+    this._postToPanel(panelId, { type: 'contextUpdated', payload: this._contextManager.getContext(panelId) });
+  }
+
+  public clearContext(): void {
+    const panelId = this._getCommandPanelId();
+    if (!panelId) { return; }
+    this._contextManager.clearContext(panelId);
+    this._postToPanel(panelId, { type: 'contextUpdated', payload: [] });
+  }
+
+  private async _handleNewConversation(panelId: string): Promise<void> {
+    const panelState = this._panelStates.get(panelId);
+    if (!panelState) { return; }
+    const conversationId = panelState.currentConversationId;
+    const generation = this._mystiRunGen.get(panelId) ?? 0;
+    const navigation = panelState.navigationRevision = (panelState.navigationRevision ?? 0) + 1;
+    await this._dictationManager?.cancelPanel(panelId);
+    // Dictation can close asynchronously. A newer chat, replacement panel or
+    // send must retain its own native session and conversation after that wait.
+    if (this._panelStates.get(panelId) !== panelState || panelState.currentConversationId !== conversationId
+      || (this._mystiRunGen.get(panelId) ?? 0) !== generation || panelState.navigationRevision !== navigation) { return; }
+
+    this._resetConversationWork(panelId);
+    this._compactionManager.resetUsage(panelId);
+    this._lifecycleManager.removeSession(panelId);
+    const newConversation = this._conversationManager.createNewConversation();
+    panelState.currentConversationId = newConversation.id;
+    this._emitBadgeUnlocks(panelId, this._engagementManager.trackConversationStarted());
+    this._postToPanel(panelId, { type: 'conversationChanged', payload: newConversation });
+    this._postToPanel(panelId, { type: 'sessionCleared', payload: { message: vscode.l10n.t('Session cleared') } });
+  }
+
+  private async _handleSwitchConversation(panelId: string, targetId: string): Promise<void> {
+    const owner = this._panelStates.get(panelId);
+    const target = this._conversationManager.getConversation(targetId);
+    if (!owner || !target) { return; }
+    const originalId = owner.currentConversationId;
+    const generation = this._mystiRunGen.get(panelId) ?? 0;
+    const navigation = owner.navigationRevision = (owner.navigationRevision ?? 0) + 1;
+    await this._dictationManager?.cancelPanel(panelId);
+    if (this._panelStates.get(panelId) !== owner || owner.currentConversationId !== originalId
+      || (this._mystiRunGen.get(panelId) ?? 0) !== generation || owner.navigationRevision !== navigation
+      || this._conversationManager.getConversation(targetId) !== target) { return; }
+    if (originalId !== targetId) { this._resetConversationWork(panelId); }
+    owner.currentConversationId = targetId;
+    this._postToPanel(panelId, { type: 'conversationChanged', payload: target });
+  }
+
   private _cancelQueuedChannelTurn(panelId: string): void {
     this._delayedChannelTurns.cancelPanel(panelId);
     this._channelBridge.clearQueuedMessages(panelId);
   }
 
-  private async _handleSendMessage(
-    payload: {
-      content: string;
-      context: ContextItem[];
-      settings: Settings;
-      mentions?: Mention[];
-      attachments?: Attachment[];
-    },
-    panelId: string
-  ) {
+  /** End foreground work and native history before this panel changes chats. */
+  private _resetConversationWork(panelId: string): void {
+    // Coordinator tails use this generation even after their AbortSignal is
+    // delivered. Navigation must revoke ownership before any cancellation callback.
+    this._mystiRunGen.set(panelId, (this._mystiRunGen.get(panelId) ?? 0) + 1);
     this._cancelQueuedChannelTurn(panelId);
+    this._cancelledPanels.add(panelId);
+    this._providerManager.clearSession(panelId, { allProviders: true });
+    this._providerManager.cancelRequest(panelId);
+    this._abortMystiDirect(panelId);
+    this._brainstormManager.cancelSession(panelId);
+    this._brainstormManager.clearSession(panelId);
+    this._collaborationManager.cancelPanel(panelId);
+    this._sessionManager.cancelPanel(panelId);
+    this._mystiOrchestrator?.cancelPanel(panelId);
+    this._mentionRouter.cancelSubAgents(panelId, this._providerManager.getAllProviderIds());
+    this._cancelPendingSubAgentQuestions(panelId);
+    this._pendingPlans.clearPanel(panelId);
+    this._pendingPlanSelections.delete(panelId);
+    this._permissionManager.clearSessionUpgrade(panelId);
+    this._runningPanels.delete(panelId);
+    this._lifecycleManager.markIdle(panelId);
+  }
+
+  /** Validate before reserving/cancelling a turn, and again after preparation waits. */
+  private _prepareSecondOpinion(payload: ComposerSendRequest, panelId: string): ComposerSendRequest | null {
+    if (!payload.secondOpinion) { return payload; }
+    const reject = (message: string) => {
+      // A stale action must not terminate an unrelated active response in the UI.
+      this._postToPanel(panelId, this._runningPanels.has(panelId)
+        ? { type: 'systemNotice', payload: { message } }
+        : { type: 'error', payload: message });
+      return null;
+    };
+    const target = payload.secondOpinion.provider;
+    const owner = this._panelStates.get(panelId)?.currentConversationId;
+    const source = owner ? this._conversationManager.getConversation(owner)?.messages.find(
+      message => message.id === payload.secondOpinion?.messageId && message.role === 'user'
+    ) : undefined;
+    const targetConfig = this._providerManager.getProvider(target);
+    if (!source || (!targetConfig && target !== 'mysti')) {
+      return reject('This question or agent is no longer available. Open its conversation and request the second opinion again.');
+    }
+    const attachments = source.attachments?.map(attachment => {
+      const live = payload.attachments?.find(candidate => candidate.id === attachment.id
+        && candidate.type === attachment.type && candidate.fileName === attachment.fileName
+        && candidate.size === attachment.size);
+      return { ...attachment, base64Data: attachment.base64Data ?? live?.base64Data };
+    });
+    if (attachments?.some(attachment => !attachment.filePath && typeof attachment.base64Data !== 'string')) {
+      return reject('An original attachment is no longer available. Send the question again with its attachment, then request another opinion.');
+    }
+    const capabilities = this._providerManager.getProviderInstance(target)?.capabilities;
+    if (attachments?.some(attachment => target === 'mysti'
+      || (attachment.type === 'image' ? !capabilities?.supportsImages : !capabilities?.supportsFileAttachments))) {
+      return reject('This agent cannot receive the original attachments. Choose an agent that supports them, or send a new question with the material in Context.');
+    }
+    return { ...payload, content: source.content, context: source.context || [], attachments,
+      settings: { ...payload.settings, provider: target as Settings['provider'],
+        model: target === payload.settings.provider ? payload.settings.model : (targetConfig?.defaultModel || '') } };
+  }
+
+  private _captureComposerEditorContext(payload: Pick<ComposerSendRequest, 'settings' | 'secondOpinion'>, panelId: string): ComposerEditorContext | undefined {
+    // A second opinion reuses its saved question, not the current editor.
+    if (payload.secondOpinion) { return undefined; }
+    const owner = this._panelStates.get(panelId);
+    if (!owner) { return undefined; }
+    const conversationId = owner.currentConversationId;
+    const navigation = owner.navigationRevision ?? 0;
+    const isCurrent = () => this._panelStates.get(panelId) === owner
+      && owner.currentConversationId === conversationId
+      && (owner.navigationRevision ?? 0) === navigation;
+    if (payload.settings.contextMode !== 'auto'
+      || !vscode.workspace.getConfiguration('mysti').get('autoContext', true)) {
+      return { isCurrent };
+    }
+    this._editorContextTracker.focusPanel(owner, vscode.window.activeTextEditor);
+    const snapshot = this._editorContextTracker.snapshot(owner);
+    return { isCurrent, item: snapshot ? { ...snapshot, id: `auto_${crypto.randomUUID()}`, enabled: true } : undefined };
+  }
+
+  private _withComposerEditorContext(context: ContextItem[], automatic?: ComposerEditorContext): ContextItem[] {
+    const item = automatic?.item;
+    // Recheck after preparation awaits: disabling Auto revokes only the
+    // automatic snapshot. Explicit attachments (including disabled ones) win.
+    if (!item || !automatic?.isCurrent()
+      || !vscode.workspace.getConfiguration('mysti').get('autoContext', true)
+      || context.some(existing => existing.path === item.path)) { return context; }
+    return [...context, item];
+  }
+
+  /** Bind supplied file metadata to the visible request before taking over a turn. */
+  private _validateFileMentionRequest<T extends Pick<ComposerSendRequest, 'content' | 'mentions'>>(
+    payload: T,
+    panelId: string,
+    preserveActiveResponse = true
+  ): (T & { fileReferences: readonly FileMentionReference[] }) | null {
+    const result = validateFileMentionBindings(payload.content, payload.mentions);
+    if (!result.ok) {
+      const active = preserveActiveResponse && (this._runningPanels.has(panelId)
+        || this._delayedChannelTurns.has(panelId) || this._brainstormPreparations.has(panelId));
+      this._postToPanel(panelId, active
+        ? { type: 'systemNotice', payload: { message: result.error } }
+        : { type: 'error', payload: result.error });
+      return null;
+    }
+    // Validation owns a fresh set of reference records across preparation waits.
+    return { ...payload, mentions: result.mentions, fileReferences: result.references };
+  }
+
+  /** Read referenced files without starting an agent-mention run or persisting their bytes. */
+  private async _withFileMentionContext(
+    context: ContextItem[],
+    mentions: readonly Mention[],
+    panelId: string,
+    isCurrent: () => boolean,
+    fileReferences: readonly FileMentionReference[]
+  ): Promise<ContextItem[] | undefined> {
+    const snapshot = context.map(item => ({ ...item }));
+    if (!isCurrent()) { return undefined; }
+    if (!mentions.some(mention => mention.type === 'file')) { return snapshot; }
+    const resolved = await this._mentionRouter.resolveFileContext(mentions, () => !isCurrent(), fileReferences);
+    if (!resolved || !isCurrent()) { return undefined; }
+    if (resolved.failedFiles.length) {
+      this._postToPanel(panelId, { type: 'mentionWarning', payload: {
+        message: resolved.warning ?? `Could not read ${resolved.failedFiles.length} file(s): ${resolved.failedFiles.join(', ')}`,
+      } });
+    }
+    return [...snapshot, ...resolved.items];
+  }
+
+  private async _refreshContextForSend(
+    prepare: ContextSendPreparation, panelId: string, isCurrent: () => boolean,
+  ): Promise<ContextItem[] | undefined> {
+    const result = await prepare(isCurrent);
+    if (!isCurrent()) { return undefined; }
+    if (!result) {
+      // Clear/remove replaced the context bucket while it was being read.
+      this._postToPanel(panelId, { type: 'requestCancelled' });
+      return undefined;
+    }
+    if (result.changed) {
+      this._postToPanel(panelId, { type: 'contextUpdated', payload: this._contextManager.getContext(panelId) });
+    }
+    if (result.failures.length) {
+      this._postToPanel(panelId, { type: 'contextWarning', payload: {
+        message: result.failures.map(failure => this._contextFileWarning(failure)).join(' '),
+      } });
+    }
+    return result.items;
+  }
+
+  /** Retire a foreground predecessor without changing the new turn's Stop flag. */
+  private _cancelSupersededForegroundRequest(panelId: string): void {
+    this._cancelPendingSubAgentQuestions(panelId);
+    this._providerManager.cancelRequest(panelId);
+    this._abortMystiDirect(panelId);
+    this._collaborationManager.cancelPanel(panelId);
+    this._mystiOrchestrator?.cancelPanel(panelId);
+    this._mentionRouter.cancelSubAgents(panelId, this._providerManager.getAllProviderIds());
+    // Background jobs own their permissions under job IDs, not this panel.
+    const supersededGates = this._permissionManager.cancelRequestsByOwner(panelId);
+    if (supersededGates.length > 0) {
+      this._postToPanel(panelId, { type: 'permissionDismissed', payload: { requestIds: supersededGates } });
+    }
+    this._runningPanels.delete(panelId);
+    this._lifecycleManager.markIdle(panelId);
+  }
+
+  /** Acknowledge storage, or return an unrecorded submission to its original view. */
+  private async _withComposerSubmission(
+    payload: { submissionId?: string }, panelId: string, run: (accepted: () => void) => Promise<void>,
+  ): Promise<void> {
+    const owner = this._panelStates.get(panelId);
+    const conversationId = owner?.currentConversationId ?? null;
+    const submissionId = typeof payload?.submissionId === 'string' && payload.submissionId.length <= 128
+      ? payload.submissionId : undefined;
+    let settled = false;
+    const settle = (accepted: boolean) => {
+      if (settled) { return; }
+      settled = true;
+      // Navigation can return the draft to the old conversation in this view;
+      // a disposed/replaced panel must never deliver into its successor.
+      if (submissionId && owner && this._panelStates.get(panelId) === owner) {
+        this._postToPanel(panelId, { type: 'composerSubmissionSettled', payload: {
+          submissionId, conversationId, accepted,
+        } });
+      }
+    };
+    try { await run(() => settle(true)); }
+    finally { settle(false); }
+  }
+
+  private async _handleSendMessage(
+    payload: ComposerSendRequest,
+    panelId: string,
+    automatic?: ComposerEditorContext,
+    onAccepted?: () => void
+  ) {
+    const prepared = this._prepareSecondOpinion(payload, panelId);
+    if (!prepared) { return; }
+    const validated = this._validateFileMentionRequest(prepared, panelId);
+    if (!validated) { return; }
+    payload = validated;
+    const prepareContext = payload.secondOpinion ? undefined
+      : this._contextManager.captureContextForSend(payload.context, panelId);
+    // A local follow-up takes priority over the delayed channel turn, but its
+    // pending messages still belong to this conversation and must run later.
+    this._delayedChannelTurns.cancelPanel(panelId);
     // The timer-to-send handoff must remain busy while setup awaits context.
     // A later inbound message belongs in the queue, not a competing send.
     const finishPreparation = this._delayedChannelTurns.reservePreparation(panelId);
     try {
-      await this._handleSendMessageForTurn(payload, panelId, finishPreparation);
+      await this._handleSendMessageForTurn(payload, panelId, finishPreparation, automatic, prepareContext, onAccepted);
     } finally {
       // Early exits release only this preparation, never its replacement.
       finishPreparation();
@@ -4232,15 +4700,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async _handleSendMessageForTurn(
-    payload: {
-      content: string;
-      context: ContextItem[];
-      settings: Settings;
-      mentions?: Mention[];
-      attachments?: Attachment[];
-    },
+    payload: ComposerSendRequest,
     panelId: string,
-    finishPreparation: () => void
+    finishPreparation: () => void,
+    automatic?: ComposerEditorContext,
+    prepareContext?: ContextSendPreparation,
+    onAccepted?: () => void
   ) {
     const isChannelCurrent = this._delayedChannelTurns.capture(panelId);
     // Bump the panel's send generation FIRST (review [4]/[11]): any Mysti run
@@ -4248,11 +4713,39 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // its next checkpoint, regardless of the 50ms cancel-flag window below.
     const turnGeneration = (this._mystiRunGen.get(panelId) ?? 0) + 1;
     this._mystiRunGen.set(panelId, turnGeneration);
+    const isTurnCurrent = () => isChannelCurrent() &&
+      this._mystiRunGen.get(panelId) === turnGeneration && this._panelStates.has(panelId);
+    // Navigation revokes preparation. Once a response has been dispatched,
+    // the existing stream owner/cancellation rules still finalize that response.
+    const isPreparationCurrent = () => isTurnCurrent() && (!automatic || automatic.isCurrent());
     // Invalidate old classification before any await in the new send. A late
     // result must not offer or auto-select plans for a superseded turn.
     this._pendingPlanSelections.delete(panelId);
     this._pendingPlans.clearPanel(panelId);
     const isPlanCurrent = this._pendingPlans.capture(panelId);
+
+    // Model selection can also clear a configured provider override. Wait for
+    // that write before dispatching, otherwise an immediate Send uses the old
+    // override even though the picker already displays the new model.
+    const settingsOwner = this._panelStates.get(panelId);
+    const settingsConversation = settingsOwner?.currentConversationId;
+    const ownsSettingsTurn = () => isPreparationCurrent() && !this._cancelledPanels.has(panelId)
+      && this._panelStates.get(panelId) === settingsOwner
+      && settingsOwner?.currentConversationId === settingsConversation;
+    const pendingSettings = [...(settingsOwner?.pendingSettingsUpdates ?? [])];
+    if (pendingSettings.length) {
+      this._cancelledPanels.delete(panelId);
+      try {
+        await Promise.all(pendingSettings);
+      } catch {
+        if (ownsSettingsTurn()) {
+          this._postToPanel(panelId, { type: 'settingsError', payload: { error: 'Could not save the selected settings. Please select them again before sending.' } });
+          this._postToPanel(panelId, { type: 'requestCancelled' });
+        }
+        return;
+      }
+      if (!ownsSettingsTurn()) { return; }
+    }
 
     // P0.7b (Plan 10 step 4): a repo's .vscode/settings.json must not silently
     // RAISE Mysti's authority (access level / auto-edit mode). Clamp the runtime
@@ -4302,8 +4795,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Stopped (the handler already posted requestCancelled) or superseded by
       // a newer send while waiting: drop this one. Continuing would clear the
       // Stop below and run the turn the user stopped.
-      if (this._cancelledPanels.has(panelId) || !isChannelCurrent()) { return; }
+      if (this._cancelledPanels.has(panelId) || !isPreparationCurrent()) { return; }
     }
+
+    if (!isPreparationCurrent()) { return; }
+    const prepared = this._prepareSecondOpinion(payload, panelId);
+    if (!prepared) { return; }
+    // A second opinion's saved question may have changed while settings or
+    // compaction was pending. Validate against that authoritative source again.
+    const validated = this._validateFileMentionRequest(prepared, panelId, false);
+    if (!validated) {
+      if (isTurnCurrent() && this._runningPanels.has(panelId)) {
+        this._cancelSupersededForegroundRequest(panelId);
+      }
+      return;
+    }
+    payload = validated;
 
     // Cancel any running/suspended request on this panel before starting a new one.
     // This handles the case where the user sends a new message while a permission
@@ -4312,27 +4819,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (this._runningPanels.has(panelId)) {
       console.log(`[Mysti] New message while panel ${panelId} is running — cancelling previous request`);
       this._cancelledPanels.add(panelId);
-      this._providerManager.cancelRequest(panelId);
-      // Tear down an in-flight Mysti run (coordinator stream + gated delegation).
-      this._abortMystiDirect(panelId);
-      this._collaborationManager.cancelPanel(panelId);
-      this._mentionRouter.cancelSubAgents(panelId, this._providerManager.getAllProviderIds());
-      // Dismiss the SUPERSEDED foreground turn's pending gate(s) only (scoped by
-      // panelId) — never a concurrent background job's, which owns its gate under
-      // its jobId. _abortMystiDirect already dismissed the foreground Mysti gate;
-      // this covers a non-Mysti foreground provider gate on the same panel.
-      const supersededGates = this._permissionManager.cancelRequestsByOwner(panelId);
-      if (supersededGates.length > 0) {
-        this._postToPanel(panelId, { type: 'permissionDismissed', payload: { requestIds: supersededGates } });
-      }
-      // Release the running lock here: the superseded Mysti run's finally is now
-      // gen-gated (won't delete it), and a superseding bg:/orchestrate/early-
-      // return send never re-adds it — leaving isRunning() stuck true (re-review
-      // low). A following foreground run re-adds the lock at its start.
-      this._runningPanels.delete(panelId);
+      this._cancelSupersededForegroundRequest(panelId);
       // Brief yield to let the cancelled for-await loop exit before we start a new one
       await new Promise(resolve => setTimeout(resolve, 50));
     }
+    if (!isPreparationCurrent()) { return; }
 
     // Perf (Plan 03 Phase 1): formalized send-path timing. The mark is
     // panel-scoped so concurrent sends on different panels don't clobber
@@ -4345,10 +4836,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._cancelledPanels.delete(panelId);
 
     // Clear any pending interactive states — a new message implicitly dismisses them
-    this._pendingAskUserQuestions.delete(panelId);
+    this._clearPendingQuestion(panelId);
 
-    const { content, context, attachments } = payload;
-    const mentions = resolveExplicitMentions(content, payload.mentions);
+    // Second opinion resends a saved question to one chosen respondent. Its
+    // source/context belong to this conversation; the current draft does not.
+    // Preserve old @tags as source text without dispatching those agents again.
+    const { content, attachments } = payload;
+    let context = payload.context.map(item => ({ ...item }));
+    const resolvedMentions = resolveExplicitMentions(content, payload.mentions);
+    const mentions = payload.secondOpinion ? resolvedMentions.filter(mention => mention.type !== 'agent') : resolvedMentions;
     let { settings } = payload;
     if (attachments?.length && isPseudoAgentId(settings.provider as unknown as string)) {
       this._postToPanel(panelId, { type: 'attachmentWarning', payload: { message: 'Attachments are not passed to this agent. Add files through Context instead.' } });
@@ -4378,9 +4874,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Get the panel's conversation
     const panelState = this._panelStates.get(panelId);
     const conversationId = panelState?.currentConversationId;
+    const mentionNavigation = panelState?.navigationRevision ?? 0;
+    // Internal/second-opinion sends may have no automatic-editor capture.
+    // File preparation still belongs to this exact panel/navigation scope.
+    const isMentionPreparationCurrent = () => isPreparationCurrent()
+      && this._panelStates.get(panelId) === panelState
+      && panelState?.currentConversationId === conversationId
+      && (panelState?.navigationRevision ?? 0) === mentionNavigation;
     const conversation = conversationId
       ? this._conversationManager.getConversation(conversationId)
       : null;
+
+    if (prepareContext) {
+      const contextCurrent = () => isMentionPreparationCurrent() && !this._cancelledPanels.has(panelId);
+      const refreshed = await this._refreshContextForSend(prepareContext, panelId, contextCurrent);
+      if (!refreshed || !contextCurrent()) { return; }
+      context = refreshed;
+    }
 
     // Add user message to this panel's conversation (strip base64 data for storage)
     const storedAttachments = attachments?.map(a => ({
@@ -4394,6 +4904,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       context,
       storedAttachments
     );
+    onAccepted?.();
     // Post to webview WITH base64 for immediate image rendering
     // (storedAttachments in globalState have base64 stripped to save space)
     const displayMessage = attachments?.length
@@ -4420,6 +4931,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     PerfTracker.measure('send.setup', _sendStartMark);
 
     // Stream response from provider
+    let failStream: ((reason: string) => void) | undefined;
+    let terminalEventPosted = false;
+    let persistedAssistant: Message | undefined;
+    let dispatched = false;
+    let mentionPreparationRevoked = false;
     try {
       // Explicit assignments precede every selected provider, including Mysti.
       // Preserve switch-only requests on the existing per-panel switch path.
@@ -4430,7 +4946,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (explicitAgents.length && !switchOnly) {
         const generation = turnGeneration;
         const isCancelled = () => this._cancelledPanels.has(panelId) ||
-          this._mystiRunGen.get(panelId) !== generation || !this._panelStates.has(panelId);
+          this._mystiRunGen.get(panelId) !== generation || !this._panelStates.has(panelId) ||
+          !!(automatic && !automatic.isCurrent());
         if (isCancelled()) { return; }
         this._runningPanels.add(panelId);
         finishPreparation();
@@ -4451,17 +4968,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           const resolvedContext = [...context];
           for await (const chunk of this._mentionRouter.processMentions(
             content, (mentions || []).filter(m => m.type !== 'agent'), context,
-            settings, conversation, panelId
+            settings, conversation, panelId, undefined, () => isCancelled() || !isMentionPreparationCurrent(), validated.fileReferences
           )) {
             if (isCancelled()) { return; }
+            if (!isMentionPreparationCurrent()) { mentionPreparationRevoked = true; return; }
             if (chunk.resolvedFiles) { resolvedContext.push(...chunk.resolvedFiles); }
             if (chunk.type === 'file_resolution_warning') {
               this._postToPanel(panelId, { type: 'mentionWarning', payload: { message: chunk.content } });
             }
           }
+          if (!isMentionPreparationCurrent()) { mentionPreparationRevoked = true; return; }
+          dispatched = true;
           const answer = await runExplicitMentions(this._collaborationManager,
             planExplicitMentions(content, mentions || []), {
               context: resolvedContext, settings, conversation, panelId, isCancelled,
+              resolveContext: automatic ? () => this._withComposerEditorContext(resolvedContext, automatic) : undefined,
               onQuestion: this._createSubAgentQuestionCallback(panelId),
               onGate: (spec, tool, native) => this._requestCollaboratorPermission(spec, tool, panelId, panelId, native),
             }, message => { if (!isCancelled()) { this._postToPanel(panelId, message); } });
@@ -4488,7 +5009,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Triggered by SELECTING the Mysti agent (settings.provider === 'mysti', a
       // pseudo-agent like brainstorm) OR by an `@mysti`/`/mysti` prefix.
       const mystiSelected = (settings.provider as string) === 'mysti';
-      const mystiMatch = content.match(/^\s*[@/]mysti\b[:\s]*/i);
+      const mystiMatch = payload.secondOpinion ? null : content.match(/^\s*[@/]mysti\b[:\s]*/i);
 
       // An explicit @mention of ANOTHER agent outranks the coordinator.
       //
@@ -4533,6 +5054,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       if ((mystiSelected || mystiMatch) && !mentionOutranksCoordinator &&
           conversationId && !this._cancelledPanels.has(panelId)) {
+        // Resolve once before selecting the coordinator route. These bytes
+        // belong to this request; the saved user message retains manual context.
+        const isMystiMentionCurrent = () => isMentionPreparationCurrent() && !this._cancelledPanels.has(panelId);
+        const mystiContext = await this._withFileMentionContext(context, mentions || [], panelId, isMystiMentionCurrent, validated.fileReferences);
+        if (!mystiContext || !isMystiMentionCurrent()) {
+          // Internal sends may have no automatic-editor capture. Their read
+          // preparation still owns busy-state cleanup when navigation revokes it.
+          mentionPreparationRevoked = !this._cancelledPanels.has(panelId);
+          return;
+        }
         const brief = mystiMatch ? (content.slice(mystiMatch[0].length).trim() || content.trim()) : content.trim();
 
         // Background execution: `bg:`/`background:` runs the task detached — the
@@ -4542,7 +5073,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           const task = brief.slice(bgMatch[0].length).trim();
           this._lifecycleManager.markIdle(panelId);
           if (task) {
-            this._runMystiBackground(task, context, settings, conversation, panelId, conversationId);
+            this._runMystiBackground(task, mystiContext, settings, conversation, panelId, conversationId, automatic);
           } else {
             // Bare `bg:` with no task — hint instead of running a literal "bg:".
             const hint = this._conversationManager.addMessageToConversation(
@@ -4563,9 +5094,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (orchestrateMatch && this._mystiOrchestrator) {
           // Explicit multi-agent orchestration.
           const task = brief.slice(orchestrateMatch[0].length).trim() || brief;
-          const orch = await this._runMystiOrchestration(task, context, settings, conversation, panelId);
-          if (this._cancelledPanels.has(panelId)) {
-            this._postToPanel(panelId, { type: 'requestCancelled' });
+          if (!isPreparationCurrent()) { return; }
+          dispatched = true;
+          const orch = await this._runMystiOrchestration(task, mystiContext, settings, conversation, panelId, automatic);
+          if (this._cancelledPanels.has(panelId) || !isPreparationCurrent()) {
+            if (isTurnCurrent() && (!automatic || automatic.isCurrent())) {
+              this._postToPanel(panelId, { type: 'requestCancelled' });
+            }
             return;
           }
           // Phase 4: a refused single-lane plan means "answer inline" — fall
@@ -4578,6 +5113,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             return;
           }
           inlineBrief = task;
+          dispatched = false;
         }
         // Default: Mysti answers like a normal streaming agent, and may delegate
         // sub-tasks to specialist backends mid-stream (rendered inline as tool
@@ -4588,7 +5124,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const mystiBrief = mentionedAgents.length > 0
           ? `${inlineBrief}\n\n(The user suggested involving these agents where useful: ${mentionedAgents.join(', ')}.)`
           : inlineBrief;
-        await this._runMystiAgentic(mystiBrief, context, settings, conversation, panelId, conversationId);
+        if (!isPreparationCurrent()) { return; }
+        dispatched = true;
+        await this._runMystiAgentic(mystiBrief, mystiContext, settings, conversation, panelId, conversationId, undefined, automatic);
         return;
       }
 
@@ -4611,9 +5149,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       let collaborationBlock = '';
       let legacyRan = false;
       if (collabMentions.length > 0 && !this._cancelledPanels.has(panelId)) {
+        if (!isPreparationCurrent()) { return; }
+        dispatched = true;
         collaborationBlock = await this._runMentionCollaboration(
-          collabMentions, mentions || [], content, context, settings, conversation, panelId
+          collabMentions, mentions || [], content, context, settings, conversation, panelId, automatic
         );
+        // Collaborators have completed; the foreground provider still has
+        // preparation ahead and must release busy state if that send is revoked.
+        dispatched = false;
       }
 
       if (legacyMentions.length > 0) {
@@ -4644,11 +5187,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
         const subAgentQuestionCallback = this._createSubAgentQuestionCallback(panelId);
         const mentionStream = this._mentionRouter.processMentions(
-          content, effectiveMentions, context, settings, conversation, panelId, subAgentQuestionCallback
+          content, effectiveMentions, context, settings, conversation, panelId, subAgentQuestionCallback,
+          () => this._cancelledPanels.has(panelId) || !isMentionPreparationCurrent(), validated.fileReferences
         );
 
         for await (const chunk of mentionStream) {
           if (this._cancelledPanels.has(panelId)) { break; }
+          if (!isMentionPreparationCurrent()) { mentionPreparationRevoked = true; break; }
           console.log('[Mysti] Mention chunk:', chunk.type, chunk.agentId || '');
 
           switch (chunk.type) {
@@ -4844,6 +5389,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this._postToPanel(panelId, { type: 'requestCancelled' });
           return;
         }
+        if (!isMentionPreparationCurrent()) { mentionPreparationRevoked = true; return; }
 
         // Single-task short-circuit: if there was exactly 1 execute task,
         // the sub-agent's streamed output IS the final response — skip main agent.
@@ -5093,20 +5639,38 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       PerfTracker.measure('send.contextBuilt', _sendStartMark);
       // Stop, closing the panel or a replacement send can happen during any
       // asynchronous preparation above. Never start that obsolete request.
-      if (!isChannelCurrent() || !this._panelStates.has(panelId)) { return; }
+      if (!isPreparationCurrent()) { return; }
+      // A later picker/configuration change belongs to the next turn; saved
+      // receipts and usage must keep the model dispatched for this response.
+      const dispatchedModel = this._attributionModel(effectiveSettings);
+      // Only this response may revise its attribution; picker/argv intent stays immutable.
+      let responseModel = dispatchedModel;
+      // A transport/settings refresh during a turn must not turn its proposals
+      // into execution receipts or change the native plan contract mid-stream.
+      const dispatchedCapabilities = { ...this._providerManager.getProviderInstance(effectiveSettings.provider)?.capabilities };
+      const proposalsOnly = dispatchedCapabilities.toolCallsAreProposals === true;
+      const promptConversation = this._promptConversation(conversation, userMessage.id);
+      dispatched = true;
+      let providerInputRevoked = false;
       const stream = this._providerManager.sendMessage(
         enrichedContent,
         enrichedContext,
         effectiveSettings,
-        conversation,
+        promptConversation,
         undefined,
         panelId,
         agentConfig,
-        effectiveAttachments
+        effectiveAttachments,
+        automatic ? () => {
+          if (!isPreparationCurrent()) { providerInputRevoked = true; return undefined; }
+          return { content: enrichedContent, context: this._withComposerEditorContext(enrichedContext, automatic) };
+        } : undefined,
+        true, // Main chat applies provider revisions to live and persisted text.
       );
 
       let assistantContent = '';
       let thinkingContent = '';
+      let actionContent = '';
       this._vtTriggeredThisResponse = false;
       // A fresh, nonce-bound scanner per response. The nonce was minted by
       // _visualPromptSnippet when this turn's system context was built; if the
@@ -5130,6 +5694,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // (which are real even when the prompt side is unknown), so it must not be
       // gated on the fill being known — that would drop the turn from the count.
       let lastUsageRaw: UsageStats | null = null;
+      let contextUsageUnavailable = false;
 
       // Plan 02 Phase 3: accumulate render-relevant structure extension-side
       // so the persisted assistant message (done handler) can be replayed by
@@ -5139,13 +5704,43 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // into one persisted entry/segment.
       const responseToolCalls = new Map<string, ToolCall>();
       const responseSegments: MessageSegment[] = [];
-      const appendContentSegment = (type: 'text' | 'thinking', content: string) => {
-        if (!content) { return; }
-        const last = responseSegments[responseSegments.length - 1];
-        if (last && last.type !== 'tool' && last.type === type) {
-          last.content += content;
-        } else {
-          responseSegments.push({ type, content });
+      const persistInterruptedResponse = () => {
+        if (persistedAssistant) { return persistedAssistant; }
+        const interruptedTools = Array.from(responseToolCalls.values()).map(tool =>
+          tool.status === 'pending' || tool.status === 'running'
+            ? { ...tool, status: 'failed' as const } : tool
+        );
+        if (!assistantContent && !thinkingContent && !interruptedTools.length) { return undefined; }
+        const thinkingStyle = this._getThinkingStyleForProvider(effectiveSettings.provider);
+        persistedAssistant = this._conversationManager.addMessageToConversation(
+          conversationId, 'assistant',
+          assistantContent.replace(/<<<MYSTI_CONNECT:[a-z0-9._-]*>>>/gi, ''),
+          undefined, undefined,
+          thinkingContent ? (thinkingStyle ? { style: thinkingStyle, content: thinkingContent } : thinkingContent) : undefined,
+          { provider: effectiveSettings.provider, model: responseModel,
+            ...(dispatchedModel && responseModel !== dispatchedModel ? { requestedModel: dispatchedModel } : {}),
+            toolCalls: interruptedTools.length ? interruptedTools : undefined,
+            segments: responseSegments.length ? responseSegments : undefined },
+        );
+        return persistedAssistant;
+      };
+      this._responseStops ??= new Map();
+      this._responseStops.set(panelId, { generation: turnGeneration, stop: () => {
+        if (!isTurnCurrent() || terminalEventPosted) { return undefined; }
+        const partial = persistInterruptedResponse();
+        terminalEventPosted = true;
+        this._endCanvasTurn(panelId, 'Stopped by user');
+        return partial;
+      } });
+      failStream = reason => {
+        if (terminalEventPosted) { return; }
+        const partial = persistInterruptedResponse();
+        terminalEventPosted = true;
+        this._runningPanels.delete(panelId);
+        this._lifecycleManager.markIdle(panelId);
+        this._endCanvasTurn(panelId, reason);
+        if (partial || !this._postProviderFailure(panelId, effectiveSettings.provider, reason)) {
+          this._postToPanel(panelId, { type: 'error', payload: partial ? { error: reason, message: partial } : reason });
         }
       };
       // Native plan moment (Claude exit_plan_mode) recorded mid-stream,
@@ -5159,7 +5754,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this._postToPanel(panelId, {
         type: 'contextWindowInfo',
         payload: {
-          contextWindow: this._contextWindowFor(effectiveSettings),
+          contextWindow: this._contextWindowFor(effectiveSettings, responseModel),
           usageAvailable: this._providerManager
             .getProviderInstance(effectiveSettings.provider)?.capabilities?.emitsUsage !== false,
         }
@@ -5167,9 +5762,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       this._runningPanels.add(panelId);
       finishPreparation();
+      // A provider may finish revoked preparation with either an empty
+      // iterator or a terminal-only done. Neither is a completed response or
+      // a failed stream. Only the still-owning turn may settle its UI.
+      const settleRevokedInput = () => {
+        if (!providerInputRevoked) { return false; }
+        if (isTurnCurrent() && this._panelStates.get(panelId) === settingsOwner) {
+          terminalEventPosted = true;
+          this._runningPanels.delete(panelId);
+          this._lifecycleManager.markIdle(panelId);
+          this._endCanvasTurn(panelId);
+          if (settingsOwner?.currentConversationId === settingsConversation) {
+            this._postToPanel(panelId, { type: 'requestCancelled' });
+          }
+        }
+        return true;
+      };
       let _firstChunkSeen = false;
       let _firstTextChunkSent = false;
       for await (const chunk of stream) {
+        if (settleRevokedInput()) { return; }
+        // A new send clears the panel's cancellation flag. The old stream may
+        // still deliver a buffered chunk afterwards, so also check its turn.
+        if (!isTurnCurrent()) { return; }
         if (!_firstChunkSeen) {
           _firstChunkSeen = true;
           // Extension-side TTFT: send entry → first stream chunk received.
@@ -5181,13 +5796,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // Check if THIS panel's request was cancelled
         if (this._cancelledPanels.has(panelId)) {break;}
 
+        if (!terminalEventPosted && typeof chunk.reportedModel === 'string'
+          && validateModelName(chunk.reportedModel).valid && chunk.reportedModel.trim() !== responseModel) {
+          responseModel = chunk.reportedModel.trim();
+          this._postToPanel(panelId, { type: 'responseChunk', payload: {
+            type: 'model_info', provider: effectiveSettings.provider, model: responseModel,
+            ...(dispatchedModel && responseModel !== dispatchedModel ? { requestedModel: dispatchedModel } : {}),
+          } });
+          this._postToPanel(panelId, { type: 'contextWindowInfo', payload: {
+            contextWindow: this._contextWindowFor(effectiveSettings, responseModel),
+          } });
+        }
+
         switch (chunk.type) {
+          case 'model_info':
+            break;
+          case 'progress':
+            // Transient provider commentary never enters history, reasoning,
+            // plan detection or text-triggered action parsers.
+            this._postToPanel(panelId, { type: 'responseChunk', payload: { type: 'progress', content: chunk.content } });
+            break;
           case 'text': {
-            assistantContent += chunk.content || '';
-            appendContentSegment('text', chunk.content || '');
-            const textPayload: { type: string; content?: string; perfSentAt?: number } = {
+            assistantContent = applyStreamText(assistantContent, chunk);
+            updateTextSegments(responseSegments, chunk);
+            const textPayload: { type: string; content?: string; perfSentAt?: number; revision?: { segments: MessageSegment[]; thinking: string } } = {
               type: 'text',
-              content: chunk.content
+              content: chunk.content,
+              ...(chunk.replace ? { revision: { segments: responseSegments.map(s => ({ ...s })), thinking: thinkingContent } } : {}),
             };
             if (!_firstTextChunkSent) {
               _firstTextChunkSent = true;
@@ -5202,9 +5837,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               payload: textPayload
             });
 
+            if (chunk.replace || chunk.provisional) {
+              // Revisions change display/history, never replay text-triggered
+              // actions or join an old partial directive to a new suffix.
+              actionContent = '';
+              if (this._isCanvasLinked(panelId)) { this._canvasOpParser = new CanvasOpParser(); }
+              if (this._vtNonces.has(panelId)) {
+                this._vtScanners.set(panelId, new MystiTagScanner(this._backendVisualNonce(panelId), MYSTI_VISUAL_KINDS));
+              }
+              break;
+            }
+            actionContent += chunk.content || '';
+
             // Detect completed channel markers and execute send/ask actions
             {
-              const actions = this._channelBridge.detectMarkers(panelId, assistantContent);
+              const actions = this._channelBridge.detectMarkers(panelId, actionContent);
               for (const action of actions) {
                 // Plan 21 Phase 0: every outbound channel message is gated.
                 // Before this, `executeSend`/`executeAsk` had NO permission
@@ -5262,7 +5909,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               // example so a model echoing the instruction doesn't spawn a card.
               const placeholders = new Set(['slug', 'service', 'name', 'servicename']);
               let cm: RegExpExecArray | null;
-              while ((cm = connectRe.exec(assistantContent)) !== null) {
+              while ((cm = connectRe.exec(actionContent)) !== null) {
                 const service = cm[1].toLowerCase();
                 if (placeholders.has(service)) { continue; }
                 if (!this._connectServicesThisResponse.has(service)) {
@@ -5303,24 +5950,38 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           }
 
           case 'thinking':
-            thinkingContent += chunk.content || '';
-            appendContentSegment('thinking', chunk.content || '');
+            thinkingContent = applyStreamText(thinkingContent, chunk);
+            updateTextSegments(responseSegments, chunk);
             this._postToPanel(panelId, {
               type: 'responseChunk',
-              payload: { type: 'thinking', content: chunk.content }
+              payload: { type: 'thinking', content: chunk.content,
+                ...(chunk.replace ? { revision: { segments: responseSegments.map(s => ({ ...s })), thinking: thinkingContent } } : {}) }
             });
             break;
 
           case 'tool_use': {
+            const toolCall = chunk.toolCall ? { ...chunk.toolCall } : undefined;
+            if (toolCall) {
+              // Proposal provenance comes from the actual adapter, never from
+              // tool-shaped model output that could otherwise bypass approval.
+              if (proposalsOnly) {
+                toolCall.proposalOnly = true;
+                toolCall.status = 'proposed';
+                delete toolCall.output;
+              } else {
+                delete toolCall.proposalOnly;
+                if (toolCall.status === 'proposed') { toolCall.status = 'running'; }
+              }
+            }
             // Native requests already held execution for approval. Legacy
             // notifications can only support a best-effort process pause.
             // NOTE: Claude emits two tool_use chunks per tool (content_block_start with empty input,
             // then content_block_stop with full input). We skip gating for chunks with empty input
             // to avoid double-gating and to show meaningful input preview in the permission card.
-            const hasInput = chunk.toolCall?.input && Object.keys(chunk.toolCall.input).length > 0;
-            if (!this._providerManager.getProviderInstance(effectiveSettings.provider)?.capabilities.supportsNativeApproval
-              && chunk.toolCall && hasInput && this._shouldGateToolUse(effectiveSettings, chunk.toolCall.name)) {
-              const gateActionType = this._classifyToolAction(chunk.toolCall.name);
+            const hasInput = toolCall?.input && Object.keys(toolCall.input).length > 0;
+            if (!proposalsOnly && !dispatchedCapabilities.supportsNativeApproval
+              && toolCall && hasInput && this._shouldGateToolUse(effectiveSettings, toolCall.name)) {
+              const gateActionType = this._classifyToolAction(toolCall.name);
               if (gateActionType !== 'file-read') {
                 // Freeze the CLI process immediately to prevent tool execution.
                 // SIGSTOP halts the process at the OS level — no further instructions
@@ -5343,29 +6004,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     this._postToPanel(panelId, {
                       type: 'toolResult',
                       payload: {
-                        id: chunk.toolCall.id,
-                        name: chunk.toolCall.name,
+                        id: toolCall.id,
+                        name: toolCall.name,
                         output: 'Denied — the agent process could not be paused on this platform, so this tool could not be held for approval.',
                         status: 'failed'
                       }
                     });
                     this._postToPanel(panelId, {
                       type: 'error',
-                      payload: `Operation "${chunk.toolCall.name}" was denied: Mysti could not pause the agent on this platform to hold it for your approval, and it will not ask you to approve a tool that is already running. Request cancelled.`
+                      payload: `Operation "${toolCall.name}" was denied: Mysti could not pause the agent on this platform to hold it for your approval, and it will not ask you to approve a tool that is already running. Request cancelled.`
                     });
                   }
                   return;
                 }
 
-                const inputPreview = JSON.stringify(chunk.toolCall.input || {}, null, 2).slice(0, 500);
+                const inputPreview = JSON.stringify(toolCall.input || {}, null, 2).slice(0, 500);
                 const riskLevel = PermissionManager.classifyRisk(gateActionType);
                 const gateApproved = await this.requestPermissionInline(
                   gateActionType,
-                  chunk.toolCall.name,
-                  `Mysti wants to: ${chunk.toolCall.name}`,
-                  { command: inputPreview, riskLevel, suspended: wasSuspended, ...this._permissionToolDetails(chunk.toolCall) },
+                  toolCall.name,
+                  `Mysti wants to: ${toolCall.name}`,
+                  { command: inputPreview, riskLevel, suspended: wasSuspended, ...this._permissionToolDetails(toolCall) },
                   panelId,
-                  chunk.toolCall.id
+                  toolCall.id
                 );
                 // This gate may have settled as a replacement conversation or
                 // turn started. Its decision cannot control the new process.
@@ -5384,15 +6045,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     this._postToPanel(panelId, {
                       type: 'toolResult',
                       payload: {
-                        id: chunk.toolCall.id,
-                        name: chunk.toolCall.name,
+                        id: toolCall.id,
+                        name: toolCall.name,
                         output: 'Permission denied by user',
                         status: 'failed'
                       }
                     });
                     this._postToPanel(panelId, {
                       type: 'error',
-                      payload: `Operation "${chunk.toolCall.name}" was denied. Request cancelled.`
+                      payload: `Operation "${toolCall.name}" was denied. Request cancelled.`
                     });
                   }
                   return;
@@ -5402,37 +6063,40 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // Plan 02 Phase 3: accumulate for persistence. Merge duplicate
             // emissions for the same tool id (Claude's start/stop pair) into
             // a single tool call + a single ordered segment.
-            if (chunk.toolCall) {
-              const tracked = responseToolCalls.get(chunk.toolCall.id);
+            if (toolCall) {
+              const tracked = responseToolCalls.get(toolCall.id);
               if (tracked) {
-                if (hasInput) { tracked.input = chunk.toolCall.input; }
-                tracked.status = chunk.toolCall.status;
-                if (chunk.toolCall.fileChange) { tracked.fileChange = chunk.toolCall.fileChange; }
-                if (chunk.toolCall.kind) { tracked.kind = chunk.toolCall.kind; }
+                if (hasInput) { tracked.input = toolCall.input; }
+                tracked.status = toolCall.status;
+                if (toolCall.fileChange) { tracked.fileChange = toolCall.fileChange; }
+                if (toolCall.kind) { tracked.kind = toolCall.kind; }
               } else {
-                responseToolCalls.set(chunk.toolCall.id, { ...chunk.toolCall });
-                responseSegments.push({ type: 'tool', toolCallId: chunk.toolCall.id });
+                responseToolCalls.set(toolCall.id, { ...toolCall });
+                responseSegments.push({ type: 'tool', toolCallId: toolCall.id });
               }
             }
             this._postToPanel(panelId, {
               type: 'toolUse',
-              payload: chunk.toolCall
+              payload: toolCall
             });
             // Track file modifications for file decorations
-            if (chunk.toolCall?.fileChange?.filePath) {
-              const filePath = chunk.toolCall.fileChange.filePath;
+            if (!proposalsOnly && toolCall?.fileChange?.filePath) {
+              const filePath = toolCall.fileChange.filePath;
               this._onFileModifiedByMysti(filePath, settings.provider);
             }
             // Track AI-initiated git commits for badge
-            if (chunk.toolCall) {
-              this._onToolUseDetected(chunk.toolCall.name, chunk.toolCall.input);
+            if (!proposalsOnly && toolCall) {
+              this._onToolUseDetected(toolCall.name, toolCall.input);
               // Track files for auto-memory learning
-              this._trackToolUseForMemory(panelId, chunk.toolCall.name, chunk.toolCall.input);
+              this._trackToolUseForMemory(panelId, toolCall.name, toolCall.input);
             }
             break;
           }
 
           case 'tool_result':
+            // This adapter has no executor; a malformed result cannot grant
+            // a proposal local undo authority or fabricate execution evidence.
+            if (proposalsOnly) { break; }
             // Plan 02 Phase 3: resolve the tracked tool call for persistence
             if (chunk.toolCall) {
               const resolved = responseToolCalls.get(chunk.toolCall.id);
@@ -5456,7 +6120,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 status: 'complete',
                 strategy: 'native-cli',
                 beforeTokens: chunk.compactionEvent?.beforeTokens ?? 0,
-                contextWindow: this._contextWindowFor(effectiveSettings),
+                contextWindow: this._contextWindowFor(effectiveSettings, responseModel),
                 threshold: this._compactionManager.getThreshold(),
                 summary: chunk.compactionEvent?.summary,
               } as CompactionEvent,
@@ -5469,32 +6133,38 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // handler once the assistant message has been persisted, because
             // the webview attaches plan cards to a message element by id.
             console.log('[Mysti] exit_plan_mode chunk received, plan file:', chunk.planFilePath);
-            pendingExitPlan = { planFilePath: chunk.planFilePath ?? null };
-            break;
-
-          case 'error':
-            // Gate 4: a missing CLI gets a card with an Install button; anything
-            // else keeps the plain error.
-            if (!this._postProviderFailure(panelId, effectiveSettings.provider, chunk.content ?? '')) {
-              this._postToPanel(panelId, {
-                type: 'error',
-                payload: chunk.content
-              });
+            if (dispatchedCapabilities.planMode === undefined || dispatchedCapabilities.planMode === 'native') {
+              pendingExitPlan = { planFilePath: chunk.planFilePath ?? null };
             }
             break;
 
-          case 'auth_error':
+          case 'error':
+            failStream(chunk.content || 'The provider could not finish this response.');
+            return;
+
+          case 'auth_error': {
+            // Authentication ends this turn. Several transports follow their
+            // error with `done`; treating that as success would send queued
+            // work with the rejected credentials and lose an interrupted reply.
+            const partial = persistInterruptedResponse();
+            terminalEventPosted = true;
+            this._runningPanels.delete(panelId);
+            this._lifecycleManager.markIdle(panelId);
+            this._endCanvasTurn(panelId, 'Authentication required');
+            this._setupManager.invalidateProviderStatus(effectiveSettings.provider);
             this._postToPanel(panelId, {
               type: 'authError',
               payload: {
                 error: chunk.content,
-                providerId: settings.provider,
-                apiKeySetup: !!this._providerManager.getProviderInstance(settings.provider)?.configureAuthentication,
+                providerId: effectiveSettings.provider,
+                apiKeySetup: !!this._providerManager.getProviderInstance(effectiveSettings.provider)?.configureAuthentication,
                 authCommand: chunk.authCommand,
-                providerName: chunk.providerName
+                providerName: chunk.providerName,
+                ...(partial ? { message: partial } : {}),
               }
             });
-            break;
+            return;
+          }
 
           case 'session_active':
             this._lifecycleManager.registerSession(panelId, settings.provider, chunk.sessionId || null);
@@ -5505,6 +6175,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             break;
 
           case 'ask_user_question':
+            {
+              const questions = normalizeAskUserQuestions(chunk.askUserQuestion?.questions);
+              if (!questions || typeof chunk.askUserQuestion?.toolCallId !== 'string' || !chunk.askUserQuestion.toolCallId.trim()) {
+                failStream('The agent returned an invalid question. Please retry your request.');
+                return;
+              }
+              chunk.askUserQuestion = { ...chunk.askUserQuestion, questions };
+            }
             // Autonomous mode: try to auto-answer the question
             if (this._autonomousManager.isActive() && chunk.askUserQuestion) {
               const autoResult = this._autonomousManager.generateAutoAnswer(chunk.askUserQuestion);
@@ -5525,50 +6203,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               // Auto-answer not confident enough — fall through to user UI
             }
 
-            // Track that this panel has a pending question (suppresses plan options/suggestions)
             if (chunk.askUserQuestion) {
-              this._pendingAskUserQuestions.set(panelId, chunk.askUserQuestion.toolCallId);
-              // Store question data for memory learning when user answers
-              this._pendingQuestionData.set(chunk.askUserQuestion.toolCallId, chunk.askUserQuestion);
-            }
-            // Show tool_use with pending status so user sees it's waiting for their input
-            this._postToPanel(panelId, {
-              type: 'toolUse',
-              payload: {
-                id: chunk.askUserQuestion?.toolCallId || 'ask-user-question',
-                name: 'AskUserQuestion',
-                input: { questions: chunk.askUserQuestion?.questions },
-                status: 'pending'
-              }
-            });
-            // Send the question UI
-            this._postToPanel(panelId, {
-              type: 'askUserQuestion',
-              payload: chunk.askUserQuestion
-            });
-
-            // Semi-autonomous: set up timer for AI to answer if user doesn't respond
-            if (this._isSemiAutonomousEnabled(panelId) && chunk.askUserQuestion) {
-              const questionTimeout = this._getSemiAutonomousTimeout();
-              const expiresAt = Date.now() + (questionTimeout * 1000);
-
-              // Tell webview to show countdown on the question card
+              // Tool cards retain the native ID; only the answer card uses a delivery ID.
               this._postToPanel(panelId, {
-                type: 'semiAutonomousQuestionTimer',
-                payload: {
-                  toolCallId: chunk.askUserQuestion.toolCallId,
-                  timeout: questionTimeout,
-                  expiresAt,
-                }
+                type: 'toolUse',
+                payload: { id: chunk.askUserQuestion.toolCallId, name: 'AskUserQuestion',
+                  input: { questions: chunk.askUserQuestion.questions }, status: 'pending' },
               });
-
-              // Set up server-side timeout
-              const toolCallId = chunk.askUserQuestion.toolCallId;
-              const questionData = chunk.askUserQuestion;
-              const timeoutHandle = setTimeout(() => {
-                this._handleSemiAutonomousQuestionTimeout(panelId, questionData);
-              }, questionTimeout * 1000);
-              this._semiAutoQuestionTimeouts.set(toolCallId, timeoutHandle);
+              this._showPendingQuestion(panelId, chunk.askUserQuestion);
             }
             break;
 
@@ -5581,38 +6223,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // The backend's own window for this model: remembered for later
             // turns and pushed to the pie now, before the threshold reads it.
             if (chunk.contextWindow && chunk.contextWindow > 0) {
-              const key = `${effectiveSettings.provider}\u0000${this._attributionModel(effectiveSettings)}`;
+              const key = `${effectiveSettings.provider}\u0000${responseModel}`;
               if (this._reportedContextWindows.get(key) !== chunk.contextWindow) {
                 this._reportedContextWindows.set(key, chunk.contextWindow);
                 this._postToPanel(panelId, { type: 'contextWindowInfo', payload: { contextWindow: chunk.contextWindow } });
               }
             }
+            const contextUsage = chunk.contextUsage === undefined ? chunk.usage : chunk.contextUsage;
+            lastUsage = this._normalizeTurnUsage(
+              effectiveSettings.provider, responseModel, contextUsage ?? undefined,
+            );
+            contextUsageUnavailable = chunk.contextUsage !== undefined && !lastUsage;
             if (chunk.usage) {
-              const attributionModel = this._attributionModel(effectiveSettings);
+              const attributionModel = responseModel;
               lastUsageRaw = normalizeUsage(
                 chunk.usage,
                 this._usageConventionFor(effectiveSettings.provider, attributionModel),
               );
-              lastUsage = this._normalizeTurnUsage(
-                effectiveSettings.provider,
-                attributionModel,
-                chunk.usage,
-              );
               console.log('[Mysti] Done chunk usage (normalized):', lastUsageRaw, 'measurable fill:', !!lastUsage);
             } else {
-              lastUsage = null;
               lastUsageRaw = null;
               console.log('[Mysti] Done chunk has NO usage');
             }
             // Plan 02 Phase 3: persist render-relevant structure with the
             // message — provider/model attribution, resolved tool calls,
             // structured thinking, and ordered segments for exact replay.
-            // Any tool call the stream never resolved is marked completed so
-            // restored messages don't show eternal spinners (providers with
-            // emitsToolResults=false never send tool_result).
+            // End pending UI activity without inventing an execution result.
+            // A finished answer alone says nothing about tool completion.
             const persistedToolCalls = Array.from(responseToolCalls.values()).map(tc =>
               (tc.status === 'pending' || tc.status === 'running')
-                ? { ...tc, status: 'completed' as const }
+                ? { ...tc, status: 'unconfirmed' as const }
                 : tc
             );
             const thinkingStyle = this._getThinkingStyleForProvider(effectiveSettings.provider);
@@ -5632,16 +6272,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               persistedThinking,
               {
                 provider: effectiveSettings.provider,
-                model: this._attributionModel(effectiveSettings),
+                model: responseModel,
+                ...(dispatchedModel && responseModel !== dispatchedModel ? { requestedModel: dispatchedModel } : {}),
                 toolCalls: persistedToolCalls.length > 0 ? persistedToolCalls : undefined,
                 segments: responseSegments.length > 0 ? responseSegments : undefined
               }
             );
+            persistedAssistant = assistantMessage;
             // Plan 08: append this turn to the on-disk full history so smart
             // compaction can cherry-pick it back later. Fire-and-forget; a no-op
             // unless smart compaction is active.
-            this._compactionManager.appendHistory(panelId, { role: 'user', kind: 'text', content, ts: Date.now(), msgId: userMessage?.id });
-            this._compactionManager.appendHistory(panelId, { role: 'assistant', kind: 'text', content: persistedContent, ts: Date.now(), msgId: assistantMessage?.id });
+            try {
+              this._compactionManager.appendHistory(panelId, { role: 'user', kind: 'text', content, ts: Date.now(), msgId: userMessage?.id });
+              this._compactionManager.appendHistory(panelId, { role: 'assistant', kind: 'text', content: persistedContent, ts: Date.now(), msgId: assistantMessage?.id });
+            } catch {
+              console.warn('[Mysti] Could not append optional compaction history for a completed response.');
+            }
 
             console.log('[Mysti] Sending responseComplete with usage:', lastUsage);
             // `contextTokens` is computed HERE, where the provider's convention is
@@ -5652,17 +6298,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // left behind by whichever provider ran before it.
             const usageEmitted = this._providerManager
               .getProviderInstance(effectiveSettings.provider)?.capabilities?.emitsUsage !== false;
+            terminalEventPosted = true;
             this._postToPanel(panelId, {
               type: 'responseComplete',
               payload: {
                 message: assistantMessage,
-                usage: lastUsage
-                  ? { ...lastUsage, contextTokens: contextFillTokens(lastUsage) }
+                usage: lastUsageRaw
+                  ? { ...lastUsageRaw, ...(lastUsage ? { contextTokens: contextFillTokens(lastUsage) } : {}) }
                   : undefined,
+                // A standalone context measurement must not invent turn totals.
+                ...(!lastUsageRaw && lastUsage ? { contextTokens: contextFillTokens(lastUsage) } : {}),
                 ...(usageEmitted ? {} : { usageUnavailable: true }),
+                ...(usageEmitted && contextUsageUnavailable ? { contextUsageUnavailable: true } : {}),
                 // The composer's cache chip. Claude Code writes 1h cache
                 // entries; everything else here is on the 5-minute default.
-                ...(usageEmitted && touchedPromptCache(lastUsageRaw, this._usageConventionFor(effectiveSettings.provider, this._attributionModel(effectiveSettings)))
+                ...(usageEmitted && touchedPromptCache(lastUsageRaw, this._usageConventionFor(effectiveSettings.provider, responseModel))
                   ? { promptCache: { ttlMs: effectiveSettings.provider === 'claude-code' ? PROMPT_CACHE_TTL_MS : PROMPT_CACHE_DEFAULT_TTL_MS } }
                   : {}),
               }
@@ -5685,15 +6335,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // Mark panel as no longer running and drain queued channel messages
             if (isChannelCurrent()) {
               this._runningPanels.delete(panelId);
-              const queued = this._channelBridge.drainQueuedMessages(panelId);
-              if (queued.length > 0) {
+              if (this._channelBridge.hasQueuedMessages(panelId)) {
                 // One turn preserves all queued input. Independent timers used
                 // to start simultaneous sends that cancelled one another.
                 this._delayedChannelTurns.schedule(panelId, () => {
                   if (!isChannelCurrent() || !this._panelStates.has(panelId) || this._cancelledPanels.has(panelId)) { return; }
                   // The bridge treats this delay as busy, so later arrivals join
                   // the same batch instead of superseding its first messages.
-                  const batch = [...queued, ...this._channelBridge.drainQueuedMessages(panelId)];
+                  const batch = this._channelBridge.drainQueuedMessages(panelId);
+                  if (batch.length === 0) { return; }
                   for (const incoming of batch) {
                     this._postToPanel(panelId, {
                       type: 'channelAction',
@@ -5726,7 +6376,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // turn whose fill we can't read must not be thresholded, because a
             // missing measurement reads as 0% and quietly disables compaction.
             if (lastUsage) {
-              const contextWindow = this._contextWindowFor(effectiveSettings);
+              const contextWindow = this._contextWindowFor(effectiveSettings, responseModel);
+              if (chunk.contextUsage !== undefined) {
+                this._compactionManager.recordUsage(panelId, lastUsage, contextWindow, lastUsageRaw);
+              }
               const updatedConversation = conversationId
                 ? this._conversationManager.getConversation(conversationId)
                 : null;
@@ -5744,7 +6397,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                   ? { act: this._compactionManager.shouldCompact(panelId, lastUsage, contextWindow, messageCount) }
                   : this._compactionManager.evaluateCompaction(
                     panelId, lastUsage, contextWindow, messageCount, settings, updatedConversation,
-                    this._usageConventionFor(effectiveSettings.provider, this._attributionModel(effectiveSettings)),
+                    this._usageConventionFor(effectiveSettings.provider, responseModel),
                   );
               if (compactionEval.act) {
                 // Run compaction asynchronously (don't block the response flow).
@@ -5752,8 +6405,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 // settings the turn ran with, or the persistent process respawns.
                 void this._executeCompaction(panelId, effectiveSettings, updatedConversation, lastUsage, contextWindow);
               } else {
-                this._compactionManager.recordUsage(panelId, lastUsage, contextWindow);
+                if (chunk.contextUsage === undefined) {
+                  this._compactionManager.recordUsage(panelId, lastUsage, contextWindow);
+                }
               }
+            } else if (contextUsageUnavailable) {
+              this._compactionManager.recordUsage(
+                panelId, null, this._contextWindowFor(effectiveSettings, responseModel), lastUsageRaw,
+              );
             }
 
             // Plan 24 Phase 1: sensor-only Boost ledger record. Uses
@@ -5766,14 +6425,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // with contextTokens left UNDEFINED so an unknown never averages in
             // as a measured zero. Never gates; tolerates whatever is missing.
             if (lastUsageRaw) {
-              const contextWindow = this._contextWindowFor(effectiveSettings);
-              const fillTokens = contextFillTokens(lastUsageRaw);
+              const contextWindow = this._contextWindowFor(effectiveSettings, responseModel);
+              const fillTokens = contextFillTokens(lastUsage);
               const contextKnown = fillTokens > 0;
               this._boostManager?.recordTurn({
                 kind: 'cli',
                 panelId,
                 provider: effectiveSettings.provider,
-                model: this._attributionModel(effectiveSettings),
+                model: responseModel,
                 ...(coldResumeIntercepted ? { coldResumeIntercepted: true } : {}),
                 contextTokens: contextKnown ? fillTokens : undefined,
                 outputTokens: lastUsageRaw.output_tokens,
@@ -5793,6 +6452,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // until the user (or autonomous auto-select) picks.
             if (pendingExitPlan && !this._delayedChannelTurns.has(panelId)) {
               await this._handleExitPlanMode(pendingExitPlan.planFilePath, assistantMessage, panelId, isPlanCurrent);
+              if (!isTurnCurrent() || this._cancelledPanels.has(panelId)) { return; }
               pendingExitPlan = null;
             }
 
@@ -5866,7 +6526,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // Mark session idle after response completes
             this._lifecycleManager.markIdle(panelId);
             this._endCanvasTurn(panelId);
-            break;
+            // Completion is terminal. Close the iterator so duplicate done or
+            // delayed text cannot finish this turn twice or alter its receipt.
+            return;
           }
         }
       }
@@ -5874,10 +6536,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // its generator, a cancel between chunks). Closing here as well is what
       // makes "a ghost can only disappear via a terminal event" true for this
       // lane too — an unclosed job is a spinner that outlives its work.
+      if (settleRevokedInput() || !isTurnCurrent()) { return; }
+      if (!this._cancelledPanels.has(panelId)) {
+        failStream('The provider stream ended before completing the response. Your partial answer was preserved.');
+        return;
+      }
+      this._runningPanels.delete(panelId);
+      this._lifecycleManager.markIdle(panelId);
       this._endCanvasTurn(panelId);
     } catch (error) {
-      this._lifecycleManager.markIdle(panelId);
+      if (!isTurnCurrent()) { return; }
+      if (terminalEventPosted) {
+        // Iterator.return() and optional post-response hooks can fail after a
+        // terminal receipt. They cannot persist it again or replace its state.
+        this._runningPanels.delete(panelId);
+        this._lifecycleManager.markIdle(panelId);
+        this._endCanvasTurn(panelId);
+        console.warn('[Mysti] Response cleanup failed after its terminal event:', error instanceof Error ? error.name : 'Unknown error');
+        return;
+      }
       const rawErr = error instanceof Error ? error.message : String(error);
+      if (failStream) { failStream(rawErr || 'The provider stream failed.'); return; }
+      this._runningPanels.delete(panelId);
+      this._lifecycleManager.markIdle(panelId);
       this._endCanvasTurn(panelId, rawErr);
       // A spawn ENOENT lands here, not on the stream — the same card applies.
       if (!this._postProviderFailure(panelId, settings.provider, rawErr)) {
@@ -5885,6 +6566,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           type: 'error',
           payload: rawErr || 'An unknown error occurred'
         });
+      }
+    } finally {
+      if (!dispatched && (mentionPreparationRevoked || (automatic && !automatic.isCurrent()))
+        && this._mystiRunGen.get(panelId) === turnGeneration
+        && this._panelStates.get(panelId) === settingsOwner) {
+        this._runningPanels.delete(panelId);
+        this._lifecycleManager.markIdle(panelId);
+        if (settingsOwner?.currentConversationId === settingsConversation) {
+          this._postToPanel(panelId, { type: 'requestCancelled' });
+        }
+      }
+      if (this._responseStops?.get(panelId)?.generation === turnGeneration) {
+        this._responseStops.delete(panelId);
       }
     }
   }
@@ -6126,14 +6820,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         let reported: Partial<CompactionEvent> | undefined;
         const summaryParts: string[] = [];
         for await (const chunk of stream) {
+          if (chunk.type === 'error' || chunk.type === 'auth_error') {
+            // A failed native request can still end with `done`. Close the
+            // stream immediately so it cannot become a successful compact or
+            // replace the last measured context fill with zero/stale usage.
+            throw new Error(chunk.content?.trim() || 'Native compaction failed. Retry /compact.');
+          }
           if (chunk.type === 'compaction') {
             reported = chunk.compactionEvent;
           }
           if (chunk.type === 'text' && chunk.content) {
             summaryParts.push(chunk.content);
           }
-          if (chunk.type === 'done' && chunk.usage) {
-            const normalized = this._normalizeTurnUsage(settings.provider, settings.model, chunk.usage);
+          if (chunk.type === 'done') {
+            const contextUsage = chunk.contextUsage === undefined ? chunk.usage : chunk.contextUsage;
+            const normalized = this._normalizeTurnUsage(settings.provider, settings.model, contextUsage ?? undefined);
             const tokens = contextFillTokens(normalized);
             if (tokens > 0) {
               afterTokens = tokens;
@@ -6293,18 +6994,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     messageId: string,
     content: string
   ): void {
+    const owner = this._panelStates.get(panelId);
+    const conversation = conversationId ? this._conversationManager.getConversation(conversationId) : null;
+    const anchor = conversation?.messages.find(message => message.id === messageId);
+    if (!conversation || !anchor) { return; }
     const label = `turn: ${content.slice(0, 80)}`;
     void this._checkpointManager
       .snapshot(label)
       .then(commit => {
-        if (!commit) { return; }
-        this._conversationManager.updateMessageInConversation(conversationId, messageId, {
+        if (!commit || this._conversationManager.getConversation(conversation.id) !== conversation
+          || !conversation.messages.includes(anchor)) { return; }
+        this._conversationManager.updateMessageInConversation(conversation.id, messageId, {
           checkpoint: { commit, createdAt: Date.now() }
         });
-        this._postToPanel(panelId, {
-          type: 'checkpointCreated',
-          payload: { messageId, commit }
-        });
+        // A fork retains message IDs, but not a checkpoint that arrived after
+        // its prefix was copied. Never enable that branch's button by ID alone.
+        if (owner && this._panelStates.get(panelId) === owner && owner.currentConversationId === conversation.id) {
+          this._postToPanel(panelId, {
+            type: 'checkpointCreated',
+            payload: { messageId, commit, conversationId: conversation.id }
+          });
+        }
       })
       .catch(err => console.log('[Mysti] Checkpoint snapshot failed:', err));
   }
@@ -6322,14 +7032,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const fork = this._conversationManager.forkConversation(sourceId, messageId);
     if (!fork) { return null; }
 
-    this._cancelQueuedChannelTurn(panelId);
-    this._providerManager.cancelRequest(panelId);
-    this._abortMystiDirect(panelId);
-    this._pendingPlans.clearPanel(panelId);
-    this._pendingPlanSelections.delete(panelId);
-    this._cancelPendingSubAgentQuestions(panelId);
+    this._resetConversationWork(panelId);
+    this._compactionManager.resetUsage(panelId);
+    this._lifecycleManager.removeSession(panelId);
     panelState.currentConversationId = fork.id;
     this._postToPanel(panelId, { type: 'conversationChanged', payload: fork });
+    this._postToPanel(panelId, { type: 'sessionCleared', payload: { message: vscode.l10n.t('Session cleared') } });
     this._postToPanel(panelId, {
       type: 'conversationHistory',
       payload: {
@@ -6340,53 +7048,118 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return fork;
   }
 
-  /**
-   * Restore the workspace to a checkpoint commit ("rewind code to here").
-   * Confirms first (destructive but reversible — a safety snapshot is taken),
-   * then offers an inline "Undo" that rewinds back to that safety snapshot.
-   * The conversation is left untouched (chat ≠ code).
-   */
-  private async _rewindCode(panelId: string, commit: string, messageId?: string): Promise<void> {
-    if (!commit) {
-      this._postToPanel(panelId, {
-        type: 'rewindComplete',
-        payload: { ok: false, reason: 'No checkpoint exists for this message.', messageId }
-      });
+  // The workspace is shared by every chat. A pending confirmation/disk
+  // transaction has one owner; a later rewind also revokes the older Undo.
+  private _rewindOperation?: { busy: boolean };
+
+  /** Confirm and restore code before publishing a fork, preserving its source on failure. */
+  private async _rewindCode(
+    panelId: string, commit?: string, messageId?: string, fork = false, expectedConversationId?: string
+  ): Promise<void> {
+    const owner = this._panelStates.get(panelId);
+    let conversationId = owner?.currentConversationId;
+    let conversation = conversationId ? this._conversationManager.getConversation(conversationId) : null;
+    const anchor = typeof messageId === 'string' ? conversation?.messages.find(message => message.id === messageId) : undefined;
+    if (!owner || !conversation || (expectedConversationId && expectedConversationId !== conversationId)
+      || typeof commit !== 'string' || !commit || anchor?.checkpoint?.commit !== commit) {
+      if (owner) {
+        this._postToPanel(panelId, {
+          type: 'rewindComplete', payload: { ok: false, reason: 'No matching checkpoint exists for this message.', messageId }
+        });
+      }
       return;
     }
-
-    const choice = await vscode.window.showWarningMessage(
-      'Rewind code to this checkpoint? Files changed since then will be restored to their earlier state. Your current changes are saved to a checkpoint first, so this can be undone.',
-      { modal: true },
-      'Rewind'
-    );
-    if (choice !== 'Rewind') {
-      this._postToPanel(panelId, {
-        type: 'rewindComplete',
-        payload: { ok: false, reason: 'cancelled', messageId }
-      });
+    const anotherChatIsRunning = () => [...this._runningPanels].some(id => id !== panelId);
+    if (anotherChatIsRunning()) {
+      this._postToPanel(panelId, { type: 'rewindComplete', payload: {
+        ok: false, reason: 'Another chat is still working. Stop it before rewinding shared workspace files.', messageId
+      } });
       return;
     }
+    if (this._rewindOperation?.busy) { return; }
+    const operation: { busy: boolean } = this._rewindOperation = { busy: true };
+    let generation = this._mystiRunGen.get(panelId) ?? 0;
+    let navigation = owner.navigationRevision ?? 0;
+    const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.toString();
+    const isCurrent = () => this._rewindOperation === operation && this._panelStates.get(panelId) === owner
+      && owner.currentConversationId === conversationId && (owner.navigationRevision ?? 0) === navigation
+      && (this._mystiRunGen.get(panelId) ?? 0) === generation
+      && this._conversationManager.getConversation(conversationId!) === conversation
+      && !!conversation?.messages.some(message => message.id === messageId && message.checkpoint?.commit === commit)
+      && vscode.workspace.workspaceFolders?.[0]?.uri.toString() === workspace && !anotherChatIsRunning();
 
-    const result = await this._checkpointManager.rewindTo(commit);
-    this._postToPanel(panelId, { type: 'rewindComplete', payload: { ...result, messageId } });
+    try {
+      const choice = await vscode.window.showWarningMessage(
+        'Rewind code to this checkpoint? Files changed since then will be restored to their earlier state. Your current changes are saved to a checkpoint first, so this can be undone.',
+        { modal: true },
+        'Rewind'
+      );
+      if (!isCurrent()) { return; }
+      if (choice !== 'Rewind') {
+        this._postToPanel(panelId, { type: 'rewindComplete', payload: { ok: false, reason: 'cancelled', messageId } });
+        return;
+      }
 
-    if (result.ok) {
+      // Revoke the old turn before its files are restored. Check again inside
+      // the manager queue: navigation or a new send may win during git awaits.
+      const wasRunning = this._runningPanels.has(panelId);
+      const responseStop = this._responseStops?.get(panelId);
+      const partial = responseStop?.stop();
+      if (this._responseStops?.get(panelId) === responseStop) { this._responseStops?.delete(panelId); }
+      this._resetConversationWork(panelId);
+      if (wasRunning || partial) {
+        this._postToPanel(panelId, { type: 'requestCancelled', ...(partial ? { payload: { message: partial } } : {}) });
+      }
+      generation = this._mystiRunGen.get(panelId) ?? 0;
+      const result = await this._checkpointManager.rewindTo(commit, isCurrent);
+      if (!isCurrent()) {
+        // Once git reset begins the manager finishes the captured workspace
+        // transaction. Its actual effect must remain visible even if navigation
+        // has revoked permission to open a branch or write to the old webview.
+        if (result.ok) {
+          void vscode.window.showInformationMessage('Code was rewound in the original workspace, but the conversation changed. No new branch was opened.');
+        } else {
+          void vscode.window.showErrorMessage(`Rewind failed in the original workspace (${workspace}): ${result.reason}`);
+        }
+        return;
+      }
+      if (result.ok && fork) {
+        const branch = this._forkConversation(panelId, messageId!);
+        if (!branch) { return; }
+        conversationId = branch.id;
+        conversation = branch;
+        generation = this._mystiRunGen.get(panelId) ?? 0;
+        navigation = owner.navigationRevision ?? 0;
+      }
+      this._postToPanel(panelId, { type: 'rewindComplete', payload: { ...result, messageId } });
+      operation.busy = false;
+      if (!result.ok) {
+        void vscode.window.showErrorMessage(`Rewind failed: ${result.reason}`);
+        return;
+      }
+
       const action = result.safetyCommit
         ? await vscode.window.showInformationMessage('Code rewound to the selected checkpoint.', 'Undo')
-        : (vscode.window.showInformationMessage('Code rewound to the selected checkpoint.'), undefined);
-      if (action === 'Undo' && result.safetyCommit) {
-        const undo = await this._checkpointManager.rewindTo(result.safetyCommit);
-        this._postToPanel(panelId, {
-          type: 'rewindComplete',
-          payload: { ...undo, messageId, undone: true }
-        });
-        if (!undo.ok) {
-          vscode.window.showErrorMessage(`Undo failed: ${undo.reason}`);
+        : (void vscode.window.showInformationMessage('Code rewound to the selected checkpoint.'), undefined);
+      if (action === 'Undo' && result.safetyCommit && isCurrent()) {
+        operation.busy = true;
+        const undo = await this._checkpointManager.rewindTo(result.safetyCommit, isCurrent);
+        if (!isCurrent()) {
+          if (undo.ok) { void vscode.window.showInformationMessage('Code rewind was undone in the original workspace.'); }
+          else { void vscode.window.showErrorMessage(`Undo failed in the original workspace (${workspace}): ${undo.reason}`); }
+          return;
         }
+        this._postToPanel(panelId, { type: 'rewindComplete', payload: { ...undo, messageId, undone: true } });
+        if (!undo.ok) { void vscode.window.showErrorMessage(`Undo failed: ${undo.reason}`); }
       }
-    } else {
-      vscode.window.showErrorMessage(`Rewind failed: ${result.reason}`);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      if (isCurrent()) {
+        this._postToPanel(panelId, { type: 'rewindComplete', payload: { ok: false, reason, messageId } });
+      }
+      void vscode.window.showErrorMessage(`Rewind failed in the original workspace (${workspace}): ${reason}`);
+    } finally {
+      operation.busy = false;
     }
   }
 
@@ -6394,22 +7167,67 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Handle brainstorm mode messages
    */
   private async _handleBrainstormMessage(
+    payload: Pick<ComposerSendRequest, 'content' | 'context' | 'settings' | 'mentions'>,
+    panelId: string,
+    onAccepted?: () => void
+  ) {
+    const validated = this._validateFileMentionRequest(payload, panelId);
+    if (!validated) { return; }
+    const submission = {};
+    this._brainstormPreparations.set(panelId, submission);
+    const isSubmissionCurrent = () => this._brainstormPreparations.get(panelId) === submission;
+    try {
+      await this._handleBrainstormMessageForTurn(validated, panelId, isSubmissionCurrent, validated.fileReferences, onAccepted);
+    } finally {
+      if (isSubmissionCurrent()) { this._brainstormPreparations.delete(panelId); }
+    }
+  }
+
+  private async _handleBrainstormMessageForTurn(
     payload: {
       content: string;
       context: ContextItem[];
       settings: Settings;
+      mentions?: Mention[];
     },
-    panelId: string
+    panelId: string,
+    isSubmissionCurrent: () => boolean,
+    fileReferences: readonly FileMentionReference[],
+    onAccepted?: () => void
   ) {
-    // A finishing summary would drop the messages this run appends.
-    await this._waitForPanelCompaction(panelId);
-    // Clear cancel flag for this panel
-    this._cancelledPanels.delete(panelId);
-    const { content, context, settings } = payload;
-
-    // Get the panel's conversation
     const panelState = this._panelStates.get(panelId);
-    const conversationId = panelState?.currentConversationId;
+    if (!panelState) { return; }
+    const conversationId = panelState.currentConversationId;
+    const navigation = panelState.navigationRevision ?? 0;
+    let generation = this._mystiRunGen.get(panelId) ?? 0;
+    const channelCurrent = this._delayedChannelTurns.capture(panelId);
+    const ownsRun = () => this._panelStates.get(panelId) === panelState
+      && panelState.currentConversationId === conversationId
+      && (this._mystiRunGen.get(panelId) ?? 0) === generation;
+    const isCurrent = () => ownsRun() && !this._cancelledPanels.has(panelId);
+    const isPreparationCurrent = () => isCurrent() && isSubmissionCurrent() && channelCurrent()
+      && (panelState.navigationRevision ?? 0) === navigation;
+    const { content } = payload;
+    let context = payload.context.map(item => ({ ...item }));
+    const prepareContext = this._contextManager.captureContextForSend(context, panelId);
+    const settings = { ...payload.settings };
+    // Clear a previous Stop before waiting; one received during preparation
+    // must prevent this turn from starting, including after compaction finishes.
+    this._cancelledPanels.delete(panelId);
+    await this._waitForPanelCompaction(panelId);
+    if (!isPreparationCurrent()) { return; }
+    // Only an accepted submission takes over the foreground. Abandoning a
+    // compaction wait must not revoke the response already using that panel.
+    this._mystiRunGen.set(panelId, ++generation);
+    if (this._runningPanels.has(panelId)) {
+      this._cancelSupersededForegroundRequest(panelId);
+    }
+    if (!isPreparationCurrent()) { return; }
+    const refreshedContext = await this._refreshContextForSend(prepareContext, panelId, isPreparationCurrent);
+    if (!refreshedContext || !isPreparationCurrent()) { return; }
+    context = refreshedContext;
+    const resolvedContext = await this._withFileMentionContext(context, payload.mentions || [], panelId, isPreparationCurrent, fileReferences);
+    if (!resolvedContext || !isPreparationCurrent()) { return; }
 
     // Add user message to this panel's conversation
     const userMessage = this._conversationManager.addMessageToConversation(
@@ -6418,6 +7236,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       content,
       context
     );
+    onAccepted?.();
     this._postToPanel(panelId, {
       type: 'messageAdded',
       payload: userMessage
@@ -6446,14 +7265,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Pass panelId for per-panel session tracking
       const stream = this._brainstormManager.startBrainstormSession(
         content,
-        context,
+        resolvedContext,
         settings,
-        panelId
+        panelId,
+        this._promptConversation(conversationId ? this._conversationManager.getConversation(conversationId) : null, userMessage.id)
       );
 
       for await (const chunk of stream) {
-        // Check if THIS panel's request was cancelled
-        if (this._cancelledPanels.has(panelId)) {break;}
+        // Old streams cannot publish into a successor or dispose its children.
+        // Navigation alone only revokes preparation, not an active response.
+        if (!isCurrent()) { break; }
 
         switch (chunk.type) {
           case 'phase_change':
@@ -6479,14 +7300,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
           case 'agent_complete':
             // Record per-agent usage for compaction tracking
-            if (chunk.usage && chunk.agentId) {
+            if (chunk.agentId && (chunk.usage || chunk.contextUsage !== undefined)) {
               const agentPanelId = `${panelId}-brainstorm-${chunk.agentId}`;
               const agentModel = this._providerManager.getProviderDefaultModel(chunk.agentId);
               const agentContextWindow = this._providerManager.getModelContextWindow(chunk.agentId, agentModel);
               // Each brainstorm agent is its own backend with its own convention —
               // normalizing against the PANEL's provider would mis-bucket it.
-              const agentUsage = this._normalizeTurnUsage(chunk.agentId as ProviderType, agentModel, chunk.usage);
-              if (agentUsage) {
+              const contextUsage = chunk.contextUsage === undefined ? chunk.usage : chunk.contextUsage;
+              const agentUsage = this._normalizeTurnUsage(chunk.agentId as ProviderType, agentModel, contextUsage ?? undefined);
+              if (chunk.contextUsage !== undefined) {
+                const totals = chunk.usage
+                  ? normalizeUsage(chunk.usage, this._usageConventionFor(chunk.agentId as ProviderType, agentModel)) : null;
+                this._compactionManager.recordUsage(agentPanelId, agentUsage, agentContextWindow, totals);
+              } else if (agentUsage) {
                 this._compactionManager.recordUsage(agentPanelId, agentUsage, agentContextWindow);
               }
             }
@@ -6582,6 +7408,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
       }
     } catch (error) {
+      if (!isCurrent()) { return; }
       this._brainstormManager.disposeChildSessions(panelId);
       this._postToPanel(panelId, {
         type: 'brainstormError',
@@ -6596,7 +7423,40 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * settingsSync — relays only what was applied.
    */
   private async _handleUpdateSettings(settings: Partial<Settings>, panelId?: string) {
+    const owner = panelId ? this._panelStates.get(panelId) : undefined;
+    const conversationId = owner?.currentConversationId;
+    const update = this._applySettingsUpdate(settings, panelId);
+    const revision = owner ? owner.settingsRevision : this._globalSettingsRevision;
+    if (owner) { (owner.pendingSettingsUpdates ??= new Set()).add(update); }
+    try {
+      await update;
+      // The paired settings tab relays this same payload after the handler.
+      // A superseded write must not restore its old selection in that view.
+      const current = panelId
+        ? owner && this._panelStates.get(panelId) === owner && owner.currentConversationId === conversationId && owner.settingsRevision === revision
+        : this._globalSettingsRevision === revision;
+      if (!current) {
+        for (const key of Object.keys(settings)) { delete (settings as Record<string, unknown>)[key]; }
+      }
+    } finally {
+      owner?.pendingSettingsUpdates?.delete(update);
+    }
+  }
+
+  private async _applySettingsUpdate(settings: Partial<Settings>, panelId?: string) {
     const config = vscode.workspace.getConfiguration('mysti');
+    const owner = panelId ? this._panelStates.get(panelId) : undefined;
+    if (panelId && !owner) { return; }
+    const conversationId = owner?.currentConversationId;
+    const changesSelection = settings.model !== undefined || settings.provider !== undefined || 'customModel' in settings;
+    if (changesSelection) {
+      if (owner) { owner.settingsRevision = (owner.settingsRevision ?? 0) + 1; }
+      else { this._globalSettingsRevision = (this._globalSettingsRevision ?? 0) + 1; }
+    }
+    const revision = owner ? owner.settingsRevision : this._globalSettingsRevision;
+    const isSelectionCurrent = () => owner
+      ? this._panelStates.get(panelId!) === owner && owner.currentConversationId === conversationId && owner.settingsRevision === revision
+      : this._globalSettingsRevision === revision;
 
     if (settings.mode !== undefined) {
       await config.update('defaultMode', settings.mode, vscode.ConfigurationTarget.Global);
@@ -6617,11 +7477,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       await config.update('autoContext', settings.contextMode === 'auto', vscode.ConfigurationTarget.Global);
       this._contextManager.setAutoContext(settings.contextMode === 'auto');
     }
+    if (!isSelectionCurrent()) { return; }
     if (settings.model !== undefined) {
       const selectedProvider = settings.provider ?? (panelId ? this._getPanelProvider(panelId) : config.get<string>('defaultProvider', DEFAULT_PROVIDER));
       if (!isPseudoAgentId(selectedProvider) && validateModelName(settings.model).valid) {
         const selections = this._extensionContext.globalState.get<Record<string, string>>('mysti.providerModelSelections', {});
         await this._extensionContext.globalState.update('mysti.providerModelSelections', { ...selections, [selectedProvider]: settings.model });
+        if (!isSelectionCurrent()) { return; }
       }
       if (panelId) {
         // Store per-panel — don't contaminate other panels
@@ -6662,13 +7524,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // alone; only the agent the user talks to moves.
         if (this._isValidAgentSelection(selectedAgent)) {
           await config.update('defaultAgent', selectedAgent, vscode.ConfigurationTarget.Global);
+          if (!isSelectionCurrent()) { return; }
         }
       } else {
         if (this._isValidAgentSelection(selectedAgent)) {
           await config.update('defaultAgent', selectedAgent, vscode.ConfigurationTarget.Global);
+          if (!isSelectionCurrent()) { return; }
         }
         if (!agentIsPseudo) {
           await config.update('defaultProvider', settings.provider, vscode.ConfigurationTarget.Global);
+          if (!isSelectionCurrent()) { return; }
         }
       }
       // NB: no early return here — this handler still has customModel /
@@ -6714,6 +7579,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // duplicated write-side providerModelKeys map whose drift silently
     // dropped 'qwen-code' custom models.
     const settingsAny = settings as Record<string, unknown>;
+    if (!isSelectionCurrent()) { return; }
     if ('customModel' in settingsAny) {
       const customModel = settingsAny['customModel'] as string;
       const provider = settings.provider || (panelId ? this._getPanelProvider(panelId) : config.get<string>('defaultProvider', DEFAULT_PROVIDER));
@@ -6740,6 +7606,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     // Handle Codex profile updates
+    if (!isSelectionCurrent()) { return; }
     if ('codexProfile' in settingsAny) {
       const profile = settingsAny['codexProfile'] as string;
       if (!profile) {
@@ -6833,6 +7700,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // settled — the value sent is the one a send would use. Safe to echo
     // unconditionally: the webview's handler assigns and repaints, and never
     // posts back, so there is no loop.
+    if (!isSelectionCurrent()) { return; }
     if (settings.model !== undefined || settings.provider !== undefined) {
       const pid = panelId;
       const activeProvider = pid
@@ -6901,34 +7769,169 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  private async _handleExportConversation(panelId: string): Promise<void> {
-    try {
-      const id = this._panelStates.get(panelId)?.currentConversationId;
-      const markdown = id ? this._conversationManager.exportToMarkdown(id) : undefined;
-      if (!markdown) {
+  private _transferRequests?: WeakMap<PanelState, { seen: Set<string>; active: Map<string, object> }>;
+  private _clipboardWrites?: Promise<void>;
+
+  private async _handleExportConversation(panelId: string, payload?: unknown): Promise<void> {
+    await this._handleConversationTransfer(panelId, 'exportConversation', payload);
+  }
+
+  private async _handleConversationTransfer(panelId: string, kind: string, rawPayload?: unknown): Promise<void> {
+    const payload = rawPayload && typeof rawPayload === 'object'
+      ? rawPayload as { requestId?: string; conversationId?: string; messageId?: string; format?: string; text?: string }
+      : {};
+    const owner = this._panelStates.get(panelId);
+    const conversationId = owner?.currentConversationId;
+    // An explicitly supplied empty/foreign owner is also stale, never a request
+    // to silently use whatever chat happens to be selected now.
+    if ('conversationId' in payload && payload.conversationId !== conversationId) { return; }
+    const conversation = conversationId ? this._conversationManager.getConversation(conversationId) : undefined;
+    if (!owner || !conversationId || !conversation) {
+      if (kind === 'exportConversation' && !payload.requestId) {
         this._postToPanel(panelId, { type: 'exportResult', payload: { success: false, error: 'There is no conversation to export yet.' } });
+      }
+      return;
+    }
+    this._transferRequests ??= new WeakMap();
+    let requests = this._transferRequests.get(owner);
+    if (!requests) { requests = { seen: new Set(), active: new Map() }; this._transferRequests.set(owner, requests); }
+    const requestId = typeof payload.requestId === 'string' ? payload.requestId : undefined;
+    if (requestId) {
+      if (requests.seen.has(requestId)) { return; }
+      requests.seen.add(requestId);
+      // Bound replay bookkeeping for long-lived tabs; each entry is tiny and
+      // belongs to this panel object, so disposal releases the whole record.
+      if (requests.seen.size > 256) { requests.seen.delete(requests.seen.values().next().value!); }
+    }
+    const token = {};
+    requests.active.set(kind, token);
+    const generation = this._mystiRunGen?.get(panelId) ?? 0;
+    const navigation = owner.navigationRevision ?? 0;
+    const ownsView = () => this._panelStates.get(panelId) === owner
+      && owner.currentConversationId === conversationId && (owner.navigationRevision ?? 0) === navigation
+      && this._conversationManager.getConversation(conversationId) === conversation;
+    const isCurrent = () => ownsView() && (kind !== 'importFromFile'
+      || ((this._mystiRunGen?.get(panelId) ?? 0) === generation && requests.active.get(kind) === token));
+    const operation = kind === 'exportToFile' ? 'file' : kind === 'importFromFile' ? 'import'
+      : kind === 'triggerShareLink' ? 'share' : 'copy';
+    let format = kind === 'copyToClipboard' ? 'text' : kind === 'triggerShareLink' ? 'link' : kind === 'exportToFile'
+      ? (payload.format === 'markdown' ? 'markdown' : 'json') : 'markdown';
+    const reply = (result: { success: boolean; cancelled?: boolean; error?: string; notice?: string }) => {
+      if (ownsView()) {
+        this._postToPanel(panelId, { type: 'exportResult', payload: { ...result, operation, ...(operation === 'import' ? {} : { format }), conversationId,
+          ...(requestId ? { requestId } : {}) } });
+      }
+    };
+    const copy = async (text: string) => {
+      // A slower earlier clipboard operation must not finish after a newer
+      // write and replace it. Recheck ownership when queued work actually starts.
+      const write = (this._clipboardWrites ?? Promise.resolve()).then(async () => {
+        if (!isCurrent()) { return false; }
+        await vscode.env.clipboard.writeText(text);
+        return true;
+      });
+      this._clipboardWrites = write.then(() => {}, () => {});
+      return await write;
+    };
+    try {
+      if (kind === 'importFromFile') {
+        const uris = await vscode.window.showOpenDialog({ canSelectFiles: true, canSelectMany: false,
+          filters: { [vscode.l10n.t('Conversation Files')]: ['mysti.json', 'json', 'jsonl', 'md'] } });
+        if (!isCurrent()) { reply({ success: false, cancelled: true }); return; }
+        if (!uris?.length) { reply({ success: false, cancelled: true }); return; }
+        const bytes = await vscode.workspace.fs.readFile(uris[0]);
+        if (!isCurrent()) { reply({ success: false, cancelled: true }); return; }
+        // Parsing persists a new conversation, so it must happen after the last
+        // async boundary and before the synchronous owner transition.
+        const imported = this._conversationManager.importFromContent(Buffer.from(bytes).toString('utf-8'), uris[0].fsPath);
+        const diagnostic = this._conversationManager.getLastImportDiagnostic();
+        if (!imported) { reply({ success: false, error: diagnostic || 'Failed to import conversation: unrecognized format.' }); return; }
+        reply({ success: true });
+        const responseStop = this._responseStops?.get(panelId);
+        responseStop?.stop(); // Preserve the source's visible partial response.
+        if (this._responseStops?.get(panelId) === responseStop) { this._responseStops?.delete(panelId); }
+        this._resetConversationWork(panelId);
+        void this._dictationManager?.cancelPanel(panelId);
+        this._compactionManager.resetUsage(panelId);
+        this._lifecycleManager.removeSession(panelId);
+        owner.navigationRevision = navigation + 1;
+        owner.currentConversationId = imported.id;
+        this._postToPanel(panelId, { type: 'conversationChanged', payload: imported });
+        this._postToPanel(panelId, { type: 'sessionCleared', payload: { message: vscode.l10n.t('Session cleared') } });
+        if (diagnostic) { this._postToPanel(panelId, { type: 'conversationImportNotice', payload: { conversationId: imported.id, notice: diagnostic } }); }
         return;
       }
-      await vscode.env.clipboard.writeText(markdown);
-      this._postToPanel(panelId, { type: 'exportResult', payload: { success: true } });
-      this._emitBadgeUnlocks(panelId, this._engagementManager.trackExport());
+      if (kind === 'exportToFile') {
+        const isMarkdown = format === 'markdown';
+        const content = isMarkdown ? this._conversationManager.exportToMarkdown(conversationId, true)
+          : this._conversationManager.exportToJson(conversationId);
+        if (!content) { reply({ success: false, error: 'There is no conversation to export yet.' }); return; }
+        const uri = await vscode.window.showSaveDialog({
+          filters: isMarkdown ? { [vscode.l10n.t('Markdown')]: ['md'] }
+            : { [vscode.l10n.t('Mysti JSON')]: ['mysti.json'], [vscode.l10n.t('JSON')]: ['json'] },
+          defaultUri: vscode.Uri.file(`conversation.${isMarkdown ? 'md' : 'mysti.json'}`)
+        });
+        if (!isCurrent()) { return; }
+        if (!uri) { reply({ success: false, cancelled: true }); return; }
+        await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf-8'));
+        reply({ success: true, ...(isMarkdown ? { notice: 'Markdown saves transcript text and roles. Use JSON to retain structured conversation metadata.' } : {}) });
+        if (isCurrent()) { this._emitBadgeUnlocks(panelId, this._engagementManager.trackExport()); }
+        return;
+      }
+      let content: string;
+      let notice: string | undefined;
+      if (kind === 'triggerShareLink') {
+        const info = this._conversationManager.exportToShareableWithInfo(conversationId);
+        if (!info.data || info.totalMessages === 0) { reply({ success: false, error: 'Add a message before sharing this conversation.' }); return; }
+        const uri = `vscode://DeepMyst.mysti/import?data=${info.data}`;
+        if (info.omittedMessages || info.truncatedMessages || info.titleTruncated || uri.length > 2000) {
+          content = this._conversationManager.exportToJson(conversationId);
+          format = 'json';
+          notice = 'Conversation too long for a complete share link. Full JSON copied to clipboard instead.';
+        } else {
+          content = uri;
+          format = 'link';
+          notice = info.metadataOmitted ? 'Share link copied. Links include transcript text and roles; use JSON to retain tools, attachments, and other metadata.' : 'Share link copied.';
+        }
+      } else if (kind === 'copyToClipboard') {
+        const text = typeof rawPayload === 'string' ? rawPayload : payload.text;
+        if (typeof text !== 'string') { reply({ success: false, error: 'No text was provided to copy.' }); return; }
+        content = text;
+      } else if (kind === 'copyMessageMarkdown') {
+        content = payload.messageId ? this._conversationManager.exportMessageToMarkdown(conversationId, payload.messageId) : '';
+        if (!content) { reply({ success: false, error: vscode.l10n.t('Message not found') }); return; }
+      } else {
+        content = this._conversationManager.exportToMarkdown(conversationId);
+        if (!content) { reply({ success: false, error: 'There is no conversation to export yet.' }); return; }
+      }
+      if (!await copy(content)) { return; }
+      reply({ success: true, ...(notice ? { notice } : {}) });
+      if (isCurrent() && kind === 'exportConversation') { this._emitBadgeUnlocks(panelId, this._engagementManager.trackExport()); }
+      if (isCurrent() && kind === 'triggerShareLink') { this._emitBadgeUnlocks(panelId, this._engagementManager.trackConversationShared()); }
     } catch (error) {
-      this._postToPanel(panelId, { type: 'exportResult', payload: { success: false, error: error instanceof Error ? error.message : 'Could not copy the conversation.' } });
+      reply({ success: false, error: error instanceof Error ? error.message : 'The conversation transfer failed.' });
     }
   }
 
   private async _handleRequestFileAttachment(panelId?: string) {
+    if (!panelId) { return; }
+    const owner = this._panelStates.get(panelId);
+    if (!owner) { return; }
+    const conversationId = owner.currentConversationId;
+    const turnGeneration = this._mystiRunGen?.get(panelId) ?? 0;
+    const isCurrent = () => this._panelStates.get(panelId) === owner
+      && owner.currentConversationId === conversationId
+      && (this._mystiRunGen?.get(panelId) ?? 0) === turnGeneration;
     const fileUris = await vscode.window.showOpenDialog({
       canSelectMany: true,
       openLabel: vscode.l10n.t('Attach'),
       title: vscode.l10n.t('Select files to attach')
     });
 
-    if (!fileUris || fileUris.length === 0) {
+    if (!isCurrent() || !fileUris || fileUris.length === 0) {
       return;
     }
 
-    const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
     const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico'];
     const attachments: Attachment[] = [];
     const warnings: string[] = [];
@@ -6938,15 +7941,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const filePath = fileUri.fsPath;
         const fileName = path.basename(filePath);
         const stat = await fs.promises.stat(filePath);
+        if (!isCurrent()) { return; }
 
-        if (stat.size > MAX_FILE_SIZE) {
+        if (stat.size > MAX_ATTACHMENT_BYTES) {
           warnings.push(`${fileName} exceeds the 10 MB attachment limit.`);
           console.log(`[Mysti] Skipping oversized file: ${fileName} (${(stat.size / 1024 / 1024).toFixed(1)} MB)`);
           continue;
         }
 
         if (!stat.isFile()) { warnings.push(`${fileName} is not a regular file.`); continue; }
-        const buffer = await fs.promises.readFile(filePath);
+        const buffer = await readAttachmentBytes(filePath, isCurrent);
+        if (!buffer || !isCurrent()) { return; }
         const base64Data = buffer.toString('base64');
         const ext = path.extname(fileName).slice(1).toLowerCase();
         const isImage = IMAGE_EXTENSIONS.includes(ext);
@@ -6964,18 +7969,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           mimeType: isImage ? `image/${ext === 'jpg' ? 'jpeg' : ext === 'svg' ? 'svg+xml' : ext === 'ico' ? 'vnd.microsoft.icon' : ext}` : 'application/octet-stream',
           base64Data,
           filePath,
-          size: stat.size
+          size: buffer.length
         });
       } catch (error) {
+        if (error instanceof AttachmentTooLargeError) {
+          warnings.push(`${path.basename(fileUri.fsPath)} exceeds the 10 MB attachment limit.`);
+          continue;
+        }
         warnings.push(`Could not read ${path.basename(fileUri.fsPath)}.`);
         console.error(`[Mysti] Error reading file ${fileUri.fsPath}:`, error);
       }
     }
 
-    if (panelId && warnings.length) {
+    if (!isCurrent()) { return; }
+    if (warnings.length) {
       this._postToPanel(panelId, { type: 'attachmentWarning', payload: { message: warnings.join(' ') } });
     }
-    if (panelId && attachments.length > 0) {
+    if (attachments.length > 0) {
       this._postToPanel(panelId, {
         type: 'fileAttachmentSelected',
         payload: { attachments }
@@ -6987,17 +7997,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     payload: { path: string; type: string },
     panelId?: string
   ) {
-    if (payload.type === 'file') {
-      await this._contextManager.addFileToContext(payload.path, panelId);
-    } else if (payload.type === 'folder') {
-      await this._contextManager.addFolderToContext(payload.path, panelId);
-    }
-    if (panelId) {
-      this._postToPanel(panelId, {
-        type: 'contextUpdated',
-        payload: this._contextManager.getContext(panelId)
-      });
-    }
+    const target = this._captureContextTarget(panelId);
+    if (!target || (payload.type !== 'file' && payload.type !== 'folder')) { return; }
+    await this._addContextPaths([payload.path], target);
   }
 
   /**
@@ -7017,21 +8019,59 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // C7: provider-neutral /compact — CompactionManager picks native-cli
       // vs client-summarize from the provider's supportsNativeCompact flag.
       executeManualCompaction: (pid: string) => this._handleManualCompact(pid),
+      clearConversation: (pid: string) => this._handleNewConversation(pid),
     };
   }
 
   private async _handleSlashCommand(
-    payload: { command?: string; commandId?: string; args?: string },
+    payload: ComposerSlashRequest,
     panelId?: string
   ) {
-    if (!panelId) {return;}
-    // Support both old format {command} and new format {commandId}
-    const commandId = payload.commandId || this._slashCommandManager.mapLegacyCommand(payload.command || '');
-    const callbacks = this._getSlashCommandCallbacks();
+    if (!panelId) { return; }
+    const owner = this._panelStates.get(panelId);
+    if (!owner) { return; }
+    const conversationId = owner.currentConversationId;
+    const isCurrent = () => this._panelStates.get(panelId) === owner && owner.currentConversationId === conversationId;
+    const requestId = typeof payload.requestId === 'string' ? payload.requestId : undefined;
+    if (requestId) {
+      this._slashCommandRequests ??= new WeakMap();
+      let seen = this._slashCommandRequests.get(owner);
+      if (!seen) { seen = new Set(); this._slashCommandRequests.set(owner, seen); }
+      if (seen.has(requestId)) { return; }
+      seen.add(requestId);
+      if (seen.size > 100) { seen.delete(seen.values().next().value!); }
+    }
+    const unscoped = this._getSlashCommandCallbacks();
+    const callbacks: SlashCommandCallbacks = {
+      ...unscoped,
+      postToPanel: (pid, message) => { if (pid === panelId && isCurrent()) { unscoped.postToPanel(pid, message); } },
+      updateSettings: async (settings, pid) => { if ((!pid || pid === panelId) && isCurrent()) { await unscoped.updateSettings(settings, panelId); } },
+      executeManualCompaction: async pid => { if (pid === panelId && isCurrent()) { await unscoped.executeManualCompaction(pid); } },
+      clearConversation: async pid => { if (pid === panelId && isCurrent()) { await unscoped.clearConversation?.(pid); } },
+    };
+    try {
+      const result = await this._executeSlashCommand(payload, panelId, callbacks);
+      if (requestId && isCurrent()) {
+        this._postToPanel(panelId, { type: 'slashCommandCompleted', payload: { requestId, ...result, success: true } });
+      }
+    } catch (error) {
+      if (!isCurrent()) { return; }
+      if (!requestId) { throw error; }
+      this._postToPanel(panelId, { type: 'slashCommandCompleted', payload: {
+        requestId, kind: 'error', success: false, error: error instanceof Error ? error.message : 'The command failed.',
+      } });
+    }
+  }
 
-    const p = payload as { command?: string; commandId?: string; args?: string; settings?: Settings; context?: ContextItem[] };
+  private async _executeSlashCommand(
+    p: ComposerSlashRequest,
+    panelId: string,
+    callbacks: SlashCommandCallbacks,
+  ): Promise<ComposerSlashOutcome> {
+    // Support both old format {command} and new format {commandId}
+    const commandId = p.commandId || this._slashCommandManager.mapLegacyCommand(p.command || '');
     const activeProvider = this._getPanelProvider(panelId) as ProviderType;
-    const args = payload.args || '';
+    const args = p.args || '';
 
     // A provider-native command — either picked from the backend's own section
     // of the menu, or typed by name. Both routes land here so that a `/name`
@@ -7058,23 +8098,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (resolved?.kind === 'prefill') {
         // Takes arguments and none were given: hand it back to the composer
         // rather than burning a turn on an incomplete command.
-        this._postToPanel(panelId, { type: 'setInputValue', payload: { value: resolved.text } });
-        return;
+        if (!p.requestId) { callbacks.postToPanel(panelId, { type: 'setInputValue', payload: { value: resolved.text } }); }
+        return { kind: 'prefill', prefill: resolved.text };
       }
       if (resolved?.kind === 'prompt') {
         if (!p.settings) {
           // No settings means no send context; say so instead of dropping it.
-          this._postToPanel(panelId, {
-            type: 'slashCommandResult',
-            payload: { command: nativeId, result: 'Could not run that command — no active panel settings.' }
-          });
-          return;
+          throw new Error('Could not run that command — no active panel settings.');
         }
         await this._handleSendMessage(
-          { content: resolved.text, context: p.context || [], settings: p.settings },
+          { content: resolved.text, context: p.context || [], settings: p.settings, attachments: p.attachments },
           panelId,
         );
-        return;
+        return { kind: 'turn' };
       }
       if (resolved?.kind === 'mysti') {
         // The backend's command has a Mysti equivalent that works across every
@@ -7083,26 +8119,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           resolved.commandId, args, panelId, callbacks
         );
         if (mapped) {
-          this._postToPanel(panelId, {
+          callbacks.postToPanel(panelId, {
             type: 'slashCommandResult',
             payload: { command: resolved.commandId, result: mapped }
           });
         }
-        return;
+        return { kind: 'action' };
       }
       // resolved === null: the command was listed but cannot be run now — its
       // file was deleted or emptied since the menu was built, or the panel
       // switched backends mid-click. Say that; falling through would reach
       // `executeCommand` and answer "Unknown command: native:…", which reads
       // like the entry never existed rather than like it just went stale.
-      this._postToPanel(panelId, {
-        type: 'slashCommandResult',
-        payload: {
-          command: nativeId,
-          result: `/${p.command ?? nativeId} is no longer available for this agent.`,
-        }
-      });
-      return;
+      throw new Error(`/${p.command ?? nativeId} is no longer available for this agent.`);
     }
 
     // Native command pass-through (Plan 16 / Phase B): a `/command` that Mysti
@@ -7112,21 +8141,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (p.command && p.settings && !typedIsMystiCommand) {
       const raw = `/${p.command}${p.args ? ' ' + p.args : ''}`;
       await this._handleSendMessage(
-        { content: raw, context: p.context || [], settings: p.settings },
+        { content: raw, context: p.context || [], settings: p.settings, attachments: p.attachments },
         panelId,
       );
-      return;
+      return { kind: 'turn' };
     }
 
     const result = await this._slashCommandManager.executeCommand(
       commandId, args, panelId, callbacks
     );
     if (result) {
-      this._postToPanel(panelId, {
+      callbacks.postToPanel(panelId, {
         type: 'slashCommandResult',
         payload: { command: commandId, result }
       });
     }
+    return { kind: 'action' };
   }
 
   private async _handleQuickAction(actionId: string, panelId?: string) {
@@ -7197,10 +8227,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (panelId && this._cancelledPanels.has(panelId)) {return;}
 
     // Get conversation for this panel or fallback to current
+    const owner = panelId ? this._panelStates.get(panelId) : undefined;
     let conversation;
     if (panelId) {
-      const panelState = this._panelStates.get(panelId);
-      const conversationId = panelState?.currentConversationId;
+      const conversationId = owner?.currentConversationId;
       conversation = conversationId
         ? this._conversationManager.getConversation(conversationId)
         : null;
@@ -7208,6 +8238,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       conversation = this._conversationManager.getCurrentConversation();
     }
     if (!conversation) {return;}
+
+    const webview = owner?.webview;
+    const conversationId = conversation.id;
+    const navigation = owner?.navigationRevision;
+    const generation = panelId ? this._mystiRunGen.get(panelId) : undefined;
+    const key = owner ?? conversation;
+    const operations = this._suggestionOperations ??= new WeakMap();
+    const operation = {};
+    operations.set(key, operation);
+    const isCurrent = () => operations.get(key) === operation
+      && vscode.workspace.getConfiguration('mysti').get<boolean>('showSuggestions', true)
+      && (panelId
+        ? owner && this._panelStates.get(panelId) === owner && owner.webview === webview
+          && owner.currentConversationId === conversationId && owner.navigationRevision === navigation
+          && this._conversationManager.getConversation(conversationId) === conversation
+          && this._mystiRunGen.get(panelId) === generation && !this._cancelledPanels.has(panelId)
+        : this._conversationManager.getCurrentConversation() === conversation);
 
     // Notify UI to show loading skeleton - route to specific panel if provided
     if (panelId) {
@@ -7222,7 +8269,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         lastMessage
       );
 
-      if (!vscode.workspace.getConfiguration('mysti').get<boolean>('showSuggestions', true)) { return; }
+      if (!isCurrent()) { return; }
 
       if (panelId) {
         this._postToPanel(panelId, {
@@ -7236,23 +8283,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         });
       }
     } catch (error) {
+      if (!isCurrent()) { return; }
       console.error('[Mysti] Suggestion generation failed:', error);
       if (panelId) {
         this._postToPanel(panelId, { type: 'suggestionsError' });
       } else {
         this.postMessage({ type: 'suggestionsError' });
       }
+    } finally {
+      if (operations.get(key) === operation) { operations.delete(key); }
     }
   }
 
   private async _handleCustomModel(panelId: string): Promise<void> {
+    const owner = this._panelStates.get(panelId);
+    if (!owner) { return; }
+    const conversationId = owner.currentConversationId;
+    const revision = owner.settingsRevision;
     const provider = this._getPanelProvider(panelId);
     const model = await vscode.window.showInputBox({
       title: 'Choose a custom model', prompt: 'Enter the model ID supported by your provider or local server.',
       value: this._getPanelModel(panelId), ignoreFocusOut: true,
       validateInput: value => validateModelName(value.trim()).valid ? undefined : validateModelName(value.trim()).error || 'Enter a model ID.'
     });
-    if (!model?.trim() || !this._panelStates.has(panelId) || this._getPanelProvider(panelId) !== provider) { return; }
+    if (!model?.trim() || this._panelStates.get(panelId) !== owner || owner.currentConversationId !== conversationId
+      || owner.settingsRevision !== revision || this._getPanelProvider(panelId) !== provider) { return; }
     await this._handleUpdateSettings({ model: model.trim(), customModel: model.trim() } as Partial<Settings>, panelId);
   }
 
@@ -7404,14 +8459,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private async _handleSemiAutonomousQuestionTimeout(
     panelId: string,
-    question: AskUserQuestionData
+    question: AskUserQuestionData,
+    deliveryId: string
   ): Promise<void> {
-    // Check if user already answered
-    if (!this._pendingAskUserQuestions.has(panelId)) {
-      return;
-    }
-
-    this._semiAutoQuestionTimeouts.delete(question.toolCallId);
+    // A timer may already be queued when cancellation clears its handle.
+    const ownedQuestion = this._takePendingQuestion(panelId, deliveryId);
+    if (!ownedQuestion || ownedQuestion !== question) { return; }
 
     // Try AutonomousManager's intelligent answer
     const autoResult = this._autonomousManager.generateAutoAnswer(question);
@@ -7437,7 +8490,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._postToPanel(panelId, {
       type: 'semiAutonomousDecision',
       payload: {
-        requestId: question.toolCallId,
+        requestId: deliveryId,
         targetType: 'question',
         approved: true,
         reasoning,
@@ -7446,7 +8499,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
 
     // Submit the answer as if the user responded
-    this._pendingQuestionData.delete(question.toolCallId);
     await this._handleAskUserQuestionResponse(
       { toolCallId: question.toolCallId, answers },
       panelId,
@@ -7469,8 +8521,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    const planData = this._pendingPlans.take(panelId, syntheticPlanId);
-    if (!planData) {
+    const planData = this._pendingPlans.peek(panelId, syntheticPlanId);
+    if (!planData?.isCurrent?.()) {
       return;
     }
 
@@ -7490,12 +8542,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     });
 
-    // Clean up pending state
-    this._pendingPlanSelections.delete(panelId);
-
     // Execute the auto-selected plan
     await this._handlePlanOptionSelected(
-      { selectedPlan, originalQuery: planData.originalQuery, messageId: planData.messageId, executionMode: 'edit-automatically', customInstructions: '' },
+      { selectedPlan, originalQuery: planData.originalQuery, messageId: planData.messageId, syntheticPlanId,
+        conversationId: planData.conversationId, executionMode: 'edit-automatically', customInstructions: '' },
       panelId
     );
 
@@ -7848,35 +8898,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Not confident enough — fall through to user UI
     }
 
-    // Track pending question (blocks autonomous continuation)
-    this._pendingAskUserQuestions.set(panelId, auqData.toolCallId);
-    this._pendingQuestionData.set(auqData.toolCallId, auqData);
-
-    // Send the tabbed question UI to webview (no toolUse message — no actual tool was called)
-    this._postToPanel(panelId, {
-      type: 'askUserQuestion',
-      payload: auqData
-    });
-
-    // Semi-autonomous: set up timer for AI to answer if user doesn't respond
-    if (this._isSemiAutonomousEnabled(panelId)) {
-      const questionTimeout = this._getSemiAutonomousTimeout();
-      const expiresAt = Date.now() + (questionTimeout * 1000);
-
-      this._postToPanel(panelId, {
-        type: 'semiAutonomousQuestionTimer',
-        payload: {
-          toolCallId: auqData.toolCallId,
-          timeout: questionTimeout,
-          expiresAt,
-        }
-      });
-
-      const timeoutHandle = setTimeout(() => {
-        this._handleSemiAutonomousQuestionTimeout(panelId, auqData);
-      }, questionTimeout * 1000);
-      this._semiAutoQuestionTimeouts.set(auqData.toolCallId, timeoutHandle);
-    }
+    this._showPendingQuestion(panelId, auqData);
   }
 
   /**
@@ -7890,10 +8912,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     metaQuestions: ClarifyingQuestion[] | undefined,
     panelId: string,
     origin?: { source: 'exit-plan-mode'; planFilePath: string | null },
-    isCurrent: () => boolean = this._pendingPlans.capture(panelId)
+    isCurrent: () => boolean = this._pendingPlans.capture(panelId),
+    responseProvider: string = this._getPanelProvider(panelId)
   ): Promise<void> {
     if (!isCurrent() || !this._panelStates.has(panelId)) { return; }
-    const syntheticPlanId = `plan-${messageId}-${Date.now()}`;
+    const syntheticPlanId = `plan-${messageId}-${crypto.randomUUID()}`;
+    const owner = this._panelStates.get(panelId)!;
+    const webview = owner.webview;
+    const conversationId = owner.currentConversationId;
+    const generation = this._mystiRunGen.get(panelId);
+    this._pendingPlans.clearPanel(panelId);
+    const scope = this._pendingPlans.capture(panelId);
+    const ownsPlan = () => scope() && this._panelStates.get(panelId) === owner
+      && owner.webview === webview && owner.currentConversationId === conversationId
+      && this._mystiRunGen.get(panelId) === generation
+      && this._getPanelProvider(panelId) === responseProvider;
+    this._pendingPlanSelections.add(panelId);
+    this._pendingPlans.set(panelId, syntheticPlanId, { options, messageId, originalQuery, conversationId, provider: responseProvider, isCurrent: ownsPlan });
 
     // Autonomous mode: try to auto-select a plan
     if (this._autonomousManager.isActive()) {
@@ -7917,24 +8952,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
         this._postToPanel(panelId, { type: 'autonomousDecision', payload: autoResult.decision });
         await this._handlePlanOptionSelected(
-          { selectedPlan, originalQuery, messageId, executionMode: 'edit-automatically', customInstructions: '' },
+          { selectedPlan, originalQuery, messageId, syntheticPlanId, conversationId,
+            executionMode: 'edit-automatically', customInstructions: '' },
           panelId
         );
-        return;
+        // Unsupported authority leaves the plan pending. Deliver its card so
+        // the user can explicitly choose a compatible execution mode.
+        if (!this._pendingPlans.peek(panelId, syntheticPlanId)) { return; }
       }
       // Not confident — fall through to UI (will be blocked by pending state)
     }
-
-    // Track pending plan selection (blocks autonomous continuation)
-    this._pendingPlanSelections.add(panelId);
-    this._pendingPlans.clearPanel(panelId);
-    this._pendingPlans.set(panelId, syntheticPlanId, { options, messageId, originalQuery });
 
     // Send plan options to webview (existing rendering). Native exit-plan
     // routing (Plan 02 Phase 3.5) reuses this exact message shape, adding
     // source/planFilePath so the renderer can label the card; the webview
     // ignores fields it doesn't know.
-    const planPayload: { options: PlanOption[]; messageId: string; originalQuery: string; syntheticPlanId: string; metaQuestions?: ClarifyingQuestion[]; source?: string; planFilePath?: string | null } = { options, messageId, originalQuery, syntheticPlanId };
+    const planPayload: { options: PlanOption[]; messageId: string; originalQuery: string; syntheticPlanId: string; conversationId: string | null; provider: string; metaQuestions?: ClarifyingQuestion[]; source?: string; planFilePath?: string | null } = { options, messageId, originalQuery, syntheticPlanId, conversationId, provider: responseProvider };
     if (metaQuestions && metaQuestions.length > 0) {
       planPayload.metaQuestions = metaQuestions;
     }
@@ -8077,7 +9110,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         undefined,
         panelId,
         { source: 'exit-plan-mode', planFilePath },
-        isCurrent
+        isCurrent,
+        assistantMessage.provider || this._getPanelProvider(panelId)
       );
     } catch (error) {
       console.error('[Mysti] exit_plan_mode handling failed:', error);
@@ -8095,6 +9129,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   ): Promise<boolean> {
     try {
       if (!isCurrent() || !this._panelStates.has(panelId)) { return false; }
+      // Capability belongs to the response's provider, even if the user
+      // selects another agent while classification is pending.
+      const responseProvider = message.provider || this._getPanelProvider(panelId);
+      const plansSupported = this._providerManager.getProviderInstance?.(responseProvider)?.capabilities.planMode !== 'none';
       // Use AI-powered classification to distinguish questions from plan options
       const classifyStart = Date.now();
       const result = await this._planOptionManager.classifyResponse(message.content);
@@ -8127,7 +9165,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       // Send plan options through autonomous/semi-auto handling
       // Only suppress if CLARIFYING questions exist
-      if (result.planOptions.length >= 1 && clarifyingQuestions.length === 0) {
+      if (plansSupported && result.planOptions.length >= 1 && clarifyingQuestions.length === 0) {
         console.log('[Mysti] Detected plan options:', result.planOptions.length);
         await this._handleDetectedPlanOptions(
           result.planOptions,
@@ -8136,7 +9174,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           metaQuestions.length > 0 ? metaQuestions : undefined,
           panelId,
           undefined,
-          isCurrent
+          isCurrent,
+          responseProvider
         );
         hasInteractiveElements = true;
       } else if (result.planOptions.length >= 1 && clarifyingQuestions.length > 0) {
@@ -8157,19 +9196,60 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     payload: PlanSelectionResult,
     panelId: string
   ): Promise<void> {
-    if (!this._panelStates.has(panelId)) { return; }
-    const { selectedPlan, originalQuery, executionMode, customInstructions } = payload;
+    const owner = this._panelStates.get(panelId);
+    if (!owner || !payload || typeof payload.syntheticPlanId !== 'string') { return; }
+    const planData = this._pendingPlans.peek(panelId, payload.syntheticPlanId);
+    if (!planData?.isCurrent?.() || payload.conversationId !== owner.currentConversationId
+      || payload.conversationId !== planData.conversationId || payload.messageId !== planData.messageId) { return; }
+    const selectedPlan = planData.options.find(option => option.id === payload.selectedPlan?.id);
+    const { executionMode, customInstructions } = payload;
+    if (!selectedPlan || !['edit-automatically', 'ask-before-edit', 'quick-plan', 'detailed-plan'].includes(executionMode)
+      || (customInstructions !== undefined && typeof customInstructions !== 'string')) { return; }
+    const provider = planData.provider || this._getPanelProvider(panelId);
+    if (provider !== this._getPanelProvider(panelId)) { return; }
+    const config = vscode.workspace.getConfiguration('mysti');
+    const isExecution = executionMode === 'edit-automatically' || executionMode === 'ask-before-edit';
+    let executionAccessLevel: Settings['accessLevel'] = 'ask-permission';
+    if (isExecution) {
+      const capabilities = this._providerManager.getProviderInstance?.(provider)?.capabilities;
+      const supportsAsk = capabilities && (capabilities.supportsAskPermission
+        ?? (capabilities.supportsNativeApproval === true || capabilities.supportsToolUse === false || capabilities.toolCallsAreProposals === true));
+      // A plan approval grants gated execution. Full requires a separate,
+      // explicit composer choice and a callback that acknowledges that tier.
+      const fullSelected = payload.executionAccessLevel === 'full-access'
+        && config.get('accessLevel') === 'full-access'
+        && !['quick-plan', 'detailed-plan', 'ask-before-edit'].includes(config.get<string>('defaultMode', 'default'));
+      if (executionMode === 'edit-automatically' && fullSelected) { executionAccessLevel = 'full-access'; }
+      if (!capabilities || (!supportsAsk && executionAccessLevel !== 'full-access')) {
+        this._postToPanel(panelId, { type: 'planExecutionModeRequired', payload: {
+          syntheticPlanId: payload.syntheticPlanId, conversationId: planData.conversationId, provider,
+          reason: capabilities
+            ? 'This agent needs Full Access to execute. Choose Full to allow edits, commands, and network access, then execute the plan.'
+            : 'Provider capabilities are unavailable. Refresh provider detection before executing this plan.',
+        } });
+        return;
+      }
+    }
+    // Consume authority before any settings write or follow-up can yield. The
+    // displayed plan and original query belong to the host, not the callback.
+    if (!this._pendingPlans.take(panelId, payload.syntheticPlanId)) { return; }
+    const { originalQuery, conversationId } = planData;
+    const webview = owner.webview;
+    const generation = this._mystiRunGen.get(panelId);
     console.log('[Mysti] Plan option selected:', selectedPlan.title, 'with mode:', executionMode);
 
     // Clear pending plan tracking
     this._pendingPlanSelections.delete(panelId);
     // Cancel any semi-auto timer for this panel's plans
     this._pendingPlans.clearPanel(panelId);
-    const isCurrent = this._pendingPlans.capture(panelId);
+    const scope = this._pendingPlans.capture(panelId);
+    const isCurrent = () => scope() && this._panelStates.get(panelId) === owner
+      && owner.webview === webview && owner.currentConversationId === conversationId
+      && this._mystiRunGen.get(panelId) === generation
+      && this._getPanelProvider(panelId) === provider;
     if (!isCurrent()) { return; }
 
     // Check if currently in plan mode
-    const config = vscode.workspace.getConfiguration('mysti');
     const currentMode = config.get<string>('defaultMode');
     const isInPlanMode = currentMode === 'quick-plan' || currentMode === 'detailed-plan';
 
@@ -8203,13 +9283,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     // For execution modes: switch mode and auto-execute
     // 1. Switch to the selected execution mode
-    await this._handleUpdateSettings({ mode: executionMode });
+    await this._handleUpdateSettings({ mode: executionMode, accessLevel: executionAccessLevel }, panelId);
     if (!isCurrent() || !this._panelStates.has(panelId)) { return; }
 
     // 2. Notify webview of mode change
     this._postToPanel(panelId, {
       type: 'modeChanged',
-      payload: { mode: executionMode }
+      payload: { mode: executionMode, accessLevel: executionAccessLevel }
     });
 
     // 3. Get current settings with the new mode (use per-panel provider/model)
@@ -8218,10 +9298,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       thinkingLevel: config.get('defaultThinkingLevel', 'none'),
       effortLevel: config.get('defaultEffortLevel', 'high') as Settings['effortLevel'],
       ultracode: config.get<boolean>('claudeUltracode', false),
-      accessLevel: config.get('accessLevel', 'ask-permission'),
+      accessLevel: executionAccessLevel,
       contextMode: config.get('autoContext', true) ? 'auto' : 'manual',
       model: this._getPanelModel(panelId),
-      provider: this._getPanelProvider(panelId) as Settings['provider']
+      provider: provider as Settings['provider']
     };
 
     // 4. Auto-execute by calling _handleSendMessage directly
@@ -8274,6 +9354,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * @throws Error if path is invalid or contains directory traversal
    */
   private _validateFilePath(filePath: string): void {
+    if (typeof filePath !== 'string' || !filePath.trim()) { throw new Error('Invalid file path'); }
     // Check for null bytes (security risk)
     if (filePath.includes('\0')) {
       throw new Error('Invalid file path: contains null byte');
@@ -8283,7 +9364,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const normalizedPath = path.normalize(filePath);
 
     // Check for directory traversal attempts
-    if (normalizedPath.includes('..')) {
+    if (normalizedPath.split(path.sep).includes('..')) {
       throw new Error('Invalid file path: directory traversal detected');
     }
 
@@ -8295,7 +9376,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const workspaceRoot = workspaceFolders[0].uri.fsPath;
 
         // Ensure resolved path is within workspace boundaries
-        if (!resolvedPath.startsWith(workspaceRoot)) {
+        const relative = path.relative(workspaceRoot, resolvedPath);
+        if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
           throw new Error('Invalid file path: outside workspace boundaries');
         }
       }
@@ -8333,6 +9415,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  private _resolveWorkspaceFileAction(filePath: string): string {
+    return resolveWorkspaceEditPath(this._resolveFilePath(filePath),
+      (vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.fsPath));
+  }
+
   private async _handleApplyEdit(
     payload: {
       path: string;
@@ -8342,31 +9429,42 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     },
     panelId?: string
   ) {
-    const uri = vscode.Uri.file(this._resolveFilePath(payload.path));
-    const document = await vscode.workspace.openTextDocument(uri);
-    await vscode.window.showTextDocument(document);
-
-    const edit = new vscode.WorkspaceEdit();
-    if (payload.startLine !== undefined && payload.endLine !== undefined) {
-      const range = new vscode.Range(
-        new vscode.Position(payload.startLine, 0),
-        new vscode.Position(payload.endLine, document.lineAt(payload.endLine).text.length)
-      );
-      edit.replace(uri, range, payload.content);
-    } else {
-      const fullRange = new vscode.Range(
-        new vscode.Position(0, 0),
-        new vscode.Position(document.lineCount - 1, document.lineAt(document.lineCount - 1).text.length)
-      );
-      edit.replace(uri, fullRange, payload.content);
-    }
-
-    await vscode.workspace.applyEdit(edit);
-    if (panelId) {
-      this._postToPanel(panelId, {
-        type: 'editApplied',
-        payload: { path: payload.path, success: true }
-      });
+    let ownedPath: string | undefined;
+    try {
+      if (typeof payload.content !== 'string') { throw new Error('The edit has no text content.'); }
+      const resolvedPath = this._resolveWorkspaceFileAction(payload.path);
+      this._fileActionsInFlight ??= new Set();
+      if (this._fileActionsInFlight.has(resolvedPath)) { throw new Error('Another edit to this file is still running.'); }
+      this._fileActionsInFlight.add(resolvedPath);
+      ownedPath = resolvedPath;
+      const conversationId = panelId && this._panelStates.get(panelId)?.currentConversationId;
+      const uri = vscode.Uri.file(resolvedPath);
+      const document = await vscode.workspace.openTextDocument(uri);
+      const version = document.version;
+      const content = document.getText();
+      await vscode.window.showTextDocument(document);
+      if (panelId && this._panelStates.get(panelId)?.currentConversationId !== conversationId) { throw new Error('The conversation changed before the edit could be applied.'); }
+      if (document.version !== version || document.getText() !== content) { throw new Error('The file changed before the edit could be applied. Please review it again.'); }
+      if (this._resolveWorkspaceFileAction(payload.path) !== resolvedPath) { throw new Error('The file location changed before the edit could be applied.'); }
+      const edit = new vscode.WorkspaceEdit();
+      if (payload.startLine !== undefined || payload.endLine !== undefined) {
+        if (!Number.isInteger(payload.startLine) || !Number.isInteger(payload.endLine)
+          || payload.startLine! < 0 || payload.endLine! < payload.startLine! || payload.endLine! >= document.lineCount) {
+          throw new Error('The requested edit range is invalid.');
+        }
+        edit.replace(uri, new vscode.Range(new vscode.Position(payload.startLine!, 0),
+          new vscode.Position(payload.endLine!, document.lineAt(payload.endLine!).text.length)), payload.content);
+      } else {
+        edit.replace(uri, new vscode.Range(document.positionAt(0), document.positionAt(content.length)), payload.content);
+      }
+      if (!await vscode.workspace.applyEdit(edit)) { throw new Error('The editor rejected the edit.'); }
+      if (panelId) { this._postToPanel(panelId, { type: 'editApplied', payload: { path: payload.path, success: true } }); }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to apply edit';
+      if (panelId) { this._postToPanel(panelId, { type: 'editApplied', payload: { path: payload.path, success: false, error: message } }); }
+      void vscode.window.showErrorMessage(vscode.l10n.t('Failed to apply edit to {0}: {1}', payload.path, message));
+    } finally {
+      if (ownedPath) { this._fileActionsInFlight.delete(ownedPath); }
     }
   }
 
@@ -8541,7 +9639,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this._vtDashboardPanelId = null;
       this._vtDashboardChatOrigin = null;
       this._panelStates.delete(panelId);
-      this._stopAuthPolling(panelId);
+      this._cancelPanelSetup(panelId);
       // Plan 27 §21.6c #11: the id is minted per open, so a persisted
       // `mysti.context:<panelId>` would outlive the panel — same as the chat tab.
       this._contextManager.clearPanelContext(panelId);
@@ -9122,7 +10220,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this._canvasToolServer = null;
       this._canvasMcpHttp = null;
       this._panelStates.delete(panelId);
-      this._stopAuthPolling(panelId);
+      this._cancelPanelSetup(panelId);
       // Plan 27 §21.6c #11: release the per-open context key, as the chat tab does.
       this._contextManager.clearPanelContext(panelId);
     });
@@ -10342,6 +11440,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     panelId: string,
     conversationId: string,
     jobId?: string,
+    automatic?: ComposerEditorContext,
   ): Promise<void> {
     // Background jobs (jobId set) post to a job card and use per-job cancel keys;
     // foreground runs post to the live chat and use the panel's cancel state.
@@ -10354,7 +11453,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // independent of the transient _cancelledPanels flag's 50ms lifetime.
     const myGen = bg ? 0 : (this._mystiRunGen.get(panelId) ?? 0);
     const owns = () => bg ? true : (this._mystiRunGen.get(panelId) ?? 0) === myGen;
-    const isCancelled = () => !owns() || (bg ? this._jobCancelled.has(jobId!) : this._cancelledPanels.has(panelId));
+    const isCancelled = () => !owns() || !!(automatic && !automatic.isCurrent()) || (bg
+      ? this._jobCancelled.has(jobId!) || !this._conversationManager.getConversation(conversationId)
+      : this._cancelledPanels.has(panelId));
 
     if (!this._mystiCoordinator) {
       const text = 'The Mysti agent is not initialized.';
@@ -10531,6 +11632,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // placement gave injected text maximum steering weight on exactly the
     // free-tier coordinator models weakest at honoring fence instructions.
     const projectBrain = await this._buildMystiProjectBrain(nonce, delegateNonce);
+    // History and project memory belong to this run, including detached jobs.
+    // Only the captured automatic editor context is re-evaluated at dispatch.
+    const promptConversation = conversation ? { ...conversation, messages: conversation.messages.map(message => ({
+      ...message, toolCalls: message.toolCalls?.map(tool => ({ ...tool, input: { ...tool.input } })),
+    })) } : null;
+    const memoryDigest = vscode.workspace.getConfiguration('mysti').get<boolean>('mysti.memory', true)
+      ? this._memory().digest() : '';
     const messages: GatewayChatMessage[] = [
       { role: 'system', content: this._mystiAgenticSystemPrompt(backends, delegateNonce, gov, planMode, settings.accessLevel === 'read-only', execEnabled, connectEnabled, mcpToolset?.tools ?? [], skillHeader, capabilitiesEnabled, visualCaps, visualAppLine) },
       // The user's persona/skill selection, AFTER the operating protocol so it
@@ -10538,13 +11646,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       ...(agentPersonaContext ? [{ role: 'system' as const, content: agentPersonaContext }] : []),
       {
         role: 'user',
-        content: this._buildMystiDirectPrompt(brief, context, conversation, nonce, delegateNonce)
+        content: this._buildMystiDirectPrompt(brief, context, promptConversation, nonce, delegateNonce, memoryDigest)
           + (projectBrain ? `\n\n${projectBrain}` : '')
       },
     ];
 
     // Plan 30 §4.2: everything from here on is a tool result or a reply to one.
     const firstResultMessage = messages.length;
+    const initialUserIndex = messages.length - 1;
+    const initialUserContent = messages[initialUserIndex].content;
+    const resolveContext = automatic ? () => this._withComposerEditorContext(context, automatic) : undefined;
 
     // Foreground: register the panel so a second send cancels this run (the
     // re-entrancy guard). Background jobs are concurrent — they don't lock.
@@ -10646,7 +11757,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       nonce: delegateNonce, scanKinds, maxTurns: gov.maxTurns,
       reasoningEffort: effort, tools: coordTools,
     }, {
-      stream: (turnMessages, options) => this._mystiCoordinator!.stream(turnMessages, options),
+      stream: (turnMessages, options) => this._mystiCoordinator!.stream(turnMessages, {
+        ...options, isCancelled,
+        // Keep the canonical transcript manual-only. Each real transport attempt
+        // replaces just this run's first user slot; tool results and continuation
+        // nudges belong to turnMessages and must survive unchanged.
+        resolveMessages: resolveContext ? () => turnMessages.map((message, index) => index === initialUserIndex
+          ? { ...message, content: this._buildMystiDirectPrompt(brief, resolveContext(), promptConversation, nonce, delegateNonce, memoryDigest)
+            + (projectBrain ? `\n\n${projectBrain}` : '')
+            + message.content.slice(initialUserContent.length) }
+          : message) : undefined,
+      }),
       isCancelled,
       registerAbort,
       // Whole canvas pages need the larger text-directive allowance.
@@ -10728,7 +11849,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
             const batch = roDelegs.map(d => ({ ...d, access: 'read-only' as const })).slice(0, room);
             const { fenced, outcomes } = await this._runMystiDelegateBatch(batch, {
-              settings, context, panelId, runId, cancelKey, isCancelled, registerAbort, bg, runOutput,
+              settings, context, resolveContext, panelId, runId, cancelKey, isCancelled, registerAbort, bg, runOutput,
               nextId: () => `mysti-deleg-${runId}-${delegId++}`, nonce, delegateNonce, liveBackends,
             });
             // Same rule as the single path (P0.5 / [7]): an environment failure
@@ -11179,7 +12300,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           runOutput.postToolUse({ id: toolId, name: 'delegate', input: { agent: 'advisor', task: directive.task } }, { kind: 'advisor', access: 'read-only' });
           const trace = bg ? undefined : this._delegateTracer(panelId, toolId);
           const r = await this._runMystiAdvisor(directive, {
-            settings, context, panelId, runId, cancelKey, isCancelled, registerAbort, liveBackends, paidGuard, trace, toolId,
+            settings, context, resolveContext, panelId, runId, cancelKey, isCancelled, registerAbort, liveBackends, paidGuard, trace, toolId,
           });
           delegations++;
           if (bg) { this._backgroundJobManager.incrementDelegations(jobId!); }
@@ -11251,7 +12372,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 ...(routing.model ? { model: routing.model } : {}),
               });
               const r = await this._runMystiSubagent(directive!, {
-                settings, context, panelId, cancelKey, toolId: cardId, isCancelled, registerAbort,
+                settings, context, resolveContext, panelId, cancelKey, toolId: cardId, isCancelled, registerAbort,
                 readOnly: directive!.access === 'read-only', execEnabled, model: routing.model, effort: routing.effort, trace,
                 paidGuard,
                 // A child's edits spend the PARENT's exec budget — never a fresh one.
@@ -11280,7 +12401,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             foldedFor.add(agent);
             // Stable dispatch runId so delegation N+1 to the same agent resumes
             // its session (P0.2e) instead of cold-starting.
-            const r = await this._runMystiDelegation(agent, directive!.task, settings, conversation, panelId, runId, cancelKey, isCancelled, trace, context, fold, false, model, effort, directive!.access === 'read-only', cardId);
+            const r = await this._runMystiDelegation(agent, directive!.task, settings, conversation, panelId, runId, cancelKey, isCancelled, trace, context, fold, false, model, effort, directive!.access === 'read-only', cardId, resolveContext);
             // Environment failures (nothing ran) don't consume the delegation
             // budget — only real dispatches do (P0.5). A failed env agent is
             // dropped so the model can't burn the run re-delegating to it ([7]).
@@ -11467,7 +12588,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // when nothing at all was produced. Callers gate on ownership so a superseded
     // zombie never inserts an out-of-order message into the successor's history.
     const persistIncompleteRun = (marker: string) => {
-      if (!runOutput.hasContent) { return; }
+      if (!runOutput.hasContent || !this._conversationManager.getConversation(conversationId)) { return; }
       const snapshot = runOutput.snapshot(runOutput.model || 'mysti', marker);
       this._conversationManager.addMessageToConversation(
         conversationId, 'assistant', snapshot.content, undefined, undefined,
@@ -11475,13 +12596,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       );
     };
 
-    // Read the terminal cancel state once, then evict the per-job flag so the
-    // _jobCancelled set doesn't grow for the session's lifetime.
-    const wasCancelled = isCancelled();
-    if (bg) { this._jobCancelled.delete(jobId!); }
-
-    if (wasCancelled) {
+    // Recheck after final metadata awaits too: deletion or navigation can land
+    // after the last model token and still owns the terminal UI transition.
+    const settleCancellation = () => {
+      if (!isCancelled()) { return false; }
       if (bg) {
+        this._jobCancelled.delete(jobId!);
         this._backgroundJobManager.markCancelled(jobId!, Date.now());
         persistIncompleteRun('_(Stopped — the background task was cancelled; any delegations above already ran.)_');
         this._postToPanel(panelId, { type: 'jobCancelled', payload: { jobId } });
@@ -11494,8 +12614,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         persistIncompleteRun('_(Stopped — Mysti was interrupted before finishing; any delegations above already ran.)_');
         this._postToPanel(panelId, { type: 'requestCancelled' });
       }
-      return;
-    }
+      return true;
+    };
+    if (settleCancellation()) { return; }
     // Any surfaced error ends the run WITHOUT reporting a clean completion — a
     // partial-then-error stream (e.g. a mid-generation timeout) must not persist
     // truncated text as the final answer. (Foreground already posted the error
@@ -11536,6 +12657,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Prefer the model the stream reported it actually ran on; only fall back to
     // resolving chain[0] if the stream never surfaced one (older gateway).
     const coordinatorModel = runOutput.model || await this._mystiCoordinator.resolveCoordinatorModel().catch(() => 'mysti');
+    if (settleCancellation()) { return; }
     const snapshot = runOutput.snapshot(coordinatorModel);
     const answer = snapshot.content;
     const assistantMessage = this._conversationManager.addMessageToConversation(
@@ -11580,6 +12702,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       } catch {
         // Display only — never let it cost the turn its completion.
       }
+      if (isCancelled()) { return; }
       this._postToPanel(panelId, {
         type: 'contextWindowInfo',
         payload: coordinatorWindow ? { contextWindow: coordinatorWindow } : { usageAvailable: false },
@@ -11602,6 +12725,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     conversation: Conversation | null,
     panelId: string,
     conversationId: string,
+    automatic?: ComposerEditorContext,
   ): void {
     // P1.5 concurrency cap: too many detached runs at once exhausts memory/CLIs.
     const MAX_CONCURRENT_JOBS = 3;
@@ -11618,7 +12742,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const job = this._backgroundJobManager.create(jobId, panelId, conversationId, brief, Date.now());
     this._postToPanel(panelId, { type: 'jobStarted', payload: { jobId, title: job.title } });
     // Fire-and-forget: the run posts its own job lifecycle events.
-    void this._runMystiAgentic(brief, context, settings, conversation, panelId, conversationId, jobId)
+    void this._runMystiAgentic(brief, context, settings, conversation, panelId, conversationId, jobId,
+      // An explicitly detached job owns the original snapshot for its lifetime.
+      // Navigation does not stop it; deletion/Stop and live Auto Context still do.
+      automatic ? { item: automatic.item, isCurrent: () => !!this._conversationManager.getConversation(conversationId) } : undefined)
       .catch(error => {
         const msg = error instanceof Error ? error.message : 'Background job failed';
         this._backgroundJobManager.markFailed(jobId, msg, Date.now());
@@ -11715,7 +12842,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async _upgradeModelCli(panelId: string, id: string): Promise<void> {
     const offer = this._modelCliUpgrades.get(id);
     if (!offer || offer.panelId !== panelId || offer.state === 'ready' || offer.state === 'installing') { return; }
+    const panel = this._panelStates.get(panelId);
+    if (!panel) { return; }
+    const conversationId = panel.currentConversationId;
+    const selected = { ...panel.settingsOverrides };
+    const isCurrent = (): boolean => this._modelCliUpgrades.get(id) === offer
+      && this._panelStates.get(panelId) === panel
+      && panel.currentConversationId === conversationId
+      && panel.settingsOverrides?.provider === selected.provider
+      && panel.settingsOverrides?.model === selected.model
+      && panel.settingsOverrides?.agent === selected.agent;
     const report = (state: ModelCliUpgradePayload['state'], message: string): void => {
+      if (!isCurrent()) { return; }
       offer.state = state;
       this._postToPanel(panelId, { type: 'modelCliUpgrade', payload: {
         id, providerId: offer.providerId, minimum: offer.minimum,
@@ -11733,13 +12871,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         throw new Error('Finish or stop the current response, then try the upgrade again.');
       }
       let status = await this._setupManager.refreshProviderStatus(offer.providerId);
+      if (!isCurrent()) { return; }
       if (!status?.found || !meetsCliVersion(status.version, offer.minimum)) {
+        if (this._lifecycleManager.getSession(panelId)?.status === 'busy') {
+          throw new Error('Finish or stop the current response, then try the upgrade again.');
+        }
         if (!this._cliUpdates) { throw new Error('The CLI update service is unavailable.'); }
         const plan = this._cliUpdates.getModelUpgradePlan(offer.providerId, offer.minimum, status?.path);
         report('installing', `Installing CLI ${offer.minimum} or newer. Progress is shown in the upgrade terminal.`);
         await runCliUpgradeTask(getProviderDisplayName(offer.providerId) || offer.providerId, plan);
+        if (!isCurrent()) { return; }
         report('installing', 'Verifying the installed CLI…');
         status = await this._setupManager.refreshProviderStatus(offer.providerId);
+        if (!isCurrent()) { return; }
       }
       if (!status?.found || !meetsCliVersion(status.version, offer.minimum)) {
         throw new Error(`Mysti still detects ${status?.version || 'an unknown CLI version'}${status?.path ? ` at ${status.path}` : ''}. This model requires ${offer.minimum} or newer. Check the upgrade terminal and your configured CLI path, then try again.`);
@@ -11757,6 +12901,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       report('failed', error instanceof Error ? error.message : 'Upgrade failed. See the upgrade terminal for details.');
     } finally {
       this._upgradingClis.delete(offer.providerId);
+      if (!isCurrent() && this._modelCliUpgrades.get(id) === offer) { this._modelCliUpgrades.delete(id); }
     }
   }
 
@@ -11995,15 +13140,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._jobCancelled.add(jobId);
     this._jobAbortControllers.get(jobId)?.abort();
     this._jobAbortControllers.delete(jobId);
+    // Coordinator local tools also own gates, even without a delegate child.
+    const dismissed = this._permissionManager.cancelRequestsByOwner(jobId);
+    const panelId = this._backgroundJobManager.get(jobId)?.panelId || '';
+    if (panelId && dismissed.length > 0) {
+      this._postToPanel(panelId, { type: 'permissionDismissed', payload: { requestIds: dismissed } });
+    }
     const delegationRun = this._mystiActiveDelegationRuns.get(jobId);
     if (delegationRun) {
-      // Scoped: cancel ONLY this job's pending gate(s), never a sibling job's or
-      // the foreground turn's (they own their gates under a different key).
-      const dismissed = this._permissionManager.cancelRequestsByOwner(jobId);
-      const panelId = this._backgroundJobManager.get(jobId)?.panelId || '';
-      if (panelId && dismissed.length > 0) {
-        this._postToPanel(panelId, { type: 'permissionDismissed', payload: { requestIds: dismissed } });
-      }
       this._collaboratorPool.cancelRun(delegationRun);
       this._mystiActiveDelegationRuns.delete(jobId);
     }
@@ -12122,6 +13266,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     cancelKey: string,
     isCancelled: () => boolean,
     context?: ContextItem[],
+    resolveContext?: () => ContextItem[],
   ): Promise<MystiDelegationResult[]> {
     const onQuestion = this._createSubAgentQuestionCallback(panelId);
     const onGate: CollaboratorGateCallback = async (spec, toolCall, nativeRequest) => {
@@ -12143,6 +13288,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // pool's _collectContext is a deliberate stub — the caller folds context.
       // A review reads the files itself, so it gets only the task (no fold).
       prompt: this._buildDelegationPrompt(r.task + (r.suffix ?? SUMMARY_INSTRUCTIONS), r.reviewOnly ? undefined : context, r.reviewOnly ? false : r.fold),
+      resolvePrompt: resolveContext && !r.reviewOnly
+        ? () => this._buildDelegationPrompt(r.task + (r.suffix ?? SUMMARY_INSTRUCTIONS), resolveContext(), r.fold)
+        : undefined,
       // Read-only when asked, when reviewing (P2.1), in a plan mode (P1.3), or
       // at read-only access (Plan 18 F6) — the pool hard-denies writes.
       access: this._delegationAccess(settings, r.readOnly || !!r.reviewOnly),
@@ -12162,7 +13310,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // whole main conversation would contradict that, bloat the sub-agent
       // prompt, and leak nonce-fenced untrusted blocks into it.
       const stream = this._collaboratorPool.dispatch(specs, {
-        settings, panelId, runId, maxConcurrent: specs.length, conversation: null, onQuestion, onGate,
+        settings, panelId, runId, maxConcurrent: specs.length, conversation: null, onQuestion, onGate, isCancelled,
       });
       for await (const chunk of stream) {
         if (isCancelled()) { break; }
@@ -12184,7 +13332,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // P1.2: note if the sub-agent MODIFIED the workspace (edit/create/bash)
           // — the verification loop runs a diagnostics check afterward.
           const act = this._classifyToolAction(chunk.toolCall.name);
-          if (act === 'file-edit' || act === 'file-create' || act === 'file-delete' || act === 'bash-command') { res.wrote = true; }
+          if (!chunk.toolCall.proposalOnly && chunk.toolCall.status !== 'proposed'
+            && (act === 'file-edit' || act === 'file-create' || act === 'file-delete' || act === 'bash-command')) { res.wrote = true; }
         } else if (chunk.type === 'collab_tool_result' && chunk.toolCall) {
           trace?.({ type: 'tool_result', toolCall: chunk.toolCall });
         } else if (chunk.type === 'collab_thinking' && chunk.content) {
@@ -12242,6 +13391,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     effortOverride?: Settings['effortLevel'],
     forceReadOnly = false,
     parentToolId?: string,
+    resolveContext?: () => ContextItem[],
   ): Promise<MystiDelegationResult> {
     const [result] = await this._runMystiDelegations([{
       agentId, task,
@@ -12252,7 +13402,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       readOnly: forceReadOnly, reviewOnly, fold: foldFiles,
       ...(reviewOnly ? { suffix: '' } : {}),
       trace, parentToolId,
-    }], settings, panelId, runId, cancelKey, isCancelled, context);
+    }], settings, panelId, runId, cancelKey, isCancelled, context, resolveContext);
     return result;
   }
 
@@ -12267,7 +13417,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async _runMystiSubagent(
     d: Extract<MystiDirective, { kind: 'delegate' }>,
     run: {
-      settings: Settings; context: ContextItem[]; panelId: string; cancelKey: string; toolId: string;
+      settings: Settings; context: ContextItem[]; resolveContext?: () => ContextItem[]; panelId: string; cancelKey: string; toolId: string;
       isCancelled: () => boolean; registerAbort: (c: AbortController) => void; readOnly: boolean;
       execEnabled: boolean; chargeExec: () => boolean;
       model?: string; effort?: EffortLevel; trace?: (chunk: SubagentTrace) => void;
@@ -12285,14 +13435,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const tools = await coordinator.supportsToolCalls(toolModel).catch(() => false)
       ? coordinatorToolSchemas(write).filter(t => t.function.name !== 'delegate' && t.function.name !== 'remember')
       : undefined;
-    const files = capAttachedFiles((run.context || []).filter(c => c.enabled !== false && c.content));
-    const filesText = files.files.map(f => `### ${f.path}\n${f.body}${f.truncated ? '\n… (truncated)' : ''}`).join('\n\n');
     const brain = await this._buildMystiProjectBrain(nonce, directiveNonce);
-    const brief = [
-      `## Task\n\n${d.task}`,
-      filesText ? this._fenceLocalToolResult('attached-files', filesText, nonce, directiveNonce) : '',
-      brain,
-    ].filter(Boolean).join('\n\n');
+    const buildBrief = (context: ContextItem[]) => {
+      const files = capAttachedFiles(context.filter(c => c.enabled !== false && c.content));
+      const filesText = files.files.map(f => `### ${f.path}\n${f.body}${f.truncated ? '\n… (truncated)' : ''}`).join('\n\n');
+      return [
+        `## Task\n\n${d.task}`,
+        filesText ? this._fenceLocalToolResult('attached-files', filesText, nonce, directiveNonce) : '',
+        brain,
+      ].filter(Boolean).join('\n\n');
+    };
+    const brief = buildBrief(run.context);
     // Plan 30 §3: the spend guard covers any EXPLICIT child model — `model=` or
     // mysti.mysti.subagentModel — that the catalog lists as paid. A child with
     // no explicit model streams the coordinator's own chain, which the user
@@ -12307,7 +13460,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return { text: '', hasError: true, failure: 'denied', errorDetail: `the paid model ${paidModel} only runs as a single delegate, not in a parallel batch`, wrote: false, costUsd: 0, exhausted: false };
       }
       // A looping child: bound it by every round re-sending the brief plus a full reply.
-      estimate = estimateCallUsd(rateFromCatalog(entry?.pricing) ?? getModelRate(paidModel), brief.length * SUBAGENT_MAX_TURNS, 4096 * SUBAGENT_MAX_TURNS);
+      estimate = estimateCallUsd(rateFromCatalog(entry?.pricing) ?? getModelRate(paidModel), buildBrief(run.resolveContext?.() ?? run.context).length * SUBAGENT_MAX_TURNS, 4096 * SUBAGENT_MAX_TURNS);
       const ok = await run.paidGuard.approve({ label: 'Subagent', model: paidModel, estimateUsd: estimate, approximate: true });
       if (!ok) { return { text: '', hasError: true, failure: 'denied', errorDetail: `the paid model ${paidModel} was not approved`, wrote: false, costUsd: 0, exhausted: false }; }
     }
@@ -12315,7 +13468,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       id: run.toolId, directiveNonce, brief, tools,
       reasoningEffort: clampEffort(run.effort ?? run.settings.effortLevel, ['low', 'medium', 'high']) as 'low' | 'medium' | 'high' | undefined,
     }, {
-      stream: (messages, options) => coordinator.stream(messages, { ...options, model }),
+      stream: (messages, options) => coordinator.stream(messages, {
+        ...options, model, isCancelled: run.isCancelled,
+        resolveMessages: run.resolveContext ? () => messages.map((message, index) => index === 1
+          ? { ...message, content: buildBrief(run.resolveContext!()) + message.content.slice(brief.length) } : message) : undefined,
+      }),
       isCancelled: run.isCancelled,
       registerAbort: run.registerAbort,
       runRead: dir => this._runMystiLocalTool(dir),
@@ -12346,7 +13503,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async _runMystiDelegateBatch(
     batch: Extract<MystiDirective, { kind: 'delegate' }>[],
     run: {
-      settings: Settings; context: ContextItem[]; panelId: string; runId: string; cancelKey: string;
+      settings: Settings; context: ContextItem[]; resolveContext?: () => ContextItem[]; panelId: string; runId: string; cancelKey: string;
       isCancelled: () => boolean; registerAbort: (c: AbortController) => void; bg: boolean;
       runOutput: CoordinatorRunOutput; nextId: () => string; nonce: string; delegateNonce: string; liveBackends: AgentType[];
     },
@@ -12379,7 +13536,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const routing = await this._resolveDelegateRouting('mysti', j.d);
         // Batch children are read-only by construction: no exec, no exec budget.
         const r = await this._runMystiSubagent(j.d, {
-          settings: run.settings, context: run.context, panelId: run.panelId, cancelKey: run.cancelKey, toolId: j.id,
+          settings: run.settings, context: run.context, resolveContext: run.resolveContext, panelId: run.panelId, cancelKey: run.cancelKey, toolId: j.id,
           isCancelled: run.isCancelled, registerAbort: childAbort, readOnly: true,
           execEnabled: false, chargeExec: () => false,
           model: routing.model, effort: routing.effort, trace: traceFor(j.id),
@@ -12401,7 +13558,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           notes.push(routing.notes);
           reqs.push({ agentId: agent, task: j.d.task, collaboratorId: `deleg-${run.cancelKey}-${agent}-p${i}`, model: routing.model, effort: routing.effort, readOnly: true, fold: true, trace: traceFor(j.id), parentToolId: j.id });
         }
-        const rs = await this._runMystiDelegations(reqs, run.settings, run.panelId, run.runId, run.cancelKey, run.isCancelled, run.context);
+        const rs = await this._runMystiDelegations(reqs, run.settings, run.panelId, run.runId, run.cancelKey, run.isCancelled, run.context, run.resolveContext);
         rs.forEach((r, i) => results.set(known[i].id, { ...r, notes: notes[i] }));
       })(),
     ]);
@@ -12430,7 +13587,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async _runMystiAdvisor(
     d: Extract<MystiDirective, { kind: 'delegate' }>,
     run: {
-      settings: Settings; context: ContextItem[]; panelId: string; runId: string; cancelKey: string;
+      settings: Settings; context: ContextItem[]; resolveContext?: () => ContextItem[]; panelId: string; runId: string; cancelKey: string;
       isCancelled: () => boolean; registerAbort: (c: AbortController) => void; liveBackends: AgentType[];
       paidGuard: PaidSpendGuard; toolId: string;
       trace?: (chunk: { type: 'tool_use' | 'tool_result' | 'thinking' | 'retry' | 'progress'; toolCall?: unknown; content?: string }) => void;
@@ -12450,7 +13607,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         agentId: agent, task: d.task + ADVISOR_INSTRUCTIONS, collaboratorId: `advisor-${run.cancelKey}-${agent}`,
         model: routing.model ?? this._resolveTierModel(agent, 'strong'), effort: routing.effort ?? 'high',
         readOnly: true, fold: true, suffix: '', trace: run.trace, parentToolId: run.toolId,
-      }], run.settings, run.panelId, run.runId, run.cancelKey, run.isCancelled, run.context);
+      }], run.settings, run.panelId, run.runId, run.cancelKey, run.isCancelled, run.context, run.resolveContext);
       if (!(r.failure === 'not-installed' || r.failure === 'not-authenticated')) { return { ...r, via: agent }; }
       failures.push(`${agent} is ${r.failure === 'not-installed' ? 'not installed' : 'not signed in'}`);
       const idx = run.liveBackends.indexOf(agent);
@@ -12463,15 +13620,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     const coordinator = this._mystiCoordinator;
     const model = d.model && (await coordinator?.catalogModel(d.model).catch(() => undefined)) ? d.model : paidModel;
-    const files = capAttachedFiles((run.context || []).filter(c => c.enabled !== false && c.content));
-    const filesText = files.files.map(f => `### ${f.path}\n${f.body}${f.truncated ? '\n… (truncated)' : ''}`).join('\n\n');
-    // Fresh nonces: the run's own never leave the host for a third-party model.
-    const messages: GatewayChatMessage[] = [
-      { role: 'system', content: `You are a senior engineer advising an AI coding agent.${ADVISOR_INSTRUCTIONS}` },
-      { role: 'user', content: [`## Question\n\n${d.task}`, filesText ? this._fenceLocalToolResult('attached-files', filesText, crypto.randomUUID(), crypto.randomUUID().slice(0, 8)) : ''].filter(Boolean).join('\n\n') },
-    ];
+    // Fresh, stable nonces: the parent's own never leave the host.
+    const nonce = crypto.randomUUID();
+    const directiveNonce = crypto.randomUUID().slice(0, 8);
+    const buildMessages = (context: ContextItem[]): GatewayChatMessage[] => {
+      const files = capAttachedFiles(context.filter(c => c.enabled !== false && c.content));
+      const filesText = files.files.map(f => `### ${f.path}\n${f.body}${f.truncated ? '\n… (truncated)' : ''}`).join('\n\n');
+      return [
+        { role: 'system', content: `You are a senior engineer advising an AI coding agent.${ADVISOR_INSTRUCTIONS}` },
+        { role: 'user', content: [`## Question\n\n${d.task}`, filesText ? this._fenceLocalToolResult('attached-files', filesText, nonce, directiveNonce) : ''].filter(Boolean).join('\n\n') },
+      ];
+    };
+    const messages = buildMessages(run.context);
+    const resolveMessages = run.resolveContext ? () => buildMessages(run.resolveContext!()) : undefined;
     const entry = await coordinator?.catalogModel(model).catch(() => undefined);
-    const estimate = estimateCallUsd(rateFromCatalog(entry?.pricing) ?? getModelRate(model), messages.reduce((n, m) => n + m.content.length, 0), 4096);
+    const estimate = estimateCallUsd(rateFromCatalog(entry?.pricing) ?? getModelRate(model), (resolveMessages?.() ?? messages).reduce((n, m) => n + m.content.length, 0), 4096);
     const ok = await run.paidGuard.approve({ label: 'Advisor', model, estimateUsd: estimate });
     if (!ok || !coordinator) {
       return { text: '', hasError: true, failure: 'denied', errorDetail: `advisor unavailable: the paid call to ${model} was not approved${failures.length ? ` (${why})` : ''}`, wrote: false, via: model };
@@ -12479,7 +13642,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Stop must reach the paid call too.
     const abort = new AbortController();
     run.registerAbort(abort);
-    const r = await coordinator.complete(messages, { model, maxTokens: 4096, signal: abort.signal });
+    const r = await coordinator.complete(messages, { model, maxTokens: 4096, signal: abort.signal, isCancelled: run.isCancelled, resolveMessages });
     run.paidGuard.settle(estimate, r.costUsd);
     const cost = r.costUsd !== undefined ? { costUsd: r.costUsd } : estimate !== undefined ? { costUsd: estimate, costApprox: true } : {};
     return { text: r.text, hasError: r.failed, ...(r.failed ? { failure: 'stream-error' as CollaboratorFailure, errorDetail: r.error } : {}), wrote: false, via: model, ...cost };
@@ -12747,14 +13910,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // [15]: on a REPEAT delegation to an agent whose session already received
     // the files (P0.2e continuity), don't re-send the bodies — just name them.
     if (!foldFiles) {
-      return `${task}\n\n(The user's attached files — ${files.map(f => f.path).join(', ')} — were already provided earlier in this session; re-read from disk if needed.)`;
+      return `${task}\n\nThe attached files listed below were already provided earlier in this session; re-read from disk if needed.\n\n`
+        + formatReferenceData(files.map(f => f.path).join('\n'), 'Previously attached file paths');
     }
     const capped = capAttachedFiles(files);
     const sections = capped.files.map(f =>
       `### ${f.path}\n\`\`\`\n${f.body}${f.truncated ? '\n… (truncated)' : ''}\n\`\`\``);
     // [15]: don't silently drop files past the budget — say so.
     const omittedNote = capped.omitted > 0 ? `\n\n(${capped.omitted} more attached file(s) omitted by the context budget — read them from disk if needed.)` : '';
-    return `${task}\n\n## Attached files (from the user — reference material)\n\n${sections.join('\n\n')}${omittedNote}`;
+    return `${task}\n\n## Attached files (from the user — reference material)\n\n`
+      + formatReferenceData(sections.join('\n\n') + omittedNote, 'Attached file contents');
   }
 
   /** Execute a local read-only directive via MystiLocalTools (Plan 17 P0.1). */
@@ -12897,6 +14062,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     conversation: Conversation | null,
     nonce: string,
     directiveNonce?: string,
+    memoryDigest?: string,
   ): string {
     // Plan 18 (F3): every untrusted segment strips BOTH nonces.
     const redact = (t: string): string => {
@@ -12912,10 +14078,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // P2.5: unified cross-backend project memory (facts the coordinator and the
     // host accumulated across sessions/backends). Injected in the USER turn as
     // UNTRUSTED data — never the system prefix (Plan 12 trust rule).
-    if (vscode.workspace.getConfiguration('mysti').get<boolean>('mysti.memory', true)) {
-      const mem = this._memory().digest();
-      if (mem) { segments.push(`### Project memory (learnings from earlier sessions)\n${redact(mem)}`); }
-    }
+    const mem = memoryDigest ?? (vscode.workspace.getConfiguration('mysti').get<boolean>('mysti.memory', true)
+      ? this._memory().digest() : '');
+    if (mem) { segments.push(`### Project memory (learnings from earlier sessions)\n${redact(mem)}`); }
     if (conversation && conversation.messages.length > 0) {
       // P0.4: 10×2000 (was 4×400 — cross-turn amnesia: "now fix what you
       // found" re-delegated discovery from scratch).
@@ -12953,7 +14118,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Plan 30 §4.4: this message is re-sent on every round-trip of the run.
     const attached = capAttachedFiles((context || []).filter(c => c.enabled !== false && c.content));
     for (const f of attached.files) {
-      segments.push(`### File: ${f.path}\n${redact(f.body)}${f.truncated ? '\n… (truncated — read the file for the rest)' : ''}`);
+      segments.push(formatReferenceData(
+        `### File: ${redact(f.path)}\n${redact(f.body)}${f.truncated ? '\n… (truncated — read the file for the rest)' : ''}`,
+        'Attached file',
+      ));
     }
     if (attached.omitted > 0) {
       segments.push(`(${attached.omitted} more attached file(s) omitted by the context budget — read them from disk if needed.)`);
@@ -12981,7 +14149,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     settings: Settings,
     conversation: Conversation | null,
     panelId: string,
+    automatic?: ComposerEditorContext,
   ): Promise<{ synthesis: string; refused: boolean }> {
+    const generation = this._mystiRunGen.get(panelId) ?? 0;
+    const owner = this._panelStates.get(panelId);
+    const owns = () => (this._mystiRunGen.get(panelId) ?? 0) === generation
+      && this._panelStates.get(panelId) === owner && (!automatic || automatic.isCurrent());
+    const isCancelled = () => !owns() || this._cancelledPanels.has(panelId);
     if (!this._mystiOrchestrator) {
       this._postToPanel(panelId, { type: 'mystiUnavailable', payload: { message: 'The Mysti agent is not initialized.' } });
       return { synthesis: '', refused: false };
@@ -12991,6 +14165,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const onGate: CollaboratorGateCallback = (spec, toolCall, nativeRequest) =>
       this._requestCollaboratorPermission(spec, toolCall, panelId, panelId, nativeRequest);
 
+    if (isCancelled()) { return { synthesis: '', refused: false }; }
+    this._runningPanels.add(panelId);
     this._postToPanel(panelId, { type: 'mystiStarted', payload: { brief } });
     let synthesis = '';
     // Plan 24 Phase 1: DAG nodes actually executed — the closest honest
@@ -13002,11 +14178,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     try {
       const gen = this._mystiOrchestrator.run({
         brief, context, settings, panelId,
-        conversation, onQuestion, onGate,
+        resolveContext: automatic ? () => this._withComposerEditorContext(context, automatic) : undefined,
+        isCancelled, conversation, onQuestion, onGate,
       });
       let next = await gen.next();
       while (!next.done) {
-        if (this._cancelledPanels.has(panelId)) {
+        if (isCancelled()) {
           await gen.return?.(undefined as never);
           break;
         }
@@ -13019,6 +14196,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         refused = next.value.refused === 'single-lane';
       }
     } catch (error) {
+      if (!owns()) { return { synthesis: '', refused: false }; }
       console.error('[Mysti] @mysti orchestration failed:', error);
       const raw = error instanceof Error ? error.message : 'Orchestration failed';
       // Plan 25: an orchestration that dies on a credential failure is just as
@@ -13029,11 +14207,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         payload: { message: orchReason === 'other' ? raw : this._friendlyMystiError(raw, orchReason) },
       });
       if (orchReason !== 'other') { this._postMystiFailure(panelId, raw); }
+    } finally {
+      if ((this._mystiRunGen.get(panelId) ?? 0) === generation && this._panelStates.get(panelId) === owner) {
+        this._runningPanels.delete(panelId);
+        this._lifecycleManager.markIdle(panelId);
+      }
     }
+    if (!owns()) { return { synthesis: '', refused: false }; }
     // Always post mystiComplete so the webview tears down (buttons, session
     // state) — but tell it whether the run was cancelled so a stopped run is
     // shown as cancelled, not falsely "complete".
-    const cancelled = this._cancelledPanels.has(panelId);
+    const cancelled = isCancelled();
     this._postToPanel(panelId, { type: 'mystiComplete', payload: { cancelled } });
     // Plan 24 Phase 1: `orchestrate` is a FOURTH coordinator completion path —
     // it returns to the caller without ever reaching _runMystiAgentic, so
@@ -14289,8 +15473,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /**
    * Open Mysti in a new editor tab (detached panel)
    */
-  public openInNewTab(): void {
-    const panelId = `panel_${Date.now()}`;
+  /** Show an external import in its own panel without touching running chats. */
+  public openImportedConversation(conversation: Conversation): void {
+    if (this._conversationManager.getConversation(conversation.id) === conversation) {
+      this.openInNewTab(conversation.id);
+    }
+  }
+
+  public openInNewTab(conversationId?: string): string {
+    // Creating a webview can clear activeTextEditor before the first send.
+    const editorBeforeOpen = vscode.window.activeTextEditor;
+    const panelId = `panel_${crypto.randomUUID()}`;
     const panel = vscode.window.createWebviewPanel(
       'mysti.detachedChat',
       'Mysti',
@@ -14305,11 +15498,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Set the tab icon to Mysti logo
     panel.iconPath = vscode.Uri.joinPath(this._extensionUri, 'resources', 'Mysti-Logo.png');
 
-    const version = this._extensionContext.extension.packageJSON.version || '0.0.0';
-    panel.webview.html = getWebviewContent(panel.webview, this._extensionUri, version);
+    const releaseReadiness = this._trackWebviewReadiness(panel.webview);
 
-    // Create a new conversation for this panel
-    const newConversation = this._conversationManager.createNewConversation();
+    // External imports already have a stored conversation; avoid an orphan placeholder.
+    const newConversation = (conversationId && this._conversationManager.getConversation(conversationId))
+      || this._conversationManager.createNewConversation();
 
     // Register panel state
     this._panelStates.set(panelId, {
@@ -14318,6 +15511,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       panel: panel,
       currentConversationId: newConversation.id,
       isSidebar: false
+    });
+
+    const contextOwner = this._panelStates.get(panelId)!;
+    this._editorContextTracker.focusPanel(contextOwner, editorBeforeOpen);
+    panel.onDidChangeViewState?.(event => {
+      if (event.webviewPanel.active && this._panelStates.get(panelId) === contextOwner) {
+        this._editorContextTracker.focusPanel(contextOwner);
+      }
     });
 
     // Handle messages from detached panel
@@ -14329,9 +15530,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     // Cleanup on dispose
     panel.onDidDispose(() => {
+      releaseReadiness();
       void this._dictationManager?.cancelPanel(panelId);
       this._panelStates.delete(panelId);
-      this._stopAuthPolling(panelId);
+      this._cancelPanelSetup(panelId);
       for (const [id, offer] of this._modelCliUpgrades) {
         if (offer.panelId === panelId) { this._modelCliUpgrades.delete(id); }
       }
@@ -14400,14 +15602,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this._panelAutonomyLevel.delete(panelId);
       // Mysti run tracking (re-review low — per-panelId maps were never evicted).
       this._mystiRunGen.delete(panelId);
+      this._brainstormPreparations.delete(panelId);
       this._mystiAbortControllers.delete(panelId);
     });
 
-    // Send initial state with the new conversation
+    const version = this._extensionContext.extension.packageJSON.version || '0.0.0';
+    panel.webview.html = getWebviewContent(panel.webview, this._extensionUri, version);
+
+    // Send initial state once the new document has installed its listener.
     this._sendInitialState(panelId);
 
     // Pre-spawn persistent process so first message is instant
     this._tryPreSpawnPersistentProcess(panelId);
+    return panelId;
   }
 
   /**
@@ -14432,12 +15639,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       });
       panel.iconPath = vscode.Uri.joinPath(this._extensionUri, 'resources', 'Mysti-Logo.png');
       const version = this._extensionContext.extension.packageJSON.version || '0.0.0';
-      panel.webview.html = getWebviewContent(panel.webview, this._extensionUri, version, { view: 'hub' });
+      const releaseReadiness = this._trackWebviewReadiness(panel.webview);
       panel.webview.onDidReceiveMessage((message: unknown) => this._receiveHubMessage(message, panel.webview));
       panel.onDidDispose(() => {
+        releaseReadiness();
         if (this._hub?.panel === panel) { this._hub = null; }
       });
       this._hub = { panel, originPanelId, section, loading: Promise.resolve(), loadedFor: null };
+      panel.webview.html = getWebviewContent(panel.webview, this._extensionUri, version, { view: 'hub' });
     }
     const hub = this._hub;
     hub.section = section;
@@ -14495,6 +15704,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async _receiveHubMessage(message: unknown, sender: vscode.Webview): Promise<void> {
     if (!this._hub || this._hub.panel.webview !== sender) { return; }
     const type = message && typeof message === 'object' ? (message as { type?: unknown }).type : undefined;
+    if (type === 'webviewReady') {
+      const hub = this._hub;
+      try {
+        await this._acceptWebviewReady(sender, (message as { payload?: unknown }).payload, hub.originPanelId, true);
+        if (this._hub === hub && !hub.originPanelId) { this._postHubShow(null); }
+      } catch (error) {
+        console.error('[Mysti] Mysti tab state failed:', error instanceof Error ? error.name : 'Unknown error');
+      }
+      return;
+    }
     if (typeof type !== 'string' || !HUB_INBOUND_TYPES.has(type)) { return; }
     const live = this._hubActingFor();
     const target = live ?? (HUB_UNBOUND_TYPES.has(type) ? this._sidebarId : null);
@@ -14700,7 +15919,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const updates = this._cliUpdates?.getUpdates() ?? [];
     return updates.reduce<CliUpdatePayload[]>((acc, u) => {
       const command = this._cliUpdates?.getUpdateCommand(u.providerId);
-      if (!command) {
+      const manualUpdateReason = command ? undefined : this._cliUpdates?.getUpdateError(u.providerId);
+      if (!command && !manualUpdateReason) {
         return acc;
       }
       acc.push({
@@ -14709,7 +15929,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         packageName: u.packageName,
         installed: u.installed,
         latest: u.latest,
-        command
+        installable: u.installable || u.latest,
+        blockedByNodeEngine: !!u.blockedByNodeEngine,
+        ...(u.requiredNode ? { requiredNode: u.requiredNode } : {}),
+        command: command || '',
+        ...(manualUpdateReason ? { manualUpdateReason } : {}),
       });
       return acc;
     }, []);
@@ -14719,6 +15943,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _broadcastCliUpdates(): void {
     const payload = { updates: this._buildCliUpdatesPayload() };
     this._broadcastToAll({ type: 'cliUpdatesAvailable', payload });
+  }
+
+  /** Discovery can find a CLI that the startup registry sweep never saw.
+   * Keep network work off the refresh acknowledgement and coalesce repeated
+   * panel refreshes into one scan plus one follow-up of newer discovery. */
+  private _refreshCliUpdatesAfterDetection(): void {
+    const service = this._cliUpdates;
+    const enabled = (): boolean => vscode.workspace.getConfiguration('mysti').get<boolean>('updates.checkCliUpdates', true);
+    if (!service || !enabled()) { return; }
+    if (this._cliUpdateRefreshTask) {
+      this._cliUpdateRefreshAgain = true;
+      return;
+    }
+    const task = (async () => {
+      do {
+        this._cliUpdateRefreshAgain = false;
+        try { await service.checkAll(); }
+        catch (error) {
+          console.warn('[Mysti] CLI update check after detection failed:', error instanceof Error ? error.message : String(error));
+        }
+      } while (this._cliUpdateRefreshAgain && this._cliUpdates === service && enabled());
+    })().finally(() => {
+      if (this._cliUpdateRefreshTask === task) { this._cliUpdateRefreshTask = undefined; }
+    });
+    this._cliUpdateRefreshTask = task;
   }
 
   /**
@@ -14757,19 +16006,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  /**
-   * Smart message routing - broadcast global changes, target panel-specific
-   */
+  /** An explicit owner always wins; only untargeted messages are broadcasts. */
   public postMessage(message: WebviewMessage, panelId?: string) {
-    // Types that should broadcast to all panels
-    const broadcastTypes = [
-      'settingsChanged',
-      'providerChanged',
-      'contextUpdated',
-      'conversationHistory'
-    ];
-
-    if (panelId && !broadcastTypes.includes(message.type)) {
+    if (panelId !== undefined) {
       this._postToPanel(panelId, message);
     } else {
       this._broadcastToAll(message);
@@ -14780,44 +16019,106 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   // Setup Management Methods
   // ============================================================================
 
+  private _setupRuns = new Map<string, AbortController>();
+
+  private _cancelPanelSetup(panelId: string): void {
+    const controller = this._setupRuns?.get(panelId);
+    this._setupRuns?.delete(panelId);
+    controller?.abort();
+    this._stopAuthPolling(panelId);
+  }
+
+  /** Every user setup choice owns its continuation, including async launches. */
+  private _beginSetupRun(panelId: string): PanelSetupRun {
+    this._cancelPanelSetup(panelId);
+    const controller = new AbortController();
+    (this._setupRuns ??= new Map()).set(panelId, controller);
+    return this._setupRunScope(panelId, controller);
+  }
+
+  private _setupRunScope(panelId: string, controller: AbortController): PanelSetupRun {
+    const panel = this._panelStates.get(panelId);
+    return {
+      signal: controller.signal,
+      isCurrent: () => !controller.signal.aborted
+        && this._setupRuns?.get(panelId) === controller
+        && panel !== undefined && this._panelStates.get(panelId) === panel,
+      cancel: () => controller.abort(),
+    };
+  }
+
+  /** Bound probes without leaving a rejection or abort listener behind. */
+  private _awaitSetup<T>(task: Promise<T>, run: PanelSetupRun, label: string, timeoutMs = 30_000): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      let settled = false;
+      const finish = (complete: () => void) => {
+        if (settled) { return; }
+        settled = true;
+        clearTimeout(timeout);
+        run.signal.removeEventListener('abort', aborted);
+        complete();
+      };
+      const timeout = setTimeout(() => finish(() => reject(new Error(`${label} timed out. Retry or refresh detection.`))), timeoutMs);
+      const aborted = () => finish(() => reject(new Error('Setup cancelled.')));
+      run.signal.addEventListener('abort', aborted, { once: true });
+      // Always observe the original promise, even if cancellation won already.
+      task.then(value => finish(() => resolve(value)), error => finish(() => reject(error)));
+      if (run.signal.aborted) { aborted(); }
+    });
+  }
+
   /**
    * Handle check setup request from webview
    */
   private async _handleCheckSetup(panelId: string): Promise<void> {
-    const statuses = await this._setupManager.getSetupStatus();
-    const npmAvailable = await this._setupManager.checkNpmAvailable();
-    const anyReady = statuses.some(s => s.installed && s.authenticated);
+    const run = this._beginSetupRun(panelId);
+    if (!run.isCurrent()) { return; }
+    try {
+      const statuses = await this._awaitSetup(this._setupManager.getSetupStatus(), run, 'Provider discovery');
+      if (!run.isCurrent()) { return; }
+      const npmAvailable = await this._awaitSetup(this._setupManager.checkNpmAvailable(), run, 'System requirements check');
+      if (!run.isCurrent()) { return; }
+      const anyReady = statuses.some(s => s.installed && s.authenticated);
 
-    this._postToPanel(panelId, {
-      type: 'setupStatus',
-      payload: {
-        providers: statuses,
-        npmAvailable,
-        anyReady
+      this._postToPanel(panelId, {
+        type: 'setupStatus',
+        payload: {
+          providers: statuses,
+          npmAvailable,
+          anyReady
+        }
+      });
+
+      // If no provider is ready, try auto-setup for the default provider
+      if (!anyReady) {
+        const config = vscode.workspace.getConfiguration('mysti');
+        const defaultProvider = config.get<string>('defaultProvider', DEFAULT_PROVIDER);
+        await this._runAutoSetup(defaultProvider, panelId, run);
       }
-    });
-
-    // If no provider is ready, try auto-setup for the default provider
-    if (!anyReady) {
-      const config = vscode.workspace.getConfiguration('mysti');
-      const defaultProvider = config.get<string>('defaultProvider', DEFAULT_PROVIDER);
-      await this._runAutoSetup(defaultProvider, panelId);
+    } catch (error) {
+      if (!run.isCurrent()) { return; }
+      this._postToPanel(panelId, { type: 'setupFailed', payload: { error: error instanceof Error ? error.message : String(error), canRetry: true } });
+      run.cancel();
     }
   }
 
   /**
    * Run auto-setup flow for a provider
    */
-  private async _runAutoSetup(providerId: string, panelId: string): Promise<void> {
-    const result = await this._setupManager.setupProvider(
+  private async _runAutoSetup(providerId: string, panelId: string, run = this._beginSetupRun(panelId)): Promise<void> {
+    if (!run.isCurrent()) { return; }
+    const result = await this._awaitSetup(this._setupManager.setupProvider(
       providerId,
       (step, message, progress) => {
+        if (!run.isCurrent()) { return; }
         this._postToPanel(panelId, {
           type: 'setupProgress',
           payload: { step, providerId, message, progress }
         });
-      }
-    );
+      },
+      run.signal,
+    ), run, 'Provider setup', 10 * 60_000);
+    if (!run.isCurrent()) { return; }
 
     if (result.success) {
       this._postToPanel(panelId, {
@@ -14859,9 +16160,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // disables itself on click to stop two `npm install -g` runs racing, then
     // had no terminal message to revive it and stayed dead until the webview
     // was reloaded. A setup run that fails must always say so.
+    const run = this._beginSetupRun(panelId);
+    if (!run.isCurrent()) { return; }
     try {
-      await this._runAutoSetup(providerId, panelId);
+      await this._runAutoSetup(providerId, panelId, run);
     } catch (error) {
+      if (!run.isCurrent()) { return; }
       const message = error instanceof Error ? error.message : String(error);
       console.error('[Mysti] Setup retry failed:', message);
       this._postToPanel(panelId, {
@@ -14873,6 +16177,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           requiresManual: false
         }
       });
+      run.cancel();
     }
   }
 
@@ -14880,7 +16185,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Handle user confirming authentication
    */
   private async _handleAuthConfirm(providerId: string, panelId: string): Promise<void> {
-    this._stopAuthPolling(panelId);
+    const run = this._beginSetupRun(panelId);
+    if (!run.isCurrent()) { return; }
     try {
       // Verify CLI is actually installed before attempting auth
       const provider = this._providerManager.getProviderInstance(providerId);
@@ -14897,7 +16203,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return;
       }
 
-      const discovery = await provider.discoverCli();
+      const discovery = await this._awaitSetup(provider.discoverCli(), run, 'Provider discovery');
+      if (!run.isCurrent()) { return; }
       if (!discovery.found) {
         // CLI not installed - need to install first
         this._postToPanel(panelId, {
@@ -14922,50 +16229,95 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
       });
 
-      // Start auth flow (opens terminal/browser)
-      await this._setupManager.authenticateProvider(providerId);
+      // Provider-owned prompts return a completed result, including Escape.
+      // External CLI login instead hands off to a terminal/browser and reports
+      // its eventual status out of band.
+      const providerOwnsAuthentication = !!provider.configureAuthentication;
+      const result = await this._awaitSetup(this._setupManager.authenticateProvider(providerId, run.signal), run, 'Authentication launch', 120_000);
+      if (!run.isCurrent()) { return; }
+
+      if (result.authenticated) {
+        this._setupManager.invalidateProviderStatus(providerId);
+        this._postToPanel(panelId, { type: 'setupComplete', payload: { providerId } });
+        this._postToPanel(panelId, {
+          type: 'providerSetupStep',
+          payload: { providerId, step: 'complete', progress: 100, message: 'Ready to use!', details: result.user }
+        });
+        run.cancel();
+        return;
+      }
+      if (providerOwnsAuthentication) {
+        const message = result.error || 'Authentication failed';
+        this._postToPanel(panelId, { type: 'setupFailed', payload: { providerId, error: message, canRetry: true } });
+        this._postToPanel(panelId, {
+          type: 'providerSetupStep',
+          payload: { providerId, step: 'failed', progress: 0, message, retryable: true }
+        });
+        run.cancel();
+        return;
+      }
 
       // Poll for auth completion
-      this._pollAuthStatus(providerId, panelId);
+      this._pollAuthStatus(providerId, panelId, run);
     } catch (error) {
+      if (!run.isCurrent()) { return; }
       this._postToPanel(panelId, { type: 'setupFailed', payload: { providerId: providerId, error: error instanceof Error ? error.message : String(error), canRetry: true } });
+      run.cancel();
     }
   }
 
   /**
    * Poll for authentication status completion
    */
-  private readonly _authPolls = new Map<string, { providerId: string; timer?: ReturnType<typeof setTimeout>; cancelled: boolean }>();
+  private readonly _authPolls = new Map<string, {
+    providerId: string;
+    timer?: ReturnType<typeof setTimeout>;
+    cancelled: boolean;
+    cancel?: () => void;
+  }>();
 
   private _stopAuthPolling(panelId: string): void {
     const run = this._authPolls?.get(panelId);
-    if (run) { run.cancelled = true; clearTimeout(run.timer); this._authPolls.delete(panelId); }
+    if (run) {
+      run.cancelled = true;
+      clearTimeout(run.timer);
+      this._authPolls.delete(panelId);
+      run.cancel?.();
+    }
   }
 
-  private _pollAuthStatus(providerId: string, panelId: string): void {
+  private _pollAuthStatus(providerId: string, panelId: string, owner?: PanelSetupRun): void {
     this._stopAuthPolling(panelId);
-    const run = { providerId, cancelled: false, timer: undefined as ReturnType<typeof setTimeout> | undefined };
+    const scope = owner ?? this._beginSetupRun(panelId);
+    if (!scope.isCurrent()) { return; }
+    const run = { providerId, cancelled: false, timer: undefined as ReturnType<typeof setTimeout> | undefined, cancel: scope.cancel };
     this._authPolls.set(panelId, run);
-    let attempts = 0;
+    const deadline = Date.now() + 120_000;
+    const isCurrent = () => !run.cancelled && scope.isCurrent() && this._authPolls.get(panelId) === run;
     const poll = async (): Promise<void> => {
-      if (run.cancelled) { return; }
-      if (!this._panelStates.has(panelId)) { this._stopAuthPolling(panelId); return; }
+      if (!isCurrent()) {
+        if (this._authPolls.get(panelId) === run) { this._stopAuthPolling(panelId); }
+        return;
+      }
       try {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) { throw new Error('Authentication timed out. Retry sign-in or refresh detection after completing it.'); }
         const provider = this._providerManager.getProviderInstance(providerId);
         if (!provider) { throw new Error('Provider is no longer available.'); }
-        const status = await provider.checkAuthentication();
-        if (run.cancelled) { return; }
+        const status = await this._awaitSetup(provider.checkAuthentication(), scope, 'Authentication', Math.min(30_000, remaining));
+        if (!isCurrent()) { return; }
         if (status.authenticated) {
           this._setupManager.invalidateProviderStatus(providerId);
-          this._postToPanel(panelId, { type: 'setupComplete', payload: { providerId } });
-          this._postToPanel(panelId, { type: 'providerSetupStep', payload: { providerId, step: 'complete', progress: 100, message: 'Ready to use!' } });
+          // Local key/token detection cannot prove the server accepted a login,
+          // especially when rejected credentials remain during terminal auth.
+          this._postToPanel(panelId, { type: 'setupComplete', payload: { providerId, requiresVerification: true } });
+          this._postToPanel(panelId, { type: 'providerSetupStep', payload: { providerId, step: 'complete', progress: 100, message: 'Credentials detected. Retry your request to verify sign-in.' } });
           this._stopAuthPolling(panelId);
           return;
         }
-        if (++attempts >= 60) { throw new Error('Authentication timed out. Retry sign-in or refresh detection after completing it.'); }
-        run.timer = setTimeout(() => { void poll(); }, 2000);
+        run.timer = setTimeout(() => { void poll(); }, Math.min(2000, Math.max(0, deadline - Date.now())));
       } catch (error) {
-        if (run.cancelled) { return; }
+        if (!isCurrent()) { return; }
         const message = error instanceof Error ? error.message : String(error);
         this._postToPanel(panelId, { type: 'setupFailed', payload: { providerId, error: message, canRetry: true } });
         this._postToPanel(panelId, { type: 'providerSetupStep', payload: { providerId, step: 'failed', message, retryable: true } });
@@ -14979,30 +16331,39 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Handle user skipping authentication for now
    */
   private async _handleAuthSkip(providerId: string, panelId: string): Promise<void> {
-    this._stopAuthPolling(panelId);
-    // Check if any other provider is ready
-    const statuses = await this._setupManager.getSetupStatus();
-    const otherReady = statuses.find(s => s.providerId !== providerId && s.installed && s.authenticated);
+    const run = this._beginSetupRun(panelId);
+    if (!run.isCurrent()) { return; }
+    try {
+      // Check if any other provider is ready
+      const statuses = await this._awaitSetup(this._setupManager.getSetupStatus(), run, 'Provider discovery');
+      if (!run.isCurrent()) { return; }
+      const otherReady = statuses.find(s => s.providerId !== providerId && s.installed && s.authenticated);
 
-    if (otherReady) {
-      // Switch to the ready provider (per-panel + global fallback)
-      await this._handleUpdateSettings({ provider: otherReady.providerId as ProviderType }, panelId);
+      if (otherReady) {
+        // Switch to the ready provider (per-panel + global fallback)
+        await this._handleUpdateSettings({ provider: otherReady.providerId as ProviderType }, panelId);
+        if (!run.isCurrent()) { return; }
 
-      this._postToPanel(panelId, {
-        type: 'setupComplete',
-        payload: { providerId: otherReady.providerId }
-      });
-    } else {
-      // No provider ready - show manual setup options
-      this._postToPanel(panelId, {
-        type: 'setupFailed',
-        payload: {
-          providerId,
-          error: vscode.l10n.t('Authentication skipped. You can configure providers manually in settings.'),
-          canRetry: true,
-          requiresManual: true
-        }
-      });
+        this._postToPanel(panelId, {
+          type: 'setupComplete',
+          payload: { providerId: otherReady.providerId }
+        });
+      } else {
+        // No provider ready - show manual setup options
+        this._postToPanel(panelId, {
+          type: 'setupFailed',
+          payload: {
+            providerId,
+            error: vscode.l10n.t('Authentication skipped. You can configure providers manually in settings.'),
+            canRetry: true,
+            requiresManual: true
+          }
+        });
+      }
+    } catch (error) {
+      if (!run.isCurrent()) { return; }
+      this._postToPanel(panelId, { type: 'setupFailed', payload: { providerId, error: error instanceof Error ? error.message : String(error), canRetry: true } });
+      run.cancel();
     }
   }
 
@@ -15010,7 +16371,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Handle user choosing to skip setup entirely
    */
   private _handleSkipSetup(panelId: string): void {
-    this._stopAuthPolling(panelId);
+    this._cancelPanelSetup(panelId);
     // User wants to configure manually - send initial state to show the chat interface
     this._sendInitialState(panelId);
   }
@@ -15023,7 +16384,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Handle request for wizard status from webview
    */
   private async _handleRequestWizardStatus(panelId: string): Promise<void> {
-    const status = await this._setupManager.getWizardStatus();
+    // A status refresh reads the active choice; it must not supersede a sign-in.
+    const controller = this._setupRuns?.get(panelId);
+    const run = controller && !controller.signal.aborted
+      ? this._setupRunScope(panelId, controller) : this._beginSetupRun(panelId);
+    const fresh = await this._withTimeout(this._setupManager.getWizardStatus(), 6000);
+    if (!run.isCurrent()) { return; }
+    const status = fresh ?? this._setupManager.getWizardStatusCached();
     this._postToPanel(panelId, {
       type: 'wizardStatus',
       payload: status
@@ -15038,7 +16405,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     panelId: string
   ): Promise<void> {
     const { providerId, autoInstall = true } = payload;
-    this._stopAuthPolling(panelId);
+    const run = this._beginSetupRun(panelId);
+    if (!run.isCurrent()) { return; }
 
     try {
       // Send initial checking step
@@ -15067,7 +16435,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
 
       // Check if already installed
-      const discovery = await provider.discoverCli();
+      const discovery = await this._awaitSetup(provider.discoverCli(), run, 'Provider discovery');
+      if (!run.isCurrent()) { return; }
 
       if (!discovery.found) {
         if (autoInstall) {
@@ -15092,9 +16461,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
           });
 
-          const installResult = await this._setupManager.autoInstallCli(providerId, (step, message, progress) => {
+          const installResult = await this._awaitSetup(this._setupManager.autoInstallCli(providerId, (step, message, progress) => {
+            if (!run.isCurrent()) { return; }
             this._postToPanel(panelId, { type: 'providerSetupStep', payload: { providerId, step, message, progress } });
-          });
+          }, run.signal), run, 'CLI installation', 10 * 60_000);
+          if (!run.isCurrent()) { return; }
 
           if (!installResult.success) {
             // Build alternative commands from provider's install methods, filtered
@@ -15162,7 +16533,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
       });
 
-      const authStatus = await provider.checkAuthentication();
+      const authStatus = await this._awaitSetup(provider.checkAuthentication(), run, 'Authentication check');
+      if (!run.isCurrent()) { return; }
 
       if (!authStatus.authenticated) {
         // Check if provider has multiple auth options
@@ -15206,15 +16578,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       });
 
       // Refresh wizard status
-      const status = await this._setupManager.getWizardStatus();
+      const status = await this._withTimeout(this._setupManager.getWizardStatus(), 6000)
+        ?? this._setupManager.getWizardStatusCached();
+      if (!run.isCurrent()) { return; }
       this._postToPanel(panelId, {
         type: 'wizardStatus',
         payload: status
       });
     } catch (error) {
+      if (!run.isCurrent()) { return; }
       const message = error instanceof Error ? error.message : String(error);
       this._postToPanel(panelId, { type: 'providerSetupStep', payload: { providerId, step: 'failed', progress: 0, message, retryable: true } });
       this._postToPanel(panelId, { type: 'setupFailed', payload: { providerId, error: message, canRetry: true } });
+      run.cancel();
     }
   }
 
@@ -15225,7 +16601,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     payload: { providerId: string; method: string; apiKey?: string },
     panelId: string
   ): Promise<void> {
-    this._stopAuthPolling(panelId);
+    const run = this._beginSetupRun(panelId);
+    if (!run.isCurrent()) { return; }
     try {
       const { providerId, method, apiKey } = payload;
 
@@ -15239,11 +16616,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
       });
 
-      const result = await this._setupManager.authenticateWithMethod(
+      const result = await this._awaitSetup(this._setupManager.authenticateWithMethod(
         providerId,
         method as AuthMethodType,
-        apiKey
-      );
+        apiKey,
+        run.signal,
+      ), run, 'Authentication launch', 120_000);
+      if (!run.isCurrent()) { return; }
 
       if (result.authenticated) {
         this._setupManager.invalidateProviderStatus(providerId);
@@ -15261,14 +16640,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this._postToPanel(panelId, { type: 'setupComplete', payload: { providerId } });
 
         // Refresh wizard status
-        const status = await this._setupManager.getWizardStatus();
+        const status = await this._withTimeout(this._setupManager.getWizardStatus(), 6000)
+          ?? this._setupManager.getWizardStatusCached();
+        if (!run.isCurrent()) { return; }
         this._postToPanel(panelId, {
           type: 'wizardStatus',
           payload: status
         });
       } else if (method === 'oauth' || method === 'cli-login') {
         // OAuth flow - poll for completion
-        this._pollAuthStatus(providerId, panelId);
+        this._pollAuthStatus(providerId, panelId, run);
       } else {
         this._postToPanel(panelId, {
           type: 'providerSetupStep',
@@ -15282,7 +16663,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this._postToPanel(panelId, { type: 'setupFailed', payload: { providerId, error: result.error || 'Authentication failed', canRetry: true } });
       }
     } catch (error) {
+      if (!run.isCurrent()) { return; }
       this._postToPanel(panelId, { type: 'setupFailed', payload: { providerId: payload.providerId, error: error instanceof Error ? error.message : String(error), canRetry: true } });
+      run.cancel();
     }
   }
 
@@ -15290,8 +16673,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Handle provider selection from wizard
    */
   private async _handleSelectProvider(providerId: string, panelId: string): Promise<void> {
+    const run = this._beginSetupRun(panelId);
+    if (!run.isCurrent()) { return; }
     // Set as default provider (per-panel + global fallback)
     await this._handleUpdateSettings({ provider: providerId as ProviderType }, panelId);
+    if (!run.isCurrent()) { return; }
 
     // Close wizard and show main UI
     this._postToPanel(panelId, {
@@ -15307,6 +16693,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Handle wizard dismissal
    */
   private async _handleDismissWizard(panelId: string, dontShowAgain?: boolean): Promise<void> {
+    const run = this._beginSetupRun(panelId);
     // D-1: a dismissal is a dismissal. This used to persist ONLY when the
     // webview sent `dontShowAgain: true` — which nothing ever sent ("Skip for
     // now" posts `false`) — so the wizard came back on every panel load, and
@@ -15315,6 +16702,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // for the explicit affordance but is no longer the condition, so both the
     // plain skip and an explicit "don't show again" stick.
     await this._extensionContext.globalState.update('mysti.setupWizardDismissed', true);
+    if (!run.isCurrent()) { return; }
     if (dontShowAgain) {
       console.log('[Mysti] Setup wizard dismissed permanently by user request');
     }
@@ -15346,7 +16734,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async _postOnboarding(panelId: string, step: WizardStep): Promise<void> {
-    const status = await this._setupManager.getWizardStatus();
+    const run = this._beginSetupRun(panelId);
+    if (!run.isCurrent()) { return; }
+    const fresh = await this._withTimeout(this._setupManager.getWizardStatus(), 6000);
+    if (!run.isCurrent()) { return; }
+    const status = fresh ?? this._setupManager.getWizardStatusCached();
     const mystiReady = this._mystiCoordinator?.status().ready === true;
     this._postToPanel(panelId, { type: 'showWizard', payload: { ...status, panelId, mystiReady, step } });
   }
@@ -15357,11 +16749,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private async _handleRefreshProviderDetection(panelId: string): Promise<void> {
     console.log('[Mysti] ChatViewProvider: Refreshing provider detection');
+    const run = this._beginSetupRun(panelId);
+    if (!run.isCurrent()) { return; }
 
     // Force a full re-probe: resets the npm cache and bypasses the discovery
     // cache (and provider-side probe-failure TTLs) — Plan 03 Phase 3a.
     try {
-      const wizardStatus = await this._setupManager.refreshWizardStatus();
+      const wizardStatus = await this._awaitSetup(this._setupManager.refreshWizardStatus(), run, 'Provider discovery');
+      if (!run.isCurrent()) { return; }
       this._postToPanel(panelId, {
         type: 'wizardStatus',
         payload: wizardStatus
@@ -15374,10 +16769,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         payload: { providerAvailability: this._buildProviderAvailability(wizardStatus) }
       });
 
+      // A terminal update can change only the version, leaving found/auth
+      // unchanged. Rebuild every panel's cards from the refreshed discovery
+      // cache, including an empty list when the selected CLI is now current.
+      if (this._cliUpdates) { this._broadcastCliUpdates(); }
+      this._refreshCliUpdatesAfterDetection();
       console.log('[Mysti] ChatViewProvider: Provider detection refreshed');
-        this._postToPanel(panelId, { type: 'providerDetectionComplete', payload: {} });
+      this._postToPanel(panelId, { type: 'providerDetectionComplete', payload: {} });
     } catch (error) {
+      if (!run.isCurrent()) { return; }
       this._postToPanel(panelId, { type: 'providerDetectionComplete', payload: { error: error instanceof Error ? error.message : String(error) } });
+      run.cancel();
     }
   }
 
@@ -15761,12 +17163,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   public dispose(): void {
+    this._brainstormPreparations.clear();
+    this._editorContextTracker?.dispose();
     this._dictationManager?.dispose();
     console.log('[Mysti] ChatViewProvider: Disposing and cleaning up resources');
+    for (const panelId of this._setupRuns?.keys() || []) { this._cancelPanelSetup(panelId); }
     for (const panelId of this._authPolls?.keys() || []) { this._stopAuthPolling(panelId); }
     this._nativeApprovalRegistration.dispose();
     this._nativeApprovalCards.dispose();
     this._subAgentQuestions.dispose();
+    for (const panelId of this._pendingAskUserQuestions?.keys() ?? []) { this._clearPendingQuestion(panelId); }
     this._delayedChannelTurns.dispose();
 
     // Plan 31: the Mysti tab is not in `_panelStates` — close it first, so the
@@ -15790,6 +17196,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._pendingPlanSelections.clear();
 
     // Dispose managers that may have resources
+    this._planOptionManager?.dispose();
     this._providerManager.dispose();
     // Stop the background-job heartbeat timer (review [5]).
     this._backgroundJobManager.dispose();

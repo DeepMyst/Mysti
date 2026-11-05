@@ -16,6 +16,7 @@ import type {
   AuthConfig,
   ProviderCapabilities,
   PersonaConfig,
+  ProviderInputResolver,
 } from '../base/IProvider';
 import type {
   Settings,
@@ -25,6 +26,7 @@ import type {
   ContextItem,
   Conversation,
   AgentConfiguration,
+  Attachment,
 } from '../../types';
 import { MANUS_API_BASE_URL, MANUS_POLL_INTERVAL_MS } from '../../constants';
 import { validateModelName } from '../../utils/validation';
@@ -194,7 +196,11 @@ export class ManusProvider extends BaseCliProvider {
     panelId?: string,
     providerManager?: unknown,
     agentConfig?: AgentConfiguration,
+    _attachments?: Attachment[],
+    resolveInput?: ProviderInputResolver,
   ): AsyncGenerator<StreamChunk> {
+    // A stale invocation must not cancel an existing task or allocate a session.
+    if (resolveInput && !resolveInput()) { return; }
     const apiKey = this._getApiKey();
     if (!apiKey) {
       yield {
@@ -207,19 +213,30 @@ export class ManusProvider extends BaseCliProvider {
     }
 
     const session = this._getSession(panelId) as ManusSessionState;
-
-    // Build prompt using inherited method (includes addModeInstructions via base class)
-    const fullPrompt = await this.buildPromptAsync(
-      content, context, conversation, settings, persona, agentConfig,
-    );
-
-    // Determine model
+    this.cancelCurrentRequest(session.panelId);
+    const controller = new AbortController();
+    session.abortController = controller;
+    const ownsRequest = () => this._panelSessions.get(session.panelId) === session && session.abortController === controller;
+    const isCurrent = () => ownsRequest() && !controller.signal.aborted;
     const model = this._getEffectiveModel(settings) || this.config.defaultModel;
 
-    // Set up cancellation
-    session.abortController = new AbortController();
-
     try {
+      // Finish asynchronous setup before resolving transient input. Manus has no
+      // attachment transport; its reserved ninth argument remains unused.
+      const render = resolveInput ? await this.preparePromptRenderer(
+        conversation, settings, persona, agentConfig,
+      ) : undefined;
+      let fullPrompt = render ? '' : await this.buildPromptAsync(
+        content, context, conversation, settings, persona, agentConfig,
+      );
+      if (!isCurrent()) { return; }
+      if (resolveInput && render) {
+        const input = resolveInput();
+        if (!input) { controller.abort(); return; }
+        fullPrompt = render(input.content, input.context);
+      }
+      if (!isCurrent()) { return; }
+
       // Create task
       console.log(`[Mysti] Manus: Creating task with model ${model}`);
       const createBody: Record<string, unknown> = {
@@ -233,12 +250,14 @@ export class ManusProvider extends BaseCliProvider {
         createBody.previous_response_id = session.sessionId;
       }
 
-      const createResponse = await this._apiRequest('POST', '/v1/responses', createBody, apiKey, session.abortController);
+      // _apiRequest serializes and writes synchronously before returning its promise.
+      const createResponse = await this._apiRequest('POST', '/v1/responses', createBody, apiKey, controller);
+      if (!isCurrent()) { return; }
 
       if (!createResponse.id) {
         const err = createResponse.error as Record<string, unknown> | undefined;
         yield { type: 'error', content: (err?.message as string) || 'Failed to create Manus task' };
-        yield { type: 'done' };
+        if (isCurrent()) { yield { type: 'done' }; }
         return;
       }
 
@@ -252,28 +271,25 @@ export class ManusProvider extends BaseCliProvider {
       // Poll for completion
       let completed = false;
       while (!completed) {
-        // Check for cancellation
-        if (session.abortController?.signal.aborted) {
-          console.log('[Mysti] Manus: Request cancelled');
-          yield { type: 'error', content: 'Request cancelled' };
-          break;
-        }
+        if (!isCurrent()) { return; }
 
         // Wait before polling
-        await this._delay(MANUS_POLL_INTERVAL_MS, session.abortController);
+        await this._delay(MANUS_POLL_INTERVAL_MS, controller);
 
         // Check again after delay
-        if (session.abortController?.signal.aborted) {
-          break;
-        }
+        if (!isCurrent()) { return; }
 
-        const statusResponse = await this._apiRequest('GET', `/v1/responses/${taskId}`, null, apiKey, session.abortController);
+        const statusResponse = await this._apiRequest('GET', `/v1/responses/${taskId}`, null, apiKey, controller);
+        if (!isCurrent()) { return; }
 
         const status = statusResponse.status;
         console.log(`[Mysti] Manus: Task ${taskId} status: ${status}`);
 
         if (status === 'completed') {
           completed = true;
+          // Record completion before yielding so a successor sees this task,
+          // and the resumed old generator never writes into its state.
+          session.sessionId = taskId;
 
           // Parse output
           const text = this._extractOutputText(statusResponse);
@@ -282,9 +298,6 @@ export class ManusProvider extends BaseCliProvider {
           } else {
             yield { type: 'text', content: '(Manus completed the task but returned no text output)' };
           }
-
-          // Store response ID for multi-turn
-          session.sessionId = taskId;
 
         } else if (status === 'error' || status === 'failed') {
           completed = true;
@@ -298,18 +311,21 @@ export class ManusProvider extends BaseCliProvider {
         }
       }
 
-      yield { type: 'done' };
+      if (isCurrent()) { yield { type: 'done' }; }
 
     } catch (error) {
+      if (!isCurrent()) { return; }
       if (error instanceof Error && error.name === 'AbortError') {
         yield { type: 'error', content: 'Request cancelled' };
       } else {
         yield this.handleError(error);
       }
-      yield { type: 'done' };
+      if (isCurrent()) { yield { type: 'done' }; }
     } finally {
-      session.abortController = null;
-      session.currentTaskId = null;
+      if (ownsRequest()) {
+        session.abortController = null;
+        session.currentTaskId = null;
+      }
     }
   }
 

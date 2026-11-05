@@ -1,6 +1,6 @@
 import type { AgentType, Mention } from '../types';
 import { PROVIDER_DISPLAY_META } from '../providers/base/ProviderManifest';
-import { parseAgentRoleMentions } from '../utils/mentionParser';
+import { getMentionCodeSpans, isMentionBoundary, parseAgentRoleMentions } from '../utils/mentionParser';
 
 /** Resolve tags in the host, including when the webview catalog is still loading. */
 export function resolveExplicitMentions(content: string, supplied: Mention[] = []): Mention[] {
@@ -8,15 +8,19 @@ export function resolveExplicitMentions(content: string, supplied: Mention[] = [
   for (const [id, meta] of Object.entries(PROVIDER_DISPLAY_META)) {
     aliases.set(id, id); aliases.set(meta.shortId, id);
   }
-  const codeSpans = [...content.matchAll(/```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)|`[^`\n]*`/g)]
-    .map(m => [m.index, m.index + m[0].length]);
+  const codeSpans = getMentionCodeSpans(content);
   const agents: Mention[] = [];
   for (const token of parseAgentRoleMentions(content)) {
-    if (token.startIndex > 0 && /[\w/@]/.test(content[token.startIndex - 1])) { continue; }
+    if (!isMentionBoundary(content, token.startIndex)) { continue; }
     if (codeSpans.some(([start, end]) => token.startIndex >= start && token.startIndex < end)) { continue; }
-    const value = aliases.get(token.name);
-    if (value) { agents.push({ type: 'agent', value, role: token.role, displayName: token.raw,
-      startIndex: token.startIndex, endIndex: token.endIndex }); }
+    // The shared grammar also accepts file paths, so a sentence-ending dot is
+    // part of its token. Trim punctuation only when what remains is a known
+    // provider; @claude.md must continue to mean a file.
+    const name = token.role ? token.name : token.name.replace(/\.+$/, '');
+    const value = aliases.get(name);
+    const endIndex = token.endIndex - (token.name.length - name.length);
+    if (value) { agents.push({ type: 'agent', value, role: token.role,
+      displayName: content.slice(token.startIndex, endIndex), startIndex: token.startIndex, endIndex }); }
   }
   return [...supplied.filter(m => m.type !== 'agent' && !agents.some(a => a.startIndex === m.startIndex)), ...agents]
     .sort((a, b) => a.startIndex - b.startIndex);
@@ -50,7 +54,14 @@ export function planExplicitMentions(content: string, mentions: Mention[]): Ment
     let text = content.slice(start, end);
     for (const m of [...mentions].sort((a, b) => b.startIndex - a.startIndex)) {
       if (m.startIndex >= start && m.endIndex <= end) {
-        text = text.slice(0, m.startIndex - start) + text.slice(m.endIndex - start);
+        // Context is shared by the phase, but each task still needs its own
+        // target. Removing @file entirely turns two different file reviews
+        // into identical "review" briefs and loses the user's assignment.
+        // Preserve the visible file spelling, including JSON quotes/escapes.
+        // Decoding a filename here can turn its newline into a task heading.
+        const replacement = m.type === 'agent' ? '' : m.type === 'file'
+          ? content.slice(m.startIndex + 1, m.endIndex) : m.value;
+        text = text.slice(0, m.startIndex - start) + replacement + text.slice(m.endIndex - start);
       }
     }
     return text.trim();

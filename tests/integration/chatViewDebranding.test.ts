@@ -39,11 +39,12 @@ import { ChatViewProvider } from '../../src/providers/ChatViewProvider';
 import { ProviderManager } from '../../src/managers/ProviderManager';
 import { SlashCommandManager, type SlashCommandCallbacks } from '../../src/managers/SlashCommandManager';
 import { PermissionManager } from '../../src/managers/PermissionManager';
+import { AgentLifecycleManager } from '../../src/managers/AgentLifecycleManager';
 import { DEFAULT_PROVIDER } from '../../src/constants';
 import { clearMockConfig, getMockConfigUpdates, Uri } from '../helpers/mockVscode';
 import * as vscode from 'vscode';
 import { resolveVisualLook, isBlocked } from '../../src/services/visualTestPolicy';
-import type { WebviewMessage, Settings } from '../../src/types';
+import type { WebviewMessage, Settings, LifecycleEvent } from '../../src/types';
 import { createModelRegistryStub } from '../helpers/modelRegistryStub';
 
 const ALL_PROVIDER_IDS = [
@@ -80,6 +81,7 @@ interface Harness {
   /** Messages posted to the sidebar panel's webview. */
   sidebarMessages: Array<{ type: string; payload?: any }>;
   sidebarPanelState: any;
+  emitLifecycle(event: LifecycleEvent): void;
   dispose(): void;
 }
 
@@ -142,6 +144,7 @@ function createHarness(): Harness {
     // long-lived CLI like Claude drops its accumulated context) then clear the
     // session id (so the next turn re-sends the compacted messages).
     disposePersistentProcess: vi.fn(),
+    disposePersistentProcessForProvider: vi.fn(),
     clearSessionForProvider: vi.fn(),
     // Plan 01: _getPanelModel now resolves the active model through the
     // registry-aware getModels() (empty list here = no built-in models, so the
@@ -182,11 +185,17 @@ function createHarness(): Harness {
     invalidateProviderStatus: () => undefined,
     onWizardStatusUpdated: () => ({ dispose: () => {} }),
   } as any;
+  let lifecycleCallback: (event: LifecycleEvent) => void = () => undefined;
   const lifecycleManager = {
-    onLifecycleEvent: () => undefined,
-    requestShutdown: vi.fn(async () => ({
-      blocked: true, reason: 'child processes running', childPids: [123],
-    })),
+    onLifecycleEvent: (callback: (event: LifecycleEvent) => void) => { lifecycleCallback = callback; },
+    requestShutdown: vi.fn(async (panelId: string) => {
+      const result = { blocked: true, reason: 'child processes running', childPids: [123] };
+      // Mirror the public manager contract: it publishes the diagnostic once;
+      // its returned result informs the caller without a second notification.
+      lifecycleCallback({ type: 'shutdown-blocked', panelId, providerId: (provider as any)._getPanelProvider(panelId),
+        detail: result.reason, childPids: result.childPids });
+      return result;
+    }),
   } as any;
   const activeModeManager = {
     onStatusChanged: () => undefined,
@@ -197,6 +206,7 @@ function createHarness(): Harness {
     isInstalled: () => false,
   } as any;
   const engagementManager = {
+    trackSlashCommandUsed: () => [],
     trackCustomPersonaCreated: () => undefined,
     trackCustomSkillCreated: () => undefined,
   } as any;
@@ -261,6 +271,7 @@ function createHarness(): Harness {
     slashCommandManager,
     sidebarMessages,
     sidebarPanelState,
+    emitLifecycle: event => lifecycleCallback(event),
     dispose() {
       (provider as any)._channelBridge?.dispose?.();
       permissionManager.dispose();
@@ -354,6 +365,50 @@ describe('ChatViewProvider de-branding (Plan 02 Phase 2)', () => {
   // C3 — shutdownAgent posts the panel's actual provider id
   // =========================================================================
   describe('shutdownAgent provider attribution (C3)', () => {
+    it.each(['busy', 'children'] as const)('one public shutdown action posts exactly one %s diagnostic', async reason => {
+      const lifecycle = new AgentLifecycleManager(createMockExtensionContext());
+      lifecycle.onLifecycleEvent(event => h.emitLifecycle(event));
+      lifecycle.registerSession('sidebar', 'openai-codex', 'native-session');
+      lifecycle.markIdle('sidebar');
+      if (reason === 'busy') lifecycle.markBusy('sidebar');
+      vi.spyOn(lifecycle as any, '_scanChildren').mockResolvedValue([2000]);
+      h.lifecycleManager.requestShutdown.mockImplementation((panelId, force) => lifecycle.requestShutdown(panelId, force));
+      h.sidebarPanelState.settingsOverrides = { provider: 'openai-codex' };
+      h.sidebarMessages.length = 0;
+      try {
+        await (h.provider as any)._handleMessage({ type: 'shutdownAgent', panelId: 'sidebar' });
+        expect(h.sidebarMessages.filter(message => message.type === 'lifecycleEvent' && message.payload.type === 'shutdown-blocked'))
+          .toEqual([expect.objectContaining({ payload: expect.objectContaining({ providerId: 'openai-codex', detail: expect.any(String) }) })]);
+        expect(h.sidebarMessages.filter(message => message.type === 'sessionCleared')).toEqual([]);
+        expect((h.providerManager as any).disposePersistentProcessForProvider).not.toHaveBeenCalled();
+      } finally { lifecycle.dispose(); }
+    });
+
+    it.each(['session-shutdown', 'session-expired'] as const)('%s disposes the recorded provider even after its request ownership has cleared', type => {
+      // The picker/default can differ from the native session whose lifecycle
+      // event is ending. Cleanup must not consult that transient selection.
+      h.emitLifecycle({ type, panelId: 'sidebar', providerId: 'openai-codex' });
+      expect((h.providerManager as any).disposePersistentProcessForProvider)
+        .toHaveBeenCalledExactlyOnceWith('openai-codex', 'sidebar');
+      expect((h.providerManager as any).disposePersistentProcess).not.toHaveBeenCalled();
+    });
+
+    it.each(['turn', 'conversation', 'panel', 'provider'] as const)('a delayed shutdown acknowledgement cannot touch a newer %s owner', async change => {
+      let release!: (result: unknown) => void;
+      h.lifecycleManager.requestShutdown.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+      (h.providerManager as any).clearSession = vi.fn();
+      const host = h.provider as any;
+      const shutdown = host._handleMessage({ type: 'shutdownAgent', panelId: 'sidebar' });
+      if (change === 'turn') host._mystiRunGen.set('sidebar', (host._mystiRunGen.get('sidebar') || 0) + 1);
+      else if (change === 'conversation') h.sidebarPanelState.currentConversationId = 'new-conversation';
+      else if (change === 'panel') host._panelStates.set('sidebar', { ...h.sidebarPanelState });
+      else h.sidebarPanelState.settingsOverrides = { provider: 'openai-codex' };
+      release({ success: true }); await shutdown;
+      expect((h.providerManager as any).disposePersistentProcess).not.toHaveBeenCalled();
+      expect((h.providerManager as any).clearSession).not.toHaveBeenCalled();
+      expect(h.sidebarMessages.filter(message => ['sessionCleared', 'lifecycleEvent'].includes(message.type))).toEqual([]);
+    });
+
     it('posts the default provider when no per-panel override exists', async () => {
       await (h.provider as any)._handleMessage({ type: 'shutdownAgent', panelId: 'sidebar' });
 
@@ -508,6 +563,84 @@ describe('ChatViewProvider de-branding (Plan 02 Phase 2)', () => {
         messages: [{ role: 'user', content: 'a' }, { role: 'assistant', content: 'b' }, { role: 'user', content: 'c' }],
       });
     };
+
+    it.each([
+      { type: 'error', usage: undefined },
+      { type: 'error', usage: { input_tokens: 210, output_tokens: 30 } },
+      { type: 'auth_error', usage: undefined },
+    ])('native /compact $type keeps the measured fill when followed by done ($usage)', async ({ type, usage }) => {
+      threeTurns();
+      h.compactionManager.getStrategy.mockReturnValue('native-cli');
+      h.compactionManager.cliOwnsHistory.mockReturnValue(true);
+      const nativeMessage = type === 'auth_error'
+        ? 'Sign in to Claude again, then retry /compact.'
+        : 'Claude could not compact this conversation. Retry /compact.';
+      const closed = vi.fn();
+      const consumedAfterFailure = vi.fn();
+      (h.compactionManager as any).executeNativeCompaction = vi.fn(async function* () {
+        try {
+          yield { type: 'text', content: 'Preparing the conversation summary...' };
+          yield { type, content: nativeMessage };
+          consumedAfterFailure();
+          yield { type: 'done', usage };
+        } finally {
+          closed();
+        }
+      });
+
+      await (h.provider as any)._handleMessage({
+        type: 'executeSlashCommand', panelId: 'sidebar', payload: { command: 'compact' },
+      });
+      // The public slash callback starts compaction asynchronously. Wait for
+      // its terminal notification before inspecting the outcome or retrying.
+      await vi.waitFor(() => expect(h.sidebarMessages.filter(m => m.type === 'compactionStatus')).toHaveLength(2));
+
+      const statuses = h.sidebarMessages.filter(m => m.type === 'compactionStatus');
+      expect(statuses.map(m => m.payload.status)).toEqual(['compacting', 'error']);
+      expect(statuses[1].payload.error).toBe(nativeMessage);
+      expect(statuses[1].payload.beforeTokens).toBe(1000);
+      expect(h.compactionManager.resetUsage).not.toHaveBeenCalled();
+      expect(h.compactionManager.updateUsageAfterCompaction).not.toHaveBeenCalled();
+      expect(h.sidebarMessages.some(m => m.type === 'contextWindowInfo')).toBe(false);
+      expect(closed).toHaveBeenCalledTimes(1);
+      expect(consumedAfterFailure).not.toHaveBeenCalled();
+    });
+
+    it('native /compact retries successfully after a reported error and updates usage only for the successful attempt', async () => {
+      threeTurns();
+      h.compactionManager.getStrategy.mockReturnValue('native-cli');
+      h.compactionManager.cliOwnsHistory.mockReturnValue(true);
+      let attempts = 0;
+      const native = vi.fn(async function* () {
+        if (++attempts === 1) {
+          yield { type: 'error', content: 'Claude compaction is temporarily unavailable. Retry /compact.' };
+          yield { type: 'done' };
+          return;
+        }
+        yield { type: 'compaction', compactionEvent: { beforeTokens: 49210, summary: 'Retry policy and the test results are retained.' } };
+        yield { type: 'done', usage: { input_tokens: 320, output_tokens: 25 } };
+      });
+      (h.compactionManager as any).executeNativeCompaction = native;
+      const request = { type: 'executeSlashCommand', panelId: 'sidebar', payload: { command: 'compact' } };
+
+      await (h.provider as any)._handleMessage(request);
+      await vi.waitFor(() => expect(h.sidebarMessages.filter(m => m.type === 'compactionStatus')).toHaveLength(2));
+      expect(h.compactionManager.resetUsage).not.toHaveBeenCalled();
+      expect(h.compactionManager.updateUsageAfterCompaction).not.toHaveBeenCalled();
+      await (h.provider as any)._handleMessage(request);
+      await vi.waitFor(() => expect(h.sidebarMessages.filter(m => m.type === 'compactionStatus')).toHaveLength(4));
+
+      expect(native).toHaveBeenCalledTimes(2);
+      const statuses = h.sidebarMessages.filter(m => m.type === 'compactionStatus');
+      expect(statuses.map(m => m.payload.status)).toEqual(['compacting', 'error', 'compacting', 'complete']);
+      expect(statuses[3].payload).toMatchObject({
+        strategy: 'native-cli', beforeTokens: 49210, afterTokens: 320,
+        summary: 'Retry policy and the test results are retained.',
+      });
+      expect(h.compactionManager.updateUsageAfterCompaction).toHaveBeenCalledExactlyOnceWith('sidebar', 320);
+      expect(h.compactionManager.resetUsage).not.toHaveBeenCalled();
+      expect(h.sidebarMessages.filter(m => m.type === 'contextWindowInfo')).toHaveLength(1);
+    });
 
     // Smart compaction used to summarize Mysti's chat text (no tool results)
     // and then kill and restart the CLI, throwing its real context away.

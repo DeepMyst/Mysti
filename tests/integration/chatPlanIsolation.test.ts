@@ -8,9 +8,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
 import { PendingPlanStore } from '../../src/chat/PendingPlanStore';
 import { DelayedChannelTurns } from '../../src/chat/DelayedChannelTurns';
+import { EditorContextTracker } from '../../src/chat/EditorContextTracker';
 import { SubAgentQuestionBroker } from '../../src/chat/SubAgentQuestionBroker';
 import { ChatViewProvider } from '../../src/providers/ChatViewProvider';
-import { clearMockConfig } from '../helpers/mockVscode';
+import { ContextManager } from '../../src/managers/ContextManager';
+import { clearMockConfig, createMockMemento } from '../helpers/mockVscode';
 import type { Conversation, Message, PlanOption, PlanSelectionResult, WebviewMessage } from '../../src/types';
 import { createMockSettings } from '../helpers/brainstormFactory';
 
@@ -42,6 +44,7 @@ function createHarness() {
   }]));
   const conversations = new Map(['conversation-a', 'conversation-b', 'other'].map(id => [id, { id, messages: [] } as unknown as Conversation]));
   const questions = new SubAgentQuestionBroker();
+  const editorContextTracker = new EditorContextTracker(vscode.window);
   const classify = vi.fn(async (_content: string) => ({ questions: [], planOptions: [plan] }));
   const provider = Object.assign(Object.create(ChatViewProvider.prototype), {
     _modelCliUpgrades: new Map(),
@@ -54,6 +57,7 @@ function createHarness() {
     _nativeApprovalCards: { dispose: vi.fn() },
     _pendingPlanSelections: new Set<string>(),
     _panelStates: panels,
+    _editorContextTracker: editorContextTracker,
     _lastUserMessage: new Map(),
     _lastMentionContext: new Map(),
     _cancelledPanels: new Set(),
@@ -63,16 +67,18 @@ function createHarness() {
     _stoppedCompactions: new Set(),
     _panelAutonomyLevel: new Map(),
     _mystiRunGen: new Map(),
+    _brainstormPreparations: new Map(),
     _mystiAbortControllers: new Map(),
     _vtNonces: new Map(),
     _vtScanners: new Map(),
     _autonomousManager: { isActive: () => false },
-    _planOptionManager: { createSelectionPrompt: (_option: PlanOption, query: string) => query, classifyResponse: classify },
+    _planOptionManager: { createSelectionPrompt: (_option: PlanOption, query: string) => query, classifyResponse: classify, dispose: vi.fn() },
     _providerManager: {
+      getProviderInstance: () => ({ capabilities: { supportsNativeApproval: true, supportsAskPermission: true, planMode: 'native' } }),
       cancelRequest: vi.fn(), clearSession: vi.fn(), getAllProviders: () => [],
       getAllProviderIds: () => ['claude-code', 'openai-codex'], dispose: vi.fn(),
     },
-    _backgroundJobManager: { listRunning: () => [], dispose: vi.fn() },
+    _backgroundJobManager: { listRunning: () => [], listAll: () => [], dispose: vi.fn() },
     _conversationManager: {
       createNewConversation: () => ({ id: 'new-conversation' }),
       getConversation: (id: string) => conversations.get(id) ?? null,
@@ -81,7 +87,7 @@ function createHarness() {
       forkConversation: (_id: string, messageId: string) => messageId === 'valid-message' ? { id: 'fork' } : null,
       addMessageToConversation: (_id: string, role: string, content: string) => ({ id: 'message', role, content }),
     },
-    _contextManager: { clearPanelContext: vi.fn(), getContext: () => [] },
+    _contextManager: new ContextManager({ workspaceState: createMockMemento() } as any),
     _channelBridge: { clearPanel: vi.fn(), clearQueuedMessages: vi.fn(), dispose: vi.fn() },
     _brainstormManager: { cancelSession: vi.fn(), clearSession: vi.fn() },
     _collaborationManager: { cancelPanel: vi.fn() },
@@ -109,7 +115,7 @@ function createHarness() {
   }) as PlanProvider;
   const detect = (panelId: string, messageId = 'shared-message') =>
     provider._handleDetectedPlanOptions([plan], messageId, `query-${panelId}`, undefined, panelId);
-  return { provider, detect, sent, posted, panels, classify, updateSettings, questions };
+  return { provider, detect, sent, posted, panels, classify, updateSettings, questions, editorContextTracker };
 }
 
 describe('chat plan selection ownership', () => {
@@ -120,16 +126,101 @@ describe('chat plan selection ownership', () => {
     harness = createHarness();
   });
   afterEach(() => {
+    harness.editorContextTracker.dispose();
     harness.provider._pendingPlans.dispose();
     vi.restoreAllMocks();
     vi.useRealTimers();
+  });
+
+  const selection = (panelId: string) => {
+    const delivered = harness.posted.mock.calls.filter(([owner, message]) => owner === panelId && message.type === 'planOptions').at(-1)![1].payload;
+    return { selectedPlan: delivered.options[0], messageId: delivered.messageId, originalQuery: delivered.originalQuery,
+      syntheticPlanId: delivered.syntheticPlanId, conversationId: harness.panels.get(panelId)!.currentConversationId,
+      executionMode: 'ask-before-edit' as const, customInstructions: '' };
+  };
+
+  it('PB-01 consumes a native plan selection exactly once before any asynchronous settings write', async () => {
+    await harness.detect('a'); const payload = selection('a');
+    await Promise.all([1, 2].map(() => harness.provider._handleMessage({ type: 'planOptionSelected', panelId: 'a', payload } as any)));
+    expect(harness.updateSettings).toHaveBeenCalledOnce();
+    expect(harness.sent).toHaveBeenCalledOnce();
+  });
+
+  it('PB-01 rejects a sibling plan selection without consuming the rightful owner or changing settings', async () => {
+    await harness.detect('a', 'a-message'); await harness.detect('b', 'b-message');
+    await harness.provider._handleMessage({ type: 'planOptionSelected', panelId: 'a', payload: selection('b') } as any);
+    expect(harness.updateSettings).not.toHaveBeenCalled(); expect(harness.sent).not.toHaveBeenCalled();
+    expect(harness.provider._pendingPlanSelections.has('a')).toBe(true);
+    expect(harness.provider._pendingPlanSelections.has('b')).toBe(true);
+  });
+
+  it('PB-01 a dismissed native plan cannot start work from its delayed selection', async () => {
+    await harness.detect('a'); const payload = selection('a');
+    await harness.provider._handleMessage({ type: 'planOptionsSkipped', panelId: 'a', payload: { syntheticPlanId: payload.syntheticPlanId, conversationId: payload.conversationId } } as any);
+    await harness.provider._handleMessage({ type: 'planOptionSelected', panelId: 'a', payload } as any);
+    expect(harness.updateSettings).not.toHaveBeenCalled(); expect(harness.sent).not.toHaveBeenCalled();
+  });
+
+  it('PB-01 a late native plan selection after New Conversation cannot execute in the successor', async () => {
+    await harness.detect('a'); const payload = selection('a');
+    await harness.provider._handleMessage({ type: 'newConversation', panelId: 'a' } as any);
+    await harness.provider._handleMessage({ type: 'planOptionSelected', panelId: 'a', payload } as any);
+    expect(harness.updateSettings).not.toHaveBeenCalled(); expect(harness.sent).not.toHaveBeenCalled();
+  });
+
+  it('PB-01 resolves the stored plan and query instead of trusting edited callback text', async () => {
+    await harness.detect('a'); const payload = selection('a');
+    const makePrompt = vi.fn((selected: PlanOption, query: string) => `${selected.approach}\n${query}`);
+    (harness.provider as any)._planOptionManager.createSelectionPrompt = makePrompt;
+    await harness.provider._handleMessage({ type: 'planOptionSelected', panelId: 'a', payload: {
+      ...payload, selectedPlan: { ...payload.selectedPlan, approach: 'Forged destructive replacement' }, originalQuery: 'Forged query',
+    } } as any);
+    expect(makePrompt).toHaveBeenCalledExactlyOnceWith(plan, 'query-a');
+    expect(harness.updateSettings).toHaveBeenCalledExactlyOnceWith({ mode: 'ask-before-edit', accessLevel: 'ask-permission' }, 'a');
+    expect(harness.sent.mock.calls[0][0].content).toBe('Approach\nquery-a');
+  });
+
+  it.each(['missing-delivery', 'wrong-conversation', 'wrong-message', 'unknown-option', 'invalid-mode'])(
+    'PB-01 rejects %s without consuming the valid plan', async fault => {
+      await harness.detect('a'); const original = selection('a'); const payload: any = { ...original };
+      if (fault === 'missing-delivery') delete payload.syntheticPlanId;
+      if (fault === 'wrong-conversation') payload.conversationId = 'other';
+      if (fault === 'wrong-message') payload.messageId = 'other';
+      if (fault === 'unknown-option') payload.selectedPlan = { ...payload.selectedPlan, id: 'other' };
+      if (fault === 'invalid-mode') payload.executionMode = 'unsupported';
+      await harness.provider._handleMessage({ type: 'planOptionSelected', panelId: 'a', payload } as any);
+      expect(harness.updateSettings).not.toHaveBeenCalled(); expect(harness.sent).not.toHaveBeenCalled();
+      await harness.provider._handleMessage({ type: 'planOptionSelected', panelId: 'a', payload: original } as any);
+      expect(harness.sent).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('PB-01 same-millisecond replacement plans with the same message ID have distinct delivery authority', async () => {
+    await harness.detect('a'); const old = selection('a');
+    await harness.detect('a'); const current = selection('a');
+    expect(current.syntheticPlanId).not.toBe(old.syntheticPlanId);
+    await harness.provider._handleMessage({ type: 'planOptionSelected', panelId: 'a', payload: old } as any);
+    expect(harness.sent).not.toHaveBeenCalled();
+    await harness.provider._handleMessage({ type: 'planOptionSelected', panelId: 'a', payload: current } as any);
+    expect(harness.sent).toHaveBeenCalledOnce();
+  });
+
+  it('PB-01 autonomous selection uses the same stored delivery once without displaying an orphaned card', async () => {
+    (harness.provider as any)._autonomousManager = { isActive: () => true,
+      generateAutoAnswer: () => ({ answers: { Approach: plan.title }, decision: { reasoning: 'Selected exact plan' } }) };
+    await harness.detect('a');
+    expect(harness.sent).toHaveBeenCalledOnce();
+    expect(harness.sent.mock.calls[0][0].content).toBe('query-a');
+    expect(harness.provider._pendingPlanSelections.has('a')).toBe(false);
+    expect(harness.posted.mock.calls.filter(([, message]) => message.type === 'planOptions')).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('selecting a plan preserves the other panel timer and original query', async () => {
     await harness.detect('a');
     await harness.detect('b');
     await harness.provider._handlePlanOptionSelected({
-      selectedPlan: plan, messageId: 'shared-message', originalQuery: 'a', executionMode: 'quick-plan',
+      ...selection('a'), executionMode: 'quick-plan',
     }, 'a');
 
     expect(vi.getTimerCount()).toBe(1);
@@ -148,8 +239,10 @@ describe('chat plan selection ownership', () => {
       onDidDispose: (callback: () => void) => { close = callback; },
     });
     try {
-      const tabId = `panel_${Date.now()}`;
+      const existingPanels = new Set(harness.panels.keys());
       harness.provider.openInNewTab();
+      const tabId = [...harness.panels.keys()].find(id => !existingPanels.has(id))!;
+      expect(tabId).toBeDefined();
       await harness.detect(tabId);
       await harness.detect('b');
       close();
@@ -167,7 +260,7 @@ describe('chat plan selection ownership', () => {
   it('a skipped plan id cannot dismiss a selection owned by another panel', async () => {
     await harness.detect('a', 'a-message');
     await harness.detect('b', 'b-message');
-    const bPlanId = `plan-b-message-${Date.now()}`;
+    const bPlanId = selection('b').syntheticPlanId;
     await harness.provider._handleMessage({
       type: 'planOptionsSkipped', panelId: 'a', payload: { syntheticPlanId: bPlanId },
     } as WebviewMessage, 'a');
@@ -267,8 +360,9 @@ describe('chat plan selection ownership', () => {
     'does not execute a selected plan after %s interrupts the mode update', async type => {
       let release!: () => void;
       harness.updateSettings.mockImplementation(() => new Promise<void>(resolve => { release = resolve; }));
+      await harness.detect('a', 'message');
       const selecting = harness.provider._handlePlanOptionSelected({
-        selectedPlan: plan, messageId: 'message', originalQuery: 'execute', executionMode: 'edit-automatically',
+        ...selection('a'), executionMode: 'edit-automatically',
       }, 'a');
       expect(harness.updateSettings).toHaveBeenCalledOnce();
       await harness.provider._handleMessage({ type, panelId: 'a' } as WebviewMessage);

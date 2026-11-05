@@ -45,6 +45,8 @@ export interface CollaborationRunInput {
   brief: string;
   collaborators: CollaborationRequest[];
   context: ContextItem[];
+  /** Current permitted context for dispatch; context remains the manual baseline. */
+  resolveContext?: () => ContextItem[];
   settings: Settings;
   panelId: string;
   conversation?: Conversation | null;
@@ -137,6 +139,7 @@ export class CollaborationManager {
       conversation: input.conversation ?? null,
       onQuestion: input.onQuestion,
       onGate: input.onGate,
+      isCancelled: input.isCancelled,
     });
 
     try {
@@ -292,6 +295,12 @@ export class CollaborationManager {
         roleNames.set(collaboratorId, roleCtx?.trusted === true ? roleDisplay : (req.roleId as string));
       }
 
+      // Freeze the role/authority and assignment once. Only the private context
+      // factory is live; the canonical prompt keeps the manual reference data.
+      const role = roleCtx && req.roleId
+        ? { roleId: req.roleId, prompt: roleCtx.prompt, trusted: roleCtx.trusted } : null;
+      const promptInput = { ...input, brief: req.brief ?? input.brief };
+      const resolveContext = input.resolveContext;
       specs.push({
         collaboratorId,
         agentId: req.agentId,
@@ -299,12 +308,10 @@ export class CollaborationManager {
         label,
         access,
         model: req.agentId === input.settings.provider ? input.settings.model || undefined : undefined,
-        prompt: this._buildPrompt(
-          roleCtx && req.roleId ? { roleId: req.roleId, prompt: roleCtx.prompt, trusted: roleCtx.trusted } : null,
-          { ...input, brief: req.brief ?? input.brief },
-          runId,
-          access
-        ),
+        prompt: this._buildPrompt(role, promptInput, runId, access),
+        ...(resolveContext ? { resolvePrompt: () => this._buildPrompt(
+          role, { ...promptInput, context: resolveContext() }, runId, access,
+        ) } : {}),
       });
     }
 
@@ -389,8 +396,8 @@ export class CollaborationManager {
     }
 
     const files = input.context.filter(c => c.enabled !== false && c.content);
-    for (const file of files) {
-      segments.push(this._fenceUntrusted(`File: ${file.path}`, file.content || '', runId));
+    for (const [index, file] of files.entries()) {
+      segments.push(this._fenceUntrusted(`Reference item ${index + 1}`, `File: ${file.path}\n${file.content || ''}`, runId));
     }
 
     if (segments.length === 0) {

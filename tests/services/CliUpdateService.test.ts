@@ -20,9 +20,13 @@
  *     exactly a semver, and it never reaches the update command — which is
  *     built from the in-repo package literal alone.
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import type { ExtensionContext } from 'vscode';
 import { createMockMemento } from '../helpers/mockVscode';
+import { getProviderNpmPackage } from '../../src/providers/base/ProviderManifest';
 
 const execFileMock = vi.hoisted(() => vi.fn());
 vi.mock('child_process', () => ({
@@ -43,9 +47,26 @@ function makeContext() {
   return { context: { globalState } as unknown as ExtensionContext, globalState };
 }
 
-type Status = { providerId: string; found: boolean; version?: string };
+type Status = { providerId: string; found: boolean; version?: string; path?: string };
+const fixturePrefixes: string[] = [];
+afterEach(() => { fixturePrefixes.splice(0).forEach(prefix => fs.rmSync(prefix, { recursive: true, force: true })); });
+function npmFixture(providerId: string): string {
+  const prefix = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-update-unit-')));
+  fixturePrefixes.push(prefix);
+  const name = getProviderNpmPackage(providerId)!;
+  const packageRoot = path.join(prefix, 'lib', 'node_modules', ...name.split('/'));
+  fs.mkdirSync(path.join(packageRoot, 'bin'), { recursive: true });
+  fs.mkdirSync(path.join(prefix, 'bin'), { recursive: true });
+  fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({ name, bin: { cli: 'bin/cli.js' } }));
+  const bin = path.join(packageRoot, 'bin', 'cli.js');
+  fs.writeFileSync(bin, '');
+  const cli = path.join(prefix, 'bin', 'cli');
+  fs.symlinkSync(bin, cli);
+  return cli;
+}
 
 function makeVersions(statuses: Status[]): CliVersionSource {
+  statuses = statuses.map(status => ({ ...status, path: status.path ?? (status.found && typeof getProviderNpmPackage(status.providerId) === 'string' ? npmFixture(status.providerId) : undefined) }));
   return {
     getAllStatuses: async () => statuses,
     peekStatus: (id: string) => statuses.find(s => s.providerId === id),
@@ -122,8 +143,9 @@ describe('CliUpdateService', () => {
 
   it('pins an uncached npm upgrade to the minimum required version', () => {
     const svc = new CliUpdateService(ctx.context, makeVersions([]), npm);
-    expect(svc.getModelUpgradePlan('openai-codex', '0.153.1')).toEqual({
-      executable: '/usr/bin/npm', args: ['install', '-g', '@openai/codex@0.153.1'],
+    const cli = npmFixture('openai-codex');
+    expect(svc.getModelUpgradePlan('openai-codex', '0.153.1', cli)).toEqual({
+      executable: '/usr/bin/npm', args: ['install', '-g', '--prefix', path.dirname(path.dirname(cli)), '@openai/codex@0.153.1'],
     });
     expect(() => svc.getModelUpgradePlan('openai-codex', '0.153.1; touch pwn')).toThrow('Invalid');
     expect(() => svc.getModelUpgradePlan('__proto__', '1.2.3')).toThrow('no supported');
@@ -133,19 +155,27 @@ describe('CliUpdateService', () => {
     stubNpm({ '@openai/codex': '0.140.0' });
     const svc = new CliUpdateService(ctx.context, makeVersions([{ providerId: 'openai-codex', found: true, version: '0.130.0' }]), npm);
     await svc.checkAll();
-    expect(svc.getModelUpgradePlan('openai-codex', '0.153.1').args.at(-1)).toBe('@openai/codex@0.153.1');
+    expect(svc.getModelUpgradePlan('openai-codex', '0.153.1', npmFixture('openai-codex')).args.at(-1)).toBe('@openai/codex@0.153.1');
   });
 
   it('uses a newer cached release when it satisfies the model requirement', async () => {
     stubNpm({ '@openai/codex': '0.160.0' });
     const svc = new CliUpdateService(ctx.context, makeVersions([{ providerId: 'openai-codex', found: true, version: '0.130.0' }]), npm);
     await svc.checkAll();
-    expect(svc.getModelUpgradePlan('openai-codex', '0.153.1').args.at(-1)).toBe('@openai/codex@0.160.0');
+    expect(svc.getModelUpgradePlan('openai-codex', '0.153.1', npmFixture('openai-codex')).args.at(-1)).toBe('@openai/codex@0.160.0');
   });
 
   it('explains when the Node-compatible release is below the model requirement', async () => {
     await ctx.globalState.update('mysti.cliUpdates.v1', {
       'openai-codex': { latest: '0.160.0', installable: '0.140.0', requiredNode: '>=99', checkedAt: Date.now() },
+    });
+    const svc = new CliUpdateService(ctx.context, makeVersions([]), npm);
+    expect(() => svc.getModelUpgradePlan('openai-codex', '0.153.1')).toThrow('Upgrade Node.js');
+  });
+
+  it('does not offer a model upgrade when no release is installable on this Node', async () => {
+    await ctx.globalState.update('mysti.cliUpdates.v1', {
+      'openai-codex': { latest: '0.160.0', installable: '', requiredNode: '>=99', checkedAt: Date.now() },
     });
     const svc = new CliUpdateService(ctx.context, makeVersions([]), npm);
     expect(() => svc.getModelUpgradePlan('openai-codex', '0.153.1')).toThrow('Upgrade Node.js');
@@ -248,12 +278,14 @@ describe('CliUpdateService', () => {
 
   describe('command construction (security)', () => {
     it('builds the command from the in-repo package literal only', () => {
-      const svc = new CliUpdateService(ctx.context, makeVersions([]), npm);
-      expect(svc.getUpdateCommand('openai-codex')).toBe('npm install -g @openai/codex@latest');
+      const versions = makeVersions([{ providerId: 'openai-codex', found: true }, { providerId: 'claude-code', found: true }]);
+      const svc = new CliUpdateService(ctx.context, versions, npm);
+      expect(svc.getUpdateCommand('openai-codex')).toContain('/usr/bin/npm install -g --prefix ');
+      expect(svc.getUpdateCommand('openai-codex')).toContain('@openai/codex@latest');
       // Claude Code is detected via npm but must be updated with its OWN
       // installer: `npm i -g` writes /usr/local/bin while the native installer
       // writes ~/.local/bin, which is what PATH (and therefore Mysti) resolves.
-      expect(svc.getUpdateCommand('claude-code')).toBe('claude install latest');
+      expect(svc.getUpdateCommand('claude-code')).toBe(`${versions.peekStatus('claude-code')!.path} install latest`);
     });
 
     it('returns undefined for a non-npm or unknown provider, so no card can offer a command', () => {
@@ -274,7 +306,8 @@ describe('CliUpdateService', () => {
         npm
       );
       expect(await svc.checkAll()).toEqual([]);
-      expect(svc.getUpdateCommand('openai-codex')).toBe('npm install -g @openai/codex@latest');
+      expect(svc.getUpdateCommand('openai-codex')).toContain('@openai/codex@latest');
+      expect(svc.getUpdateCommand('openai-codex')).not.toContain('evil.sh');
     });
 
     it('runs npm shell-free, as an argv array', async () => {
@@ -477,10 +510,11 @@ describe('offering an update that can actually be installed', () => {
 
     // …and the command pins that version rather than saying @latest, which is
     // the command that aborts in a preinstall hook.
-    expect(svc.getUpdateCommand('openclaw')).toBe('npm install -g openclaw@2026.6.34');
+    expect(svc.getUpdateCommand('openclaw')).toContain('/usr/bin/npm install -g --prefix ');
+    expect(svc.getUpdateCommand('openclaw')).toContain('openclaw@2026.6.34');
   });
 
-  it('uses @latest when the newest release runs on this Node', async () => {
+  it('pins the advertised latest version when the newest release runs on this Node', async () => {
     stubRegistry({
       'openclaw': JSON.stringify({ version: '2026.9.2', 'engines.node': '>=18.0.0' }),
     });
@@ -494,7 +528,8 @@ describe('offering an update that can actually be installed', () => {
     const [update] = svc.getUpdates();
     expect(update.installable).toBe('2026.9.2');
     expect(update.blockedByNodeEngine).toBe(false);
-    expect(svc.getUpdateCommand('openclaw')).toBe('npm install -g openclaw@latest');
+    expect(svc.getUpdateCommand('openclaw')).toContain('/usr/bin/npm install -g --prefix ');
+    expect(svc.getUpdateCommand('openclaw')).toContain('openclaw@2026.9.2');
     // Only one registry call: the fallback search is not made when it is moot.
     expect(execFileMock).toHaveBeenCalledTimes(1);
   });

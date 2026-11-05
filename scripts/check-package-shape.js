@@ -112,6 +112,11 @@ const NODE_BUILTINS = new Set([
   'tty', 'url', 'util', 'v8', 'vm', 'wasi', 'worker_threads', 'zlib',
 ]);
 
+// SQLite requires the node: prefix: bare "sqlite" is still an npm package.
+// Its optional reader is guarded for older hosts and verified with the pinned
+// VS Code runtime; do not broaden this list based on the CI Node version.
+const PREFIX_ONLY_NODE_BUILTINS = new Set(['node:sqlite']);
+
 // Provided by the extension host, never by node_modules.
 const HOST_PROVIDED = new Set(['vscode']);
 
@@ -379,7 +384,7 @@ function assertRuntimeRequiresResolve(archive, present) {
   const unresolved = [];
   for (const spec of [...specs].sort()) {
     const root = rootOf(spec);
-    if (NODE_BUILTINS.has(root) || HOST_PROVIDED.has(root)) { continue; }
+    if (PREFIX_ONLY_NODE_BUILTINS.has(spec) || NODE_BUILTINS.has(root) || HOST_PROVIDED.has(root)) { continue; }
     if (present.has(`node_modules/${root}/package.json`)) { continue; }
     if (OPTIONAL_EXTERNALS.has(root)) {
       notes.push(`D: '${root}' is absent but is an OPTIONAL external (a native ws accelerator the code runs without).`);
@@ -475,7 +480,7 @@ function assertNoPhantomDeps(manifest) {
         const spec = m[1] || m[2] || m[3];
         if (!spec || spec.startsWith('.') || spec.startsWith('/')) { continue; }
         const root = rootOf(spec);
-        if (NODE_BUILTINS.has(root) || HOST_PROVIDED.has(root)) { continue; }
+        if (PREFIX_ONLY_NODE_BUILTINS.has(spec) || NODE_BUILTINS.has(root) || HOST_PROVIDED.has(root)) { continue; }
         if (!imports.has(root)) { imports.set(root, new Set()); }
         imports.get(root).add(rel);
       }

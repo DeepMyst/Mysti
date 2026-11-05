@@ -15,15 +15,26 @@ const versions = [
   ['continue', '@continuedev/cli', '1.5.47', 'cn'],
   ['openclaw', 'openclaw', '2026.9.7', 'openclaw'],
 ];
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-installer-smoke-'));
+const requested = (process.env.MYSTI_INSTALLER_PROVIDERS || '').split(',').map(id => id.trim()).filter(Boolean);
+for (const id of requested) {
+  if (!versions.some(row => row[0] === id)) { throw new Error(`Unknown installer provider: ${id}`); }
+}
+const selected = requested.length ? versions.filter(row => requested.includes(row[0])) : versions;
+const parent = process.env.MYSTI_INSTALLER_ROOT ? path.resolve(process.env.MYSTI_INSTALLER_ROOT) : os.tmpdir();
+fs.mkdirSync(parent, { recursive: true });
+const root = fs.mkdtempSync(path.join(parent, 'mysti installer smoke-'));
 const output = process.env.MYSTI_INSTALLER_REPORT || path.resolve('installer-validation.json');
+const installTimeout = Number(process.env.MYSTI_INSTALLER_TIMEOUT_MS || 240000);
+if (!Number.isInteger(installTimeout) || installTimeout < 1000 || installTimeout > 900000) {
+  throw new Error('MYSTI_INSTALLER_TIMEOUT_MS must be an integer from 1000 to 900000.');
+}
 const npmCli = [process.env.npm_execpath,
   path.resolve(path.dirname(process.execPath), '../lib/node_modules/npm/bin/npm-cli.js'),
   path.resolve(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js'),
 ].find(p => p && fs.existsSync(p));
 if (!npmCli) throw new Error('Run via npm run validate:installers so npm_execpath is available.');
-const report = { checkedAt: new Date().toISOString(), platform: process.platform, arch: process.arch, node: process.version,
-  scope: 'Actual npm global-layout installs into temporary prefixes and launcher/version checks. No sign-in or inference.', results: [] };
+const report = { checkedAt: new Date().toISOString(), platform: process.platform, arch: process.arch, node: process.version, root,
+  scope: 'Actual npm global-layout installs into disposable prefixes containing spaces; invoke the installed shim and verify the requested version. Machine accounts remain available; no clean-OS, sign-in, or inference claim.', results: [] };
 function run(executable, args, cwd, timeout) {
   return new Promise(resolve => {
     const env = { ...process.env, CI: '1', npm_config_engine_strict: 'true' };
@@ -41,28 +52,33 @@ function run(executable, args, cwd, timeout) {
   });
 }
 (async () => {
-  for (const [id, pkg, version, bin] of versions) {
+  for (const [id, pkg, version, bin] of selected) {
     const prefix = path.join(root, id);
     fs.mkdirSync(prefix);
-    const install = await run(process.execPath, [npmCli, 'install', '-g', '--prefix', prefix, '--no-audit', '--no-fund', `${pkg}@${version}`], root, 240000);
-    const row = { id, package: pkg, version, install };
+    const install = await run(process.execPath, [npmCli, 'install', '-g', '--prefix', prefix, '--no-audit', '--no-fund', `${pkg}@${version}`], root, installTimeout);
+    const row = { id, package: pkg, version, prefix, install };
     if (install.ok) {
       try {
         const pkgDir = path.join(prefix, process.platform === 'win32' ? 'node_modules' : 'lib/node_modules', pkg);
         const manifest = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8'));
-        const entry = path.join(pkgDir, typeof manifest.bin === 'string' ? manifest.bin : manifest.bin[bin]);
         const shim = path.join(prefix, process.platform === 'win32' ? '' : 'bin', bin + (process.platform === 'win32' ? '.cmd' : ''));
+        row.shim = shim;
         row.launcherPresent = fs.existsSync(shim);
-        const fd = fs.openSync(entry, 'r'), header = Buffer.alloc(100);
-        fs.readSync(fd, header, 0, 100, 0); fs.closeSync(fd);
-        const nodeScript = /^#![^\n]*node\b/.test(header.toString());
-        row.launch = await run(nodeScript ? process.execPath : entry, nodeScript ? [entry, '--version'] : ['--version'], root, 45000);
+        row.manifestVersion = manifest.version;
+        // Exercise the executable users actually select, including npm's shim.
+        row.launch = process.platform === 'win32'
+          ? await run(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `""${shim}" --version"`], root, 45000)
+          : await run(shim, ['--version'], root, 45000);
+        const escapedVersion = version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        row.versionMatches = manifest.version === version && new RegExp(`(?:^|[^\\w.+-])${escapedVersion}(?=$|[^\\w.+-])`).test(row.launch.output || '');
       } catch (error) { row.launch = { ok: false, error: error.message }; }
     }
     report.results.push(row);
     fs.mkdirSync(path.dirname(output), { recursive: true });
     fs.writeFileSync(output, JSON.stringify(report, null, 2) + '\n');
-    console.log(`${id}: install=${install.ok} launcher=${row.launcherPresent ?? false} version=${row.launch?.ok ?? false}`);
+    console.log(`${id}: install=${install.ok} launcher=${row.launcherPresent ?? false} version=${row.launch?.ok && row.versionMatches || false}`);
   }
-  process.exitCode = report.results.every(r => r.install.ok && r.launcherPresent && r.launch?.ok) ? 0 : 1;
+  report.finishedAt = new Date().toISOString();
+  fs.writeFileSync(output, JSON.stringify(report, null, 2) + '\n');
+  process.exitCode = report.results.every(r => r.install.ok && r.launcherPresent && r.launch?.ok && r.versionMatches) ? 0 : 1;
 })().catch(error => { console.error(error); process.exitCode = 1; });

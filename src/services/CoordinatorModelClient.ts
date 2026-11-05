@@ -22,7 +22,7 @@
  * UI can prompt the user.
  */
 
-import type { GatewayChatMessage, DeepMystGatewayClient } from './DeepMystGatewayClient';
+import type { GatewayChatMessage, GatewayDispatchOptions, DeepMystGatewayClient } from './DeepMystGatewayClient';
 import type { AccumulatedToolCall } from '../utils/toolCallAccumulator';
 import { modelSupportsToolCalls } from './coordinatorTools';
 import { normalizeUsage } from './TokenAccounting';
@@ -393,11 +393,11 @@ export class CoordinatorModelClient {
   /** Non-streaming completion (decompose/synthesize). */
   public async complete(
     messages: GatewayChatMessage[],
-    opts: { maxTokens?: number; signal?: AbortSignal; model?: string } = {},
+    opts: GatewayDispatchOptions & { maxTokens?: number; signal?: AbortSignal; model?: string } = {},
   ): Promise<CoordinatorCompletion> {
     if (this._useOpenRouter()) {
       const model = opts.model ? CoordinatorModelClient._directId(opts.model) : await this.resolveCoordinatorModel();
-      const r = await this._openRouter.chatCompletion({ model, messages, maxTokens: opts.maxTokens, signal: opts.signal });
+      const r = await this._openRouter.chatCompletion({ model, messages, maxTokens: opts.maxTokens, signal: opts.signal, resolveMessages: opts.resolveMessages, isCancelled: opts.isCancelled });
       return r.failed
         ? { text: '', failed: true, viaFallback: false, error: r.error || 'OpenRouter failed' }
         : { text: r.text, failed: false, viaFallback: false, costUsd: r.costUsd };
@@ -419,7 +419,7 @@ export class CoordinatorModelClient {
     // 5xx, mid-stream fallback) advance to the next model; a hard error stops.
     let last: Awaited<ReturnType<DeepMystGatewayClient['chatCompletion']>> | undefined;
     for (let i = sticky; i < chain.length; i++) {
-      last = await this._gateway.chatCompletion({ model: chain[i], messages, maxTokens: opts.maxTokens, signal: opts.signal });
+      last = await this._gateway.chatCompletion({ model: chain[i], messages, maxTokens: opts.maxTokens, signal: opts.signal, resolveMessages: opts.resolveMessages, isCancelled: opts.isCancelled });
       if (!last.failed) {
         if (!opts.model) { this._stampSticky(i); }
         return { text: last.text, failed: false, viaFallback: i > 0, costUsd: last.costUsd, model: last.model || chain[i] };
@@ -438,7 +438,7 @@ export class CoordinatorModelClient {
   /** Stream a completion token-by-token (Mysti's default answer + delegation loop). */
   public async *stream(
     messages: GatewayChatMessage[],
-    opts: { maxTokens?: number; reasoningEffort?: 'low' | 'medium' | 'high'; signal?: AbortSignal; tools?: unknown[]; model?: string } = {},
+    opts: GatewayDispatchOptions & { maxTokens?: number; reasoningEffort?: 'low' | 'medium' | 'high'; signal?: AbortSignal; tools?: unknown[]; model?: string } = {},
   ): AsyncGenerator<CoordinatorStreamEvent> {
     if (this._useOpenRouter()) {
       // Match the gateway path's generous ceiling (was OpenRouterClient's 120s
@@ -450,7 +450,7 @@ export class CoordinatorModelClient {
       // so a non-capable model never 400s on an unsupported `tools` field
       // (review round-5 #5/#9).
       const orModel = opts.model ? CoordinatorModelClient._directId(opts.model) : await this.resolveCoordinatorModel();
-      yield* this._drain(this._openRouter.streamChat({ model: orModel, messages, maxTokens: opts.maxTokens, reasoningEffort: opts.reasoningEffort, signal: opts.signal, timeoutMs: CoordinatorModelClient._STREAM_TIMEOUT_MS, tools: this._toolCapable(orModel) ? opts.tools : undefined }));
+      yield* this._drain(this._openRouter.streamChat({ model: orModel, messages, maxTokens: opts.maxTokens, reasoningEffort: opts.reasoningEffort, signal: opts.signal, timeoutMs: CoordinatorModelClient._STREAM_TIMEOUT_MS, tools: this._toolCapable(orModel) ? opts.tools : undefined, resolveMessages: opts.resolveMessages, isCancelled: opts.isCancelled }));
       return;
     }
     if (!this._isSignedIn()) {
@@ -475,7 +475,7 @@ export class CoordinatorModelClient {
   private async *_streamGatewayChain(
     models: string[],
     messages: GatewayChatMessage[],
-    opts: { maxTokens?: number; reasoningEffort?: 'low' | 'medium' | 'high'; signal?: AbortSignal; tools?: unknown[]; model?: string },
+    opts: GatewayDispatchOptions & { maxTokens?: number; reasoningEffort?: 'low' | 'medium' | 'high'; signal?: AbortSignal; tools?: unknown[]; model?: string },
   ): AsyncGenerator<CoordinatorStreamEvent> {
     // Empty-chain guard, symmetric with complete() (review [19]) — otherwise a
     // fresh sticky computes Math.min(0, -1) = -1 ⇒ models[-1] undefined ⇒ a
@@ -504,7 +504,7 @@ export class CoordinatorModelClient {
       // model that actually supports them so a non-capable fallback can't 400 on
       // an unsupported field and break a run the text protocol would've survived.
       const modelTools = this._toolCapable(models[i]) ? opts.tools : undefined;
-      for await (const ev of this._gateway.streamChat({ model: models[i], messages, maxTokens: opts.maxTokens, reasoningEffort: opts.reasoningEffort, signal: opts.signal, timeoutMs: CoordinatorModelClient._STREAM_TIMEOUT_MS, tools: modelTools })) {
+      for await (const ev of this._gateway.streamChat({ model: models[i], messages, maxTokens: opts.maxTokens, reasoningEffort: opts.reasoningEffort, signal: opts.signal, timeoutMs: CoordinatorModelClient._STREAM_TIMEOUT_MS, tools: modelTools, resolveMessages: opts.resolveMessages, isCancelled: opts.isCancelled })) {
         if (ev.error) { streamErr = ev.error; break; }
         if (ev.model) { resolvedModel = ev.model; yield { model: ev.model }; }
         if (ev.reasoning) { yield { reasoning: ev.reasoning }; }

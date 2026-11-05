@@ -32,6 +32,10 @@ export async function runCliUpgradeTask(label: string, plan: CliUpgradePlan): Pr
   task.presentationOptions = { reveal: vscode.TaskRevealKind.Always, panel: vscode.TaskPanelKind.Dedicated, focus: false };
   let execution: vscode.TaskExecution | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let terminationRequested = false;
+  const terminate = (): void => {
+    try { execution?.terminate(); } catch { /* A disconnected task service must not leave the upgrade pending. */ }
+  };
   const listeners: vscode.Disposable[] = [];
   try {
     await new Promise<void>((resolve, reject) => {
@@ -46,10 +50,16 @@ export async function runCliUpgradeTask(label: string, plan: CliUpgradePlan): Pr
         if (owns(event)) { reject(new Error('Upgrade ended without a successful install. See the upgrade terminal for details.')); }
       }));
       timer = setTimeout(() => {
-        execution?.terminate();
+        terminationRequested = true;
+        terminate();
         reject(new Error('Upgrade timed out. See the upgrade terminal for details.'));
       }, 10 * 60_000);
-      void vscode.tasks.executeTask(task).then(value => { execution = value; }, reject);
+      void vscode.tasks.executeTask(task).then(value => {
+        execution = value;
+        // executeTask can resolve after our deadline. The late installer still
+        // belongs to this timed-out attempt and must not run behind a retry.
+        if (terminationRequested) { terminate(); }
+      }, reject);
     });
   } finally {
     if (timer) { clearTimeout(timer); }

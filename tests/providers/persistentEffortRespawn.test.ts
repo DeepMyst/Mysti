@@ -39,6 +39,7 @@ describe('persistent-process effort snapshot (Plan 18 4.1)', () => {
   function snapshotFor(s: Settings) {
     const p = provider as any;
     return {
+      cwd: '/mock/workspace',
       model: p._getEffectiveModel(s),
       permissionMode: p._derivePermissionMode(s),
       thinkingLevel: s.thinkingLevel || 'none',
@@ -87,6 +88,7 @@ describe('effort snapshot capability gate (Plan 18 W2 review)', () => {
       acpAccessLevel: base.accessLevel,
       acpMode: base.mode,
       persistentSettings: {
+        cwd: '/mock/workspace',
         model: p._getEffectiveModel(base),
         permissionMode: p._derivePermissionMode(base),
         thinkingLevel: base.thinkingLevel || 'none',

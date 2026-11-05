@@ -12,8 +12,11 @@
  */
 
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
 import { execFile } from 'child_process';
 import { getProviderNpmPackage, getProviderSelfUpdateCommand } from '../providers/base/ProviderManifest';
+import { quoteSetupExecutable } from '../utils/installerShell';
 import {
   CLI_UPDATE_CHECK_TTL_MS,
   CLI_UPDATE_PROBE_TIMEOUT_MS,
@@ -57,8 +60,8 @@ interface CachedCheck {
 
 /** Minimal view of CliDiscoveryService — just the installed-version lookup. */
 export interface CliVersionSource {
-  getAllStatuses(): Promise<Array<{ providerId: string; found: boolean; version?: string }>>;
-  peekStatus(providerId: string): { providerId: string; found: boolean; version?: string } | undefined;
+  getAllStatuses(): Promise<Array<{ providerId: string; found: boolean; version?: string; path?: string }>>;
+  peekStatus(providerId: string): { providerId: string; found: boolean; version?: string; path?: string } | undefined;
 }
 
 /** Minimal view of SetupManager — just npm resolution. */
@@ -229,6 +232,68 @@ export function compareVersions(a: ParsedVersion, b: ParsedVersion): number {
   return aPre ? -1 : 1;
 }
 
+/** Identify an npm global prefix only from the selected package's declared bin.
+ * An arbitrary custom launcher is not permission to mutate another global
+ * installation. This also follows aliases to a verified npm-owned executable. */
+function selectedNpmPrefix(cliPath: string, packageName: string): string | undefined {
+  if (!path.isAbsolute(cliPath)) { return undefined; }
+  try {
+    const selected = fs.realpathSync(cliPath);
+    const packageParts = packageName.split('/');
+    const roots: string[] = [];
+    for (let directory = path.dirname(selected), depth = 0; depth < 12; depth++) {
+      roots.push(directory);
+      const parent = path.dirname(directory);
+      if (parent === directory) { break; }
+      directory = parent;
+    }
+    // npm on Windows writes .cmd/.ps1 launchers next to node_modules, rather
+    // than symlinking prefix/bin to prefix/lib/node_modules as Unix does.
+    const shim = /\.(?:cmd|ps1)$/i.test(selected);
+    if (shim) { roots.unshift(path.join(path.dirname(selected), 'node_modules', ...packageParts)); }
+    for (const packageRoot of roots) {
+      const manifestFile = path.join(packageRoot, 'package.json');
+      let manifest: { name?: unknown; bin?: unknown };
+      try {
+        if (fs.statSync(manifestFile).size > 1024 * 1024) { continue; }
+        manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
+      } catch { continue; }
+      if (manifest.name !== packageName) { continue; }
+      const modules = packageParts.length === 2 ? path.dirname(path.dirname(packageRoot)) : path.dirname(packageRoot);
+      if (path.basename(modules) !== 'node_modules') { return undefined; }
+      const parent = path.dirname(modules);
+      const unixLayout = path.basename(parent) === 'lib';
+      if (!unixLayout && !shim) { return undefined; }
+      const prefix = unixLayout ? path.dirname(parent) : parent;
+      const bins = typeof manifest.bin === 'string'
+        ? { [packageParts.at(-1)!]: manifest.bin }
+        : manifest.bin && typeof manifest.bin === 'object' ? manifest.bin as Record<string, unknown> : {};
+      for (const [name, relative] of Object.entries(bins)) {
+        if (typeof relative !== 'string') { continue; }
+        const bin = path.resolve(packageRoot, relative);
+        const contained = path.relative(packageRoot, bin);
+        if (!contained || contained.startsWith(`..${path.sep}`) || path.isAbsolute(contained)) { continue; }
+        let resolvedBin: string;
+        try { resolvedBin = fs.realpathSync(bin); } catch { continue; }
+        if (unixLayout && resolvedBin === selected) { return prefix; }
+        if (!unixLayout && shim && path.dirname(selected) === prefix
+            && path.basename(selected).replace(/\.(?:cmd|ps1)$/i, '') === name
+            && fs.statSync(selected).size <= 64 * 1024) {
+          const source = fs.readFileSync(selected, 'utf8').replace(/\\/g, '/');
+          const target = `node_modules/${packageName}/${relative.replace(/\\/g, '/').replace(/^\.\//, '')}`;
+          if (source.includes(target) && /%dp0%|%~dp0|\$basedir/i.test(source)) { return prefix; }
+        }
+      }
+      return undefined;
+    }
+  } catch { /* A missing or unreadable installation needs manual guidance. */ }
+  return undefined;
+}
+
+function updateShellWord(value: string): string {
+  return /^[A-Za-z0-9_@./:+-]+$/.test(value) ? value : quoteSetupExecutable(value);
+}
+
 /**
  * CliUpdateService — answers "is this backend's CLI behind npm?" and nothing
  * else. It NEVER installs: the update command is built by the caller from the
@@ -350,14 +415,35 @@ export class CliUpdateService implements vscode.Disposable {
    * no registry response and no user/model text reaches this string.
    */
   public getUpdateCommand(providerId: string): string | undefined {
+    try {
+      const plan = this.getUpdatePlan(providerId);
+      return plan ? [plan.executable, ...plan.args].map(updateShellWord).join(' ') : undefined;
+    } catch {
+      // A detected custom install without a known updater must not fall back
+      // to mutating a different global install. getUpdatePlan exposes guidance.
+      return undefined;
+    }
+  }
+
+  /** Why a detected installation needs a manual update instead of a command. */
+  public getUpdateError(providerId: string): string | undefined {
+    try { this.getUpdatePlan(providerId); return undefined; }
+    catch (error) { return error instanceof Error ? error.message : 'Update the selected CLI installation manually, then refresh detection.'; }
+  }
+
+  /** Structured update plan, with actionable errors for unsupported installs. */
+  public getUpdatePlan(providerId: string, cliPath = this._versions.peekStatus(providerId)?.path): { executable: string; args: string[] } | undefined {
     // A provider with its own updater uses it: for Claude Code the npm package
     // and the binary on PATH can be two different installs, so `npm i -g` there
     // updates a copy nothing runs.
     const selfUpdate = getProviderSelfUpdateCommand(providerId);
-    if (selfUpdate) { return selfUpdate; }
+    if (typeof selfUpdate === 'string') {
+      const [, ...args] = selfUpdate.split(' ');
+      return { executable: this._selectedCliPath(cliPath), args };
+    }
 
     const packageName = getProviderNpmPackage(providerId);
-    if (!packageName) { return undefined; }
+    if (typeof packageName !== 'string') { return undefined; }
 
     // Pin to the newest version this Node can install. `@latest` is wrong the
     // moment the newest release raises its Node floor: npm aborts in a
@@ -367,11 +453,10 @@ export class CliUpdateService implements vscode.Disposable {
     // The version is registry-supplied, so it is re-validated as a strict
     // semver here before it is allowed anywhere near a command string.
     const cached = this._cache.get(providerId);
-    const pin = cached?.installable;
-    if (pin && parseVersion(pin, true)) {
-      return `npm install -g ${packageName}@${pin}`;
-    }
-    return `npm install -g ${packageName}@latest`;
+    // Pin a known target even when it is the newest release: a registry publish
+    // between the offer and the click must not change the advertised upgrade.
+    const pin = cached?.installable ?? cached?.latest;
+    return this._npmUpgradePlan(packageName, pin && parseVersion(pin, true) ? pin : 'latest', cliPath);
   }
 
   /** Install at least the error's required version, never an older cached pin. */
@@ -380,20 +465,37 @@ export class CliUpdateService implements vscode.Disposable {
     if (!required) { throw new Error('Invalid required CLI version.'); }
     const selfUpdate = getProviderSelfUpdateCommand(providerId);
     if (typeof selfUpdate === 'string') {
-      const [executable, ...args] = selfUpdate.split(' ');
+      const [, ...args] = selfUpdate.split(' ');
       // Update the detected native installation, including an explicit CLI path.
-      return { executable: cliPath || executable, args };
+      return { executable: this._selectedCliPath(cliPath), args };
     }
     const packageName = getProviderNpmPackage(providerId);
     if (typeof packageName !== 'string') { throw new Error('This provider has no supported CLI updater.'); }
     const cached = this._cache.get(providerId);
     const candidate = cached?.installable ?? cached?.latest;
     const parsed = parseVersion(candidate, true);
-    if (cached?.requiredNode && parsed && compareVersions(parsed, required) < 0) {
-      throw new Error(`This model needs CLI ${minimum} or newer, but this Node.js version can only install ${candidate}. Upgrade Node.js (${cached.requiredNode}) first.`);
+    if (cached?.requiredNode && (!parsed || compareVersions(parsed, required) < 0)) {
+      const available = parsed ? `can only install ${candidate}` : 'has no known compatible release';
+      throw new Error(`This model needs CLI ${minimum} or newer, but this Node.js version ${available}. Upgrade Node.js (${cached.requiredNode}) first.`);
     }
     const target = parsed && compareVersions(parsed, required) >= 0 ? candidate! : minimum;
-    return { executable: this._npm.getNpmPath() || 'npm', args: ['install', '-g', `${packageName}@${target}`] };
+    return this._npmUpgradePlan(packageName, target, cliPath);
+  }
+
+  private _npmUpgradePlan(packageName: string, version: string, cliPath?: string): { executable: string; args: string[] } {
+    const selected = this._selectedCliPath(cliPath);
+    const prefix = selectedNpmPrefix(selected, packageName);
+    if (!prefix) {
+      throw new Error(`Mysti cannot identify an npm installation for the selected CLI at ${selected}. Update that installation manually, or select an npm-installed CLI path, then refresh detection.`);
+    }
+    return { executable: this._npm.getNpmPath() || 'npm', args: ['install', '-g', '--prefix', prefix, `${packageName}@${version}`] };
+  }
+
+  private _selectedCliPath(cliPath?: string): string {
+    if (!cliPath || !path.isAbsolute(cliPath)) {
+      throw new Error('Mysti cannot determine the selected CLI installation path. Refresh detection or configure its full CLI path before updating; update the installation manually if detection remains unavailable.');
+    }
+    return cliPath;
   }
 
   // ---------------------------------------------------------------------------

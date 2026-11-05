@@ -24,7 +24,7 @@ describe('CursorProvider.parseStreamLine', () => {
     });
   });
 
-  describe('cumulative text deduplication', () => {
+  describe('completed stream-json text blocks', () => {
     it('should emit full text on first assistant event', () => {
       const line = JSON.stringify({
         type: 'assistant',
@@ -32,32 +32,30 @@ describe('CursorProvider.parseStreamLine', () => {
       });
       const result = provider.parseStreamLine(line, session);
       expect(result).toEqual({ type: 'text', content: 'Hello' });
-      expect(session.streamedTextLength).toBe(5);
     });
 
-    it('should only emit new text on subsequent cumulative events', () => {
+    it('should emit each full block without slicing off a previous block', () => {
       // First event
       provider.parseStreamLine(JSON.stringify({
         type: 'assistant',
         message: { content: [{ type: 'text', text: 'Hel' }] },
       }), session);
 
-      // Second event — cumulative, includes previous text
+      // A later complete block can legitimately share the earlier prefix.
       const result = provider.parseStreamLine(JSON.stringify({
         type: 'assistant',
         message: { content: [{ type: 'text', text: 'Hello world' }] },
       }), session);
-      expect(result).toEqual({ type: 'text', content: 'lo world' });
-      expect(session.streamedTextLength).toBe(11);
+      expect(result).toEqual({ type: 'text', content: 'Hello world' });
     });
 
-    it('should skip if no new text', () => {
-      session.streamedTextLength = 5;
+    it('should preserve repeated equal blocks', () => {
       const line = JSON.stringify({
         type: 'assistant',
         message: { content: [{ type: 'text', text: 'Hello' }] },
       });
-      expect(provider.parseStreamLine(line, session)).toBeNull();
+      expect(provider.parseStreamLine(line, session)).toEqual({ type: 'text', content: 'Hello' });
+      expect(provider.parseStreamLine(line, session)).toEqual({ type: 'text', content: 'Hello' });
     });
 
     it('should handle flat content fallback', () => {
@@ -152,15 +150,17 @@ describe('CursorProvider.parseStreamLine', () => {
       });
     });
 
-    it('should reset streamedTextLength on tool_call', () => {
-      session.streamedTextLength = 50;
+    it('should preserve complete text on both sides of a tool call', () => {
+      expect(provider.parseStreamLine(JSON.stringify({ type: 'assistant', content: 'Before' }), session))
+        .toEqual({ type: 'text', content: 'Before' });
       provider.parseStreamLine(JSON.stringify({
         type: 'tool_call',
         subtype: 'started',
         call_id: 'tc_4',
         tool_call: { readToolCall: { args: {} } },
       }), session);
-      expect(session.streamedTextLength).toBe(0);
+      expect(provider.parseStreamLine(JSON.stringify({ type: 'assistant', content: 'After' }), session))
+        .toEqual({ type: 'text', content: 'After' });
     });
   });
 
@@ -208,10 +208,11 @@ describe('CursorProvider.parseStreamLine', () => {
       expect(provider.parseStreamLine(line, session)).toBeNull();
     });
 
-    it('should reset streamedTextLength on done', () => {
-      session.streamedTextLength = 100;
+    it('should preserve a complete text block after done', () => {
+      provider.parseStreamLine(JSON.stringify({ type: 'assistant', content: 'Hello' }), session);
       provider.parseStreamLine(JSON.stringify({ type: 'done' }), session);
-      expect(session.streamedTextLength).toBe(0);
+      expect(provider.parseStreamLine(JSON.stringify({ type: 'assistant', content: 'Hello' }), session))
+        .toEqual({ type: 'text', content: 'Hello' });
     });
   });
 

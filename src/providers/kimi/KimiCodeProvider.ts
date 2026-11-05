@@ -17,20 +17,19 @@
  * speaks the Agent Client Protocol"). Mysti drives it through the base
  * persistent-process machinery, identical in shape to the Hermes backend:
  * one `kimi acp` process per panel, a reactive handshake in parseStreamLine
- * (initialize → session/new → session/prompt), and session/update
+ * (initialize → session/new → optional model selection → session/prompt), and session/update
  * notifications mapped onto Mysti StreamChunks. The prompt's JSON-RPC
  * *response* (carrying `stopReason`) is the response boundary.
  *
  * Kimi's own coding models (Kimi K2.7 Code / K3, 256K–1M context) reason, so
  * ACP `agent_thought_chunk` notifications surface as thinking. Model choice
- * is normally made inside the session (`/model`) — ACP has no per-prompt
- * model override — but a `mysti.kimiCodeModel` override is injected as the
- * `ANTHROPIC_MODEL` env var at spawn (the channel Kimi documents for its
- * Anthropic-compatible surface), best-effort.
+ * is confirmed through ACP session configuration before the first prompt.
+ * Without an explicit selection, the native account model is used. Reported
+ * model identity comes from the session, including later configuration updates.
  *
- * There is no documented stream-JSON one-shot mode, so the single-shot
- * fallback runs `kimi acp --check` and surfaces its diagnostics as an
- * actionable error instead of hanging or silently re-sending (Hermes pattern).
+ * Requests require ACP. Startup failures retain their cause, and an exit
+ * before the prompt response is incomplete even with code 0. Diagnostic
+ * `acp --check` output never replaces a failed request or replays its prompt.
  */
 
 import * as vscode from 'vscode';
@@ -39,6 +38,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { BaseCliProvider, type PanelSessionState } from '../base/BaseCliProvider';
 import { respondToAcpApproval } from '../base/AcpApproval';
+import { allowsUnrestrictedNativeTools } from '../base/NativeApprovalPolicy';
 import {
   parseAcpAvailableCommands,
   type NativeCommandSpec,
@@ -91,10 +91,15 @@ export interface KimiCodeSessionState extends PanelSessionState {
   /** Outstanding request ids by kind, to route responses. */
   initializeId: number | null;
   sessionNewId: number | null;
+  modelSetId: number | null;
   promptId: number | null;
+  /** Explicit selection captured when this process starts. */
+  requestedModel?: string;
+  /** Last valid model identity reported by this native session. */
+  confirmedModel?: string;
   /** ACP server-issued session id (persists across prompts on one process). */
   acpSessionId: string | null;
-  /** Prompt stashed until the handshake yields a session id. */
+  /** Prompt stashed until session creation and any explicit model selection complete. */
   pendingPrompt: string | null;
   /**
    * Access level + operation mode snapshot taken at spawn. Drives the
@@ -168,7 +173,10 @@ export class KimiCodeProvider extends BaseCliProvider {
     // Kimi's coding models reason; ACP surfaces it as agent_thought_chunk.
     supportsThinking: true,
     supportsToolUse: true,
+    // The callback bridge exists, but native saved allows can skip it.
     supportsNativeApproval: true,
+    supportsAskPermission: false,
+    supportsReadOnly: false,
     supportsSessions: true,
     supportsPersistentProcess: true,
     // Plan 27 Phase 5: attachments are written to a temp file and referenced
@@ -180,16 +188,15 @@ export class KimiCodeProvider extends BaseCliProvider {
     supportsPromptEnhancement: false,
     thinkingStyle: 'streamed',
     thinkingLevelEffective: false, // reasoning is governed by the Kimi model, not a Mysti level
-    planMode: 'detected',
+    planMode: 'none',
     // Continuity lives in the ACP session held by the persistent process;
     // session.sessionId mirrors it so history is only re-sent after a respawn.
     sessionKind: 'cli-resume',
     emitsToolResults: true,
     emitsUsage: true,
     usageConvention: 'none',   // ACP usage carries flat input/output only.
-    // ACP has no per-prompt model override; a custom model is passed via the
-    // ANTHROPIC_MODEL env at spawn (best-effort) — expose it as custom-only.
-    modelSelection: 'custom-only'
+    // Explicit selections must be confirmed by the ACP session before dispatch.
+    modelSelection: 'full'
   };
 
   protected _createSession(panelId: string): KimiCodeSessionState {
@@ -205,6 +212,7 @@ export class KimiCodeProvider extends BaseCliProvider {
       rpcId: 0,
       initializeId: null,
       sessionNewId: null,
+      modelSetId: null,
       promptId: null,
       acpSessionId: null,
       pendingPrompt: null,
@@ -269,6 +277,10 @@ export class KimiCodeProvider extends BaseCliProvider {
   private static readonly _envKeys = [
     'MOONSHOT_API_KEY', 'KIMI_API_KEY', 'ANTHROPIC_AUTH_TOKEN',
   ];
+
+  protected override getAuthenticationEnvironmentKeys(): readonly string[] {
+    return [...KimiCodeProvider._envKeys, 'KIMI_HOME'];
+  }
 
   private _kimiEnvKey(): string | undefined {
     return KimiCodeProvider._envKeys.find(k => (process.env[k] || '').trim().length > 0);
@@ -357,11 +369,7 @@ export class KimiCodeProvider extends BaseCliProvider {
     return undefined; // reasoning is governed by the Kimi model
   }
 
-  /**
-   * Custom model as a Kimi model id (kimi-for-coding, kimi-for-coding-highspeed,
-   * k3, kimi-k2.7-code). ACP has no per-prompt model param, so this is surfaced
-   * to the CLI via the ANTHROPIC_MODEL env at spawn (getExtraSpawnEnv).
-   */
+  /** Select a native model ID for the ACP session configuration handshake. */
   protected _getEffectiveModel(settings: Settings): string | undefined {
     // P2.3/P0.2b: an explicitly routed model wins over the per-provider custom-model config.
     if (settings.routedModel) { return settings.routedModel; }
@@ -380,21 +388,34 @@ export class KimiCodeProvider extends BaseCliProvider {
     return undefined;
   }
 
-  /**
-   * Inject the selected model into the spawn env. `kimi acp` takes no model
-   * flag; ANTHROPIC_MODEL is the documented channel for Kimi's Anthropic-
-   * compatible surface. Best-effort — if unhonored, the account default is used.
-   */
-  protected override getExtraSpawnEnv(settings: Settings): Record<string, string> {
-    const model = this._getEffectiveModel(settings);
-    return model ? { ANTHROPIC_MODEL: model } : {};
-  }
-
   // ==========================================================================
   // Persistent mode — the primary transport (`kimi acp`, JSON-RPC/stdio)
   // ==========================================================================
 
+  override async *sendMessage(...args: Parameters<BaseCliProvider['sendMessage']>): AsyncGenerator<StreamChunk> {
+    this._assertAcpPermissionSupport(args[2]);
+    yield* super.sendMessage(...args);
+  }
+
+  override async preSpawnPersistentProcess(panelId: string, settings: Settings): Promise<void> {
+    // Warming is advisory; unsupported authority must not create, replace or
+    // reconfigure an existing panel process before the user sends a request.
+    if (!allowsUnrestrictedNativeTools(settings)) { return; }
+    await super.preSpawnPersistentProcess(panelId, settings);
+  }
+
+  private _assertAcpPermissionSupport(settings: Settings): void {
+    // Kimi can execute saved native allows without an ACP approval request.
+    // Its Plan guard does not deny every command or delegated tool either.
+    if (!allowsUnrestrictedNativeTools(settings)) {
+      throw new Error('Kimi Code ACP cannot enforce Plan, Read Only, or approval-based modes safely. Use another agent with native approvals, or explicitly select Edit Automatically with Full Access.');
+    }
+  }
+
+  protected override requiresPersistentTransport(): boolean { return true; }
+
   protected buildPersistentCliArgs(settings: Settings, session: PanelSessionState): string[] | null {
+    this._assertAcpPermissionSupport(settings);
     const kimi = session as KimiCodeSessionState;
     // Fresh process → fresh protocol state. The ACP session dies with the
     // process; clearing sessionId makes the base re-send conversation history
@@ -402,7 +423,10 @@ export class KimiCodeProvider extends BaseCliProvider {
     kimi.rpcId = 0;
     kimi.initializeId = null;
     kimi.sessionNewId = null;
+    kimi.modelSetId = null;
     kimi.promptId = null;
+    kimi.requestedModel = this._getEffectiveModel(settings);
+    kimi.confirmedModel = undefined;
     kimi.acpSessionId = null;
     kimi.pendingPrompt = null;
     kimi.sessionId = null;
@@ -478,34 +502,86 @@ export class KimiCodeProvider extends BaseCliProvider {
   }
 
   /**
-   * The turn ends when the session/prompt JSON-RPC *response* arrives —
-   * uniquely identified by `result.stopReason`. Error responses to any of our
-   * requests also end the turn. Server→client *requests* (they carry `method`)
-   * never end the turn.
+   * A reply to the outstanding prompt ends the turn; the parser validates
+   * its stop reason before accepting it. Malformed session creation also
+   * ends the turn with an error instead of leaving the request waiting.
+   * Errors to outstanding handshake or prompt requests also end the turn.
+   * Stale/unknown IDs must not end a newer turn before its parser runs.
+   * Server→client *requests* (they carry `method`) never end the turn.
    */
-  protected _isResponseBoundary(line: string): boolean {
+  protected _isResponseBoundary(line: string, session?: PanelSessionState): boolean {
+    if (!session) { return false; }
+    const kimi = session as KimiCodeSessionState;
     try {
       const data = JSON.parse(line.trim());
       if (data.method !== undefined || data.id === undefined || data.id === null) {
         return false;
       }
-      if (data.error !== undefined) {
-        return true;
+      const matches = (id: number | null) => id !== null && data.id === id;
+      if (data.error) {
+        return matches(kimi.initializeId) || matches(kimi.sessionNewId)
+          || matches(kimi.modelSetId) || matches(kimi.promptId);
       }
-      return typeof data.result?.stopReason === 'string'
-        || typeof data.result?.stop_reason === 'string';
+      if (matches(kimi.modelSetId)) { return !this._modelSelectionConfirmed(data.result, kimi); }
+      if (matches(kimi.promptId)) { return true; }
+      return matches(kimi.sessionNewId)
+        && !this._nonEmptyRpcString(data.result?.sessionId ?? data.result?.session_id);
     } catch {
       return false;
     }
   }
 
+  private _nonEmptyRpcString(value: unknown): string | undefined {
+    return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
+  }
+
+  private _reportedModel(configOptions: unknown): string | undefined {
+    if (!Array.isArray(configOptions)) { return undefined; }
+    const models = configOptions.filter(option => option && typeof option === 'object' && option.id === 'model');
+    if (models.length !== 1 || models[0].type !== 'select') { return undefined; }
+    const value: unknown = models[0].currentValue;
+    return typeof value === 'string' && value === value.trim() && validateModelName(value).valid ? value : undefined;
+  }
+
+  private _modelSelectionConfirmed(result: unknown, kimi: KimiCodeSessionState): boolean {
+    return !!kimi.requestedModel && !!result && typeof result === 'object'
+      && this._reportedModel((result as Record<string, unknown>).configOptions) === kimi.requestedModel;
+  }
+
+  private _releasePendingPrompt(kimi: KimiCodeSessionState): void {
+    const prompt = kimi.pendingPrompt;
+    kimi.pendingPrompt = null;
+    if (prompt !== null && kimi.persistentProcess?.stdin?.writable) {
+      kimi.persistentProcess.stdin.write(this._promptRequest(kimi, prompt));
+    }
+  }
+
+  private _modelSelectionFailed(kimi: KimiCodeSessionState, reason: string): StreamChunk {
+    kimi.modelSetId = null;
+    kimi.pendingPrompt = null;
+    kimi.confirmedModel = undefined;
+    this._interruptPersistentProcess(kimi);
+    return { type: 'error', content: `Kimi Code model selection failed: ${reason}. The connection was reset; retry the request.` };
+  }
+
+  private _withReportedModel(chunk: StreamChunk | null, kimi: KimiCodeSessionState): StreamChunk | null {
+    return chunk && kimi.confirmedModel ? { ...chunk, reportedModel: kimi.confirmedModel } : chunk;
+  }
+
+  private _malformedRpcResponse(kimi: KimiCodeSessionState, field: string): StreamChunk {
+    // The invalid reply consumed an outstanding request, so this connection
+    // cannot provide a usable session/turn. Evict its captured child; the next
+    // explicit request starts a fresh ACP handshake.
+    this._interruptPersistentProcess(kimi);
+    return { type: 'error', content: `Kimi Code ACP returned a missing or invalid ${field}. The connection was reset; retry the request.` };
+  }
+
   /**
-   * Cancel by DROPPING the ACP process, not by sending session/cancel — a
-   * graceful cancel leaves the prompt request outstanding and its stale
-   * `{stopReason:"cancelled"}` response would terminate the NEXT turn. Killing
-   * the process removes the whole race class: the next turn spawns a fresh
-   * `kimi acp`, re-runs buildPersistentCliArgs (clean protocol state), and
-   * re-sends conversation history.
+   * Cancel by DROPPING the ACP process. A graceful session/cancel leaves
+   * output outstanding while the base frees the reader. Correlated reply IDs
+   * cannot prevent late session/update notifications from entering a later
+   * turn on the same connection. Dropping it makes the next turn spawn a fresh
+   * `kimi acp`, reset protocol state, and re-send conversation history.
    */
   protected _interruptPersistentProcess(session: PanelSessionState): void {
     const proc = session.persistentProcess;
@@ -517,7 +593,7 @@ export class KimiCodeProvider extends BaseCliProvider {
   }
 
   // ==========================================================================
-  // Single-shot fallback — diagnostics only (see file header)
+  // Diagnostic argument/parser support — never a request fallback
   // ==========================================================================
 
   protected buildCliArgs(_settings: Settings, session: PanelSessionState): string[] {
@@ -549,7 +625,7 @@ export class KimiCodeProvider extends BaseCliProvider {
 
     // --- Notifications from the agent ---
     if (data.method === 'session/update') {
-      return this._handleSessionUpdate(data.params as Record<string, unknown> | undefined, kimi);
+      return this._withReportedModel(this._handleSessionUpdate(data.params as Record<string, unknown> | undefined, kimi), kimi);
     }
 
     // --- Server→client requests (they carry method AND id) ---
@@ -569,7 +645,7 @@ export class KimiCodeProvider extends BaseCliProvider {
 
     // --- Responses to our requests ---
     if (data.id !== undefined && data.id !== null) {
-      return this._handleRpcResponse(data, kimi);
+      return this._withReportedModel(this._handleRpcResponse(data, kimi), kimi);
     }
 
     return null;
@@ -609,22 +685,37 @@ export class KimiCodeProvider extends BaseCliProvider {
           providerName: 'Kimi Code'
         };
       }
-      const sessionId = String((result.sessionId ?? result.session_id) || '');
+      const sessionId = this._nonEmptyRpcString(result.sessionId ?? result.session_id);
       if (!sessionId) {
-        return { type: 'error', content: 'Kimi Code ACP returned no session id.' };
+        return this._malformedRpcResponse(kimi, 'session ID');
       }
       kimi.acpSessionId = sessionId;
       kimi.sessionId = sessionId;
-      const prompt = kimi.pendingPrompt ?? '';
-      kimi.pendingPrompt = null;
-      if (kimi.persistentProcess?.stdin?.writable) {
-        kimi.persistentProcess.stdin.write(this._promptRequest(kimi, prompt));
+      if (kimi.requestedModel) {
+        kimi.modelSetId = ++kimi.rpcId;
+        this._writeToAcp(kimi, {
+          jsonrpc: '2.0', id: kimi.modelSetId, method: 'session/set_config_option',
+          params: { sessionId, configId: 'model', value: kimi.requestedModel }
+        });
+        return null;
       }
-      // Deliberately emit NO chunk here. usedPersistent must flip only once the
-      // prompt is actually answered (the boundary session_active below), so a
-      // process death DURING the first prompt yields zero chunks and surfaces
-      // the diagnostic fallback instead of a silent empty reply.
-      return null;
+      kimi.confirmedModel = this._reportedModel(result.configOptions);
+      this._releasePendingPrompt(kimi);
+      // Session creation is not a completed response. Wait for the prompt's
+      // correlated terminal; the required transport reports an earlier exit
+      // as incomplete, including an empty response or a clean process exit.
+      return kimi.confirmedModel ? { type: 'model_info', reportedModel: kimi.confirmedModel } : null;
+    }
+
+    if (data.id === kimi.modelSetId) {
+      if (error) { return this._modelSelectionFailed(kimi, error.message || 'the requested model was rejected'); }
+      if (!this._modelSelectionConfirmed(result, kimi)) {
+        return this._modelSelectionFailed(kimi, 'the native session did not confirm the requested model');
+      }
+      kimi.modelSetId = null;
+      kimi.confirmedModel = this._reportedModel(result.configOptions);
+      this._releasePendingPrompt(kimi);
+      return { type: 'model_info', reportedModel: kimi.confirmedModel };
     }
 
     if (data.id === kimi.promptId) {
@@ -632,19 +723,19 @@ export class KimiCodeProvider extends BaseCliProvider {
       if (error) {
         return { type: 'error', content: `Kimi Code: ${error.message || 'prompt failed'}` };
       }
+      const stopReason = this._nonEmptyRpcString(result.stopReason ?? result.stop_reason);
+      if (!stopReason) { return this._malformedRpcResponse(kimi, 'stop reason'); }
       const usage = (result.usage ?? {}) as Record<string, unknown>;
       const input = Number(usage.inputTokens ?? usage.input_tokens ?? 0);
       const output = Number(usage.outputTokens ?? usage.output_tokens ?? 0);
       if (input > 0 || output > 0) {
         kimi.lastUsageStats = { input_tokens: input, output_tokens: output };
       }
-      const stopReason = String(result.stopReason ?? result.stop_reason ?? 'end_turn');
       if (stopReason === 'refusal') {
         return { type: 'error', content: 'Kimi Code declined to complete this request (stopReason: refusal).' };
       }
-      // Guarantee ≥1 chunk per turn so the base never mistakes an empty
-      // response for a dead persistent process (which would trigger the
-      // single-shot fallback and re-run diagnostics over the user's turn).
+      // A valid prompt terminal may complete without generated text. Preserve
+      // its session activation without inventing an assistant message.
       return { type: 'session_active', sessionId: kimi.acpSessionId || undefined };
     }
 
@@ -656,6 +747,16 @@ export class KimiCodeProvider extends BaseCliProvider {
     const kind = String(update.sessionUpdate ?? update.session_update ?? '');
 
     switch (kind) {
+      case 'config_option_update': {
+        // Native updates can precede the setter ACK. Only its correlated reply
+        // may confirm selection and release the pending prompt.
+        if (!kimi.acpSessionId || params?.sessionId !== kimi.acpSessionId || kimi.modelSetId !== null) { return null; }
+        const model = this._reportedModel(update.configOptions);
+        if (!model) { return null; }
+        kimi.confirmedModel = model;
+        return { type: 'model_info', reportedModel: model };
+      }
+
       case 'agent_message_chunk': {
         const text = this._contentText(update.content);
         return text ? { type: 'text', content: text } : null;

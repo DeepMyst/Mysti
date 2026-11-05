@@ -80,4 +80,28 @@ describe('CopilotProvider.discoverModels (Plan 01 Phase 3)', () => {
     const models = await provider.discoverModels(5000);
     expect(models?.map(m => m.id)).toEqual(['gpt-5', 'gpt-4.1']);
   });
+
+  it('keeps a usable Auto default when current help no longer lists account-specific models', async () => {
+    const provider = new TestableCopilotProvider();
+    // Copilot 1.0.90 --help: only Auto is advertised, without a model enum.
+    withHelpOutput(provider, [
+      '      --model <model>',
+      "          Set the AI model to use (use 'auto' to let Copilot pick",
+      '          automatically)',
+      '      --reasoning-effort <level>',
+      '          Set the reasoning effort level [possible values: none, minimal, low, medium, high, xhigh, max]',
+    ].join('\n'));
+    await expect(provider.discoverModels(5000)).resolves.toBeNull();
+    expect(provider.config.defaultModel).toBe('auto');
+    expect(provider.config.models.some(model => model.id === 'auto')).toBe(true);
+  });
+
+  it('does not mistake choices from a following flag for model ids', async () => {
+    const provider = new TestableCopilotProvider();
+    withHelpOutput(provider, [
+      '  --model <model> Set the AI model to use',
+      '  --effort <level> Reasoning effort (choices: "low", "medium", "high")',
+    ].join('\n'));
+    await expect(provider.discoverModels(5000)).resolves.toBeNull();
+  });
 });

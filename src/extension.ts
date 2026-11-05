@@ -44,6 +44,7 @@ import { MystiFileDecorationProvider } from './providers/MystiFileDecorationProv
 import { runOnboarding } from './onboarding';
 import { MystiCodeLensProvider } from './providers/MystiCodeLensProvider';
 import { getProviderDisplayName } from './providers/base/ProviderManifest';
+import { installerShell } from './utils/installerShell';
 import { ProjectContextManager } from './managers/ProjectContextManager';
 import { VisualTestManager } from './managers/VisualTestManager';
 import { CheckpointManager } from './managers/CheckpointManager';
@@ -112,6 +113,7 @@ export async function handleShareableImportLink(
   deps: {
     importFromShareable: (data: string) => Conversation | null;
     onImported: (conversation: Conversation) => void;
+    getLastImportDiagnostic?: () => string | null;
   },
 ): Promise<void> {
   try {
@@ -128,11 +130,12 @@ export async function handleShareableImportLink(
       return;
     }
     const imported = deps.importFromShareable(data);
+    const diagnostic = deps.getLastImportDiagnostic?.();
     if (imported) {
       deps.onImported(imported);
-      vscode.window.showInformationMessage(`Conversation loaded: "${imported.title}"`);
+      vscode.window.showInformationMessage(`Conversation loaded: "${imported.title}"${diagnostic ? `. ${diagnostic}` : ''}`);
     } else {
-      vscode.window.showErrorMessage('Could not load this conversation. The link may be invalid or expired.');
+      vscode.window.showErrorMessage(diagnostic || 'Could not load this conversation. The link may be invalid or expired.');
     }
   } catch (err) {
     console.log('[Mysti] deep-link import prompt failed:', err);
@@ -223,6 +226,7 @@ export async function activate(context: vscode.ExtensionContext) {
   const announcementManager = new AnnouncementManager(deepMystAuthManager, context.globalState);
 
   suggestionManager = new SuggestionManager(context);
+  context.subscriptions.push(suggestionManager);
 
   // Get initial access level from configuration
   const config = vscode.workspace.getConfiguration('mysti');
@@ -806,47 +810,16 @@ export async function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('mysti.newConversation', () => {
-      conversationManager.createNewConversation();
-      chatViewProvider.postMessage({ type: 'conversationChanged' });
+      return chatViewProvider.newConversation();
     })
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('mysti.addToContext', async (uri?: vscode.Uri) => {
-      if (uri) {
-        await contextManager.addFileToContext(uri.fsPath);
-      } else {
-        const editor = vscode.window.activeTextEditor;
-        if (editor) {
-          const selection = editor.selection;
-          if (!selection.isEmpty) {
-            await contextManager.addSelectionToContext(
-              editor.document.uri.fsPath,
-              editor.document.getText(selection),
-              selection.start.line,
-              selection.end.line,
-              editor.document.languageId
-            );
-          } else {
-            await contextManager.addFileToContext(editor.document.uri.fsPath);
-          }
-        }
-      }
-      chatViewProvider.postMessage({
-        type: 'contextUpdated',
-        payload: contextManager.getContext()
-      });
-    })
+    vscode.commands.registerCommand('mysti.addToContext', (uri?: vscode.Uri) => chatViewProvider.addToContext(uri))
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('mysti.clearContext', () => {
-      contextManager.clearContext();
-      chatViewProvider.postMessage({
-        type: 'contextUpdated',
-        payload: []
-      });
-    })
+    vscode.commands.registerCommand('mysti.clearContext', () => chatViewProvider.clearContext())
   );
 
   context.subscriptions.push(
@@ -966,15 +939,23 @@ export async function activate(context: vscode.ExtensionContext) {
       );
       if (!picked || picked.length === 0) { return; }
 
-      const lines = picked
-        .map((p) => cliUpdateService.getUpdateCommand(p.update.providerId))
-        .filter((c): c is string => !!c);
+      const lines: string[] = [];
+      const manual: string[] = [];
+      for (const selection of picked) {
+        const command = cliUpdateService.getUpdateCommand(selection.update.providerId);
+        if (command) { lines.push(command); }
+        else {
+          const reason = cliUpdateService.getUpdateError(selection.update.providerId);
+          if (reason) { manual.push(reason); }
+        }
+      }
+      if (manual.length) { void vscode.window.showWarningMessage(manual.join('\n')); }
       if (lines.length === 0) {
-        vscode.window.showWarningMessage('Mysti: no update command is known for the selected backends.');
+        if (!manual.length) { vscode.window.showWarningMessage('Mysti: no update command is known for the selected backends.'); }
         return;
       }
 
-      const terminal = vscode.window.createTerminal('Mysti: update CLIs');
+      const terminal = vscode.window.createTerminal({ name: 'Mysti: update CLIs', shellPath: installerShell(lines[0]) });
       terminal.show();
       for (const line of lines) {
         terminal.sendText(line);
@@ -1065,9 +1046,9 @@ export async function activate(context: vscode.ExtensionContext) {
             // is touched (handleShareableImportLink never rejects).
             return handleShareableImportLink(data, {
               importFromShareable: (d) => conversationManager.importFromShareable(d),
-              onImported: () => {
-                vscode.commands.executeCommand('mysti.chatView.focus');
-                chatViewProvider.postMessage({ type: 'conversationChanged' });
+              getLastImportDiagnostic: () => conversationManager.getLastImportDiagnostic(),
+              onImported: (conversation) => {
+                chatViewProvider.openImportedConversation(conversation);
                 telemetryManager.sendEvent('deeplink.imported', {});
               },
             });
@@ -1130,39 +1111,8 @@ export async function activate(context: vscode.ExtensionContext) {
     }, 30_000); // Wait 30s after activation to avoid overwhelming the user
   }
 
-  // Listen for active editor changes for auto-context
-  context.subscriptions.push(
-    vscode.window.onDidChangeActiveTextEditor((editor) => {
-      if (editor && contextManager.isAutoContextEnabled()) {
-        chatViewProvider.postMessage({
-          type: 'activeFileChanged',
-          payload: {
-            path: editor.document.uri.fsPath,
-            language: editor.document.languageId
-          }
-        });
-      }
-    })
-  );
-
-  // Listen for selection changes
-  context.subscriptions.push(
-    vscode.window.onDidChangeTextEditorSelection((event) => {
-      if (contextManager.isAutoContextEnabled() && !event.selections[0].isEmpty) {
-        const editor = event.textEditor;
-        chatViewProvider.postMessage({
-          type: 'selectionChanged',
-          payload: {
-            path: editor.document.uri.fsPath,
-            text: editor.document.getText(event.selections[0]),
-            startLine: event.selections[0].start.line,
-            endLine: event.selections[0].end.line,
-            language: editor.document.languageId
-          }
-        });
-      }
-    })
-  );
+  // Automatic editor context is captured by ChatViewProvider for the submitting
+  // chat. Do not broadcast selection contents to every mounted webview.
 
   // Post-activation model-list warm-up (Plan 01 Phase 3). Every load refreshes
   // each agent's model list automatically, and none of it is on the critical

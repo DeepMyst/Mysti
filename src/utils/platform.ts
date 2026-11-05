@@ -11,7 +11,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { parse as parseJson5 } from 'json5';
+import JSON5 from 'json5';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -19,6 +19,8 @@ import { spawn } from 'child_process';
 import { promisify } from 'util';
 import { exec } from 'child_process';
 import { LOCAL_CLI_PREFIX } from '../constants';
+import { killProcessTree } from './processKill';
+import { resolveOpenClawGatewayToken } from './openClawGatewayToken';
 
 const execAsync = promisify(exec);
 
@@ -308,13 +310,7 @@ export async function validateCliPath(cliPath: string): Promise<boolean> {
  * Uses `which` on Unix or `where` on Windows.
  */
 export function checkCommandExists(command: string): Promise<boolean> {
-  const checkCmd = process.platform === 'win32' ? 'where' : 'which';
-
-  return new Promise((resolve) => {
-    const proc = spawn(checkCmd, [command], { stdio: ['ignore', 'pipe', 'ignore'] });
-    proc.on('close', (code) => resolve(code === 0));
-    proc.on('error', () => resolve(false));
-  });
+  return resolveCommandOnPath(command).then(resolved => resolved !== null);
 }
 
 /**
@@ -375,20 +371,8 @@ export function resolveCommandOnPath(
   }
   const checkCmd = process.platform === 'win32' ? 'where' : 'which';
 
-  return new Promise((resolve) => {
-    let out = '';
-    const proc = spawn(checkCmd, [command], {
-      stdio: ['ignore', 'pipe', 'ignore'],
-      env,
-    });
-    proc.stdout?.on('data', (chunk) => { out += String(chunk); });
-    proc.on('close', (code) => {
-      if (code !== 0) { return resolve(null); }
-      const first = out.split(/\r?\n/).map(l => l.trim()).find(Boolean);
-      resolve(first || null);
-    });
-    proc.on('error', () => resolve(null));
-  });
+  return probeCliOutput(checkCmd, [command], 5000, env)
+    .then(out => out?.split(/\r?\n/).map(line => line.trim()).find(Boolean) || null);
 }
 
 /**
@@ -409,8 +393,98 @@ export function getPriorityCliPaths(config: CliSearchConfig): string[] {
   return paths;
 }
 
+/** Parent diagnostics stay outside the disposable probe group. Never log probe data. */
+let cliProbeSequence = 0;
+type CliProbeReason = 'close-zero' | 'close-nonzero' | 'close-signal' | 'spawn-error'
+  | 'spawn-throw' | 'invalid-windows-shim' | 'deadline' | 'output-limit';
+function cliProbeDiagnostics(kind: 'version' | 'other', timeoutMs: number) {
+  const probeId = `${process.pid}:${++cliProbeSequence}`;
+  const started = process.hrtime.bigint();
+  const record = (event: string, fields: Record<string, string | number | boolean | null> = {}) => {
+    try {
+      const entry = { schemaVersion: 1, probeId, hostPid: process.pid, event, at: Date.now(),
+        elapsedMs: Number(process.hrtime.bigint() - started) / 1e6, ...fields };
+      // Capture now, deliver after the current cleanup/result path. A broken log
+      // sink must not change a probe result or interrupt its owned-group cleanup.
+      queueMicrotask(() => {
+        try { console.log('[Mysti CLI probe]', JSON.stringify(entry)); } catch { /* Best effort diagnostics. */ }
+      });
+    } catch { /* Diagnostic scheduling must not escape into cleanup callbacks. */ }
+  };
+  record('start', { kind, timeoutMs, maxOutputChars: 4096 });
+  return record;
+}
+
 /**
- * Ask a CLI its version. Returns the raw first line, or undefined.
+ * Run a short, read-only CLI probe with bounded output and process lifetime.
+ * Returns stdout only after successful exit. Windows npm shims need cmd.exe;
+ * all other executables retain shell-free argv handling.
+ */
+export function probeCliOutput(
+  cliPath: string,
+  args: string[],
+  timeoutMs = 5000,
+  env: NodeJS.ProcessEnv = getEnrichedEnv(),
+): Promise<string | undefined> {
+  return new Promise(resolve => {
+    const record = cliProbeDiagnostics(args.length === 1 && args[0] === '--version' ? 'version' : 'other', timeoutMs);
+    let settled = false;
+    let out = '';
+    let childPid: number | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const done = (reason: CliProbeReason, output?: string) => {
+      if (settled) { return; }
+      settled = true;
+      clearTimeout(timer);
+      resolve(output);
+      record('settled', { reason, childPid, outputChars: out.length, resultKind: output === undefined ? 'undefined' : 'output' });
+    };
+    const windowsShim = process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(cliPath);
+    // Quotes protect spaces and cmd metacharacters; expansion/quote characters
+    // cannot be represented by this fixed probe contract and must not execute.
+    if (windowsShim && [cliPath, ...args].some(value => /["%!^\r\n]/.test(value))) { done('invalid-windows-shim'); return; }
+    try {
+      const proc = spawn(windowsShim ? `"${cliPath}"` : cliPath,
+        windowsShim ? args.map(arg => `"${arg}"`) : args, {
+          stdio: ['ignore', 'pipe', 'ignore'],
+          env,
+          shell: windowsShim,
+          detached: process.platform !== 'win32',
+          windowsHide: true,
+        });
+      childPid = proc.pid ?? null;
+      const stop = (reason: 'deadline' | 'output-limit') => {
+        if (settled) { return; }
+        done(reason);
+        record('cleanup-requested', { childPid, initialSignal: 'SIGKILL', graceMs: 0, useProcessGroup: process.platform !== 'win32' });
+        const cleanup = killProcessTree(proc, 0, { label: 'CLI probe', useProcessGroup: process.platform !== 'win32', initialSignal: 'SIGKILL' });
+        // Helper settlement is not proof of signal delivery or process death.
+        void cleanup.then(
+          () => record('cleanup-helper-settled', { childPid }),
+          () => record('cleanup-helper-rejected', { childPid }),
+        );
+      };
+      const armedAt = Date.now();
+      timer = setTimeout(() => stop('deadline'), timeoutMs);
+      record('timer-armed', { childPid, timeoutMs, armedAt, deadlineDueAt: armedAt + timeoutMs });
+      proc.once('spawn', () => record('spawn', { childPid, detached: process.platform !== 'win32' }));
+      proc.once('exit', (code, signal) => record('exit', { childPid, code, signal }));
+      proc.stdout?.on('data', chunk => {
+        if (settled) { return; }
+        out += String(chunk);
+        if (out.length > 4096) { stop('output-limit'); }
+      });
+      proc.on('close', (code, signal) => {
+        record('close', { childPid, code, signal: signal ?? null });
+        done(signal ? 'close-signal' : code === 0 ? 'close-zero' : 'close-nonzero', code === 0 ? out : undefined);
+      });
+      proc.on('error', () => done('spawn-error'));
+    } catch { done('spawn-throw'); }
+  });
+}
+
+/**
+ * Ask a CLI its version. Returns the decorated version line, or undefined.
  *
  * Shell-free (argv array), time-boxed, and tolerant: a CLI that has no
  * `--version`, is slow, or prints something unrecognisable simply yields
@@ -420,31 +494,14 @@ export function getPriorityCliPaths(config: CliSearchConfig): string[] {
  * 0.153.4", "v1.2.3" — so callers parse it loosely rather than expecting a bare
  * semver.
  */
-export function probeCliVersion(cliPath: string, timeoutMs = 5000): Promise<string | undefined> {
-  return new Promise((resolve) => {
-    let settled = false;
-    const done = (v?: string) => { if (!settled) { settled = true; resolve(v); } };
-    try {
-      const proc = spawn(cliPath, ['--version'], {
-        stdio: ['ignore', 'pipe', 'ignore'],
-        env: getEnrichedEnv(),
-      });
-      let out = '';
-      const timer = setTimeout(() => { try { proc.kill(); } catch { /* already gone */ } done(); }, timeoutMs);
-      proc.stdout?.on('data', (chunk) => {
-        out += String(chunk);
-        // A CLI that keeps talking is not answering a version question.
-        if (out.length > 4096) { try { proc.kill(); } catch { /* already gone */ } }
-      });
-      proc.on('close', () => {
-        clearTimeout(timer);
-        done(out.split(/\r?\n/).map(l => l.trim()).find(Boolean));
-      });
-      proc.on('error', () => { clearTimeout(timer); done(); });
-    } catch {
-      done();
-    }
-  });
+export function probeCliVersion(cliPath: string, timeoutMs = 5000, env?: NodeJS.ProcessEnv): Promise<string | undefined> {
+  return probeCliOutput(cliPath, ['--version'], timeoutMs, env).then(out => out
+    // CLI color escapes are terminal control bytes, not part of the version.
+    // eslint-disable-next-line no-control-regex
+    ?.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
+    .split(/\r?\n/).map(line => line.trim())
+    .find(line => !/^(?:warn(?:ing)?\b|error\b|npm\s+(?:warn|err)|\(node:\d+\))/i.test(line)
+      && /(?:^|[^\d])\d{1,6}\.\d{1,6}\.\d{1,6}(?:[^\d]|$)/.test(line)));
 }
 
 /**
@@ -585,12 +642,12 @@ function findNodeDir(): string | null {
 }
 
 /**
- * Cached base enriched environment — computed once, reused for all spawns.
+ * Cached PATH enrichment — credentials are never cached across spawns.
  */
 let _baseEnrichedEnv: Record<string, string | undefined> | null = null;
 
 /**
- * Build the base enriched environment (without extras). Called once and cached.
+ * Build the PATH enrichment (without credentials). Called once and cached.
  */
 function _buildBaseEnrichedEnv(): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...process.env };
@@ -623,20 +680,21 @@ function _buildBaseEnrichedEnv(): Record<string, string | undefined> {
   const finalParts = [...prependDirs, ...filtered];
 
   env.PATH = finalParts.join(pathSep);
-  return env;
+  return { PATH: env.PATH };
 }
 
 /**
  * Build a process environment with PATH enriched to include node's directory
  * and common CLI install locations. This ensures `#!/usr/bin/env node` shebangs
  * resolve correctly even when VSCode's extension host has a stripped-down PATH.
- * The base environment is cached; only extras are merged per-call.
+ * Only PATH enrichment is cached. Authentication setup can replace or remove
+ * environment credentials at runtime, so every spawn takes a fresh snapshot.
  */
 export function getEnrichedEnv(extra?: Record<string, string | undefined>): Record<string, string | undefined> {
   if (!_baseEnrichedEnv) {
     _baseEnrichedEnv = _buildBaseEnrichedEnv();
   }
-  return extra ? { ..._baseEnrichedEnv, ...extra } : { ..._baseEnrichedEnv };
+  return { ...process.env, ..._baseEnrichedEnv, ...extra };
 }
 
 /**
@@ -676,25 +734,73 @@ export function filterInstallMethodsForOS<T extends { platform?: 'darwin' | 'lin
 }
 
 /**
+ * Resolve the paths used by OpenClaw's CLI configuration and auth stores.
+ * Explicit configuration never falls back to a different account's config.
+ * Keep the historical LITECLAW aliases as fallbacks for older installations.
+ * Relative paths follow the consuming process: the CLI workspace or, by
+ * default, the extension host that loads the gateway client's configuration.
+ */
+export function resolveOpenClawPaths(cwd = process.cwd()): { stateDir: string; configPath: string; agentDir: string } {
+  const env = process.env;
+  const expand = (value: string, home: string): string => path.resolve(cwd, value.trim().replace(/^~(?=$|[\\/])/, home));
+  const osHome = os.homedir();
+  const homeOverride = env.OPENCLAW_HOME?.trim();
+  const home = homeOverride && homeOverride !== 'undefined' && homeOverride !== 'null'
+    ? expand(homeOverride, osHome) : osHome;
+  const modernState = path.join(home, '.openclaw');
+  const legacyState = path.join(home, '.clawdbot');
+  const exists = (candidate: string): boolean => {
+    try { return fs.existsSync(candidate); } catch { return false; }
+  };
+  const stateOverride = env.OPENCLAW_STATE_DIR?.trim() || env.LITECLAW_STATE_DIR?.trim();
+  const fast = env.OPENCLAW_TEST_FAST === '1';
+  const stateDir = stateOverride ? expand(stateOverride, home)
+    : fast || exists(modernState) || !exists(legacyState) ? modernState : legacyState;
+  const configOverride = env.OPENCLAW_CONFIG_PATH?.trim();
+  const candidates = [stateDir, ...(!stateOverride ? [modernState, legacyState] : [])]
+    .flatMap(directory => [path.join(directory, 'openclaw.json'), path.join(directory, 'clawdbot.json')]);
+  const configPath = configOverride ? expand(configOverride, home)
+    : (!fast && candidates.find(exists)) || path.join(stateDir, 'openclaw.json');
+  // Mysti sends an unscoped session key, so native agent execution selects the
+  // configured default (first default entry, otherwise first entry, then main).
+  // OPENCLAW_AGENT_DIR belongs to a deprecated SDK helper; the CLI/gateway
+  // execution paths explicitly resolve the configured agent directory instead.
+  const normalizeAgentId = (value: unknown): string => {
+    const id = typeof value === 'string' ? value.trim().toLowerCase() : '';
+    if (/^[a-z0-9][a-z0-9_-]{0,63}$/.test(id)) { return id; }
+    return id.replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64) || 'main';
+  };
+  let agentId = 'main';
+  let configuredAgentDir: string | undefined;
+  try {
+    const config = JSON5.parse(fs.readFileSync(configPath, 'utf-8')) as { agents?: { list?: unknown } } | null;
+    type AgentEntry = { id?: unknown; default?: unknown; agentDir?: unknown };
+    const entries: AgentEntry[] = Array.isArray(config?.agents?.list)
+      ? config.agents.list.filter((entry): entry is AgentEntry => !!entry && typeof entry === 'object' && !Array.isArray(entry)) : [];
+    agentId = normalizeAgentId((entries.find(entry => entry.default) ?? entries[0])?.id);
+    const selected = entries.find(entry => normalizeAgentId(entry.id) === agentId);
+    if (typeof selected?.agentDir === 'string') { configuredAgentDir = selected.agentDir.trim() || undefined; }
+  } catch { /* Missing or malformed configuration keeps the conventional main directory. */ }
+  const agentDir = configuredAgentDir ? expand(configuredAgentDir, home) : path.join(stateDir, 'agents', agentId, 'agent');
+  return { stateDir, configPath, agentDir };
+}
+
+/**
  * Read the OpenClaw Gateway auth token.
- * Priority: ~/.openclaw/openclaw.json -> gateway.auth.token, then env OPENCLAW_GATEWAY_TOKEN.
+ * Priority: selected config -> gateway.auth.token, then env OPENCLAW_GATEWAY_TOKEN.
  * Returns undefined if no token is found.
  */
 export function readOpenClawToken(): string | undefined {
   try {
-    const configPath = path.join(os.homedir(), '.openclaw', 'openclaw.json');
+    const { configPath } = resolveOpenClawPaths();
     if (fs.existsSync(configPath)) {
       const raw = fs.readFileSync(configPath, 'utf-8');
-      const config = parseJson5(raw);
-      const token = config?.gateway?.auth?.token;
-      if (typeof token === 'string' && token.length > 0) {
-        return token;
-      }
+      return resolveOpenClawGatewayToken(JSON5.parse(raw));
     }
   } catch {
     // Config unreadable or unparseable — fall through to env
   }
 
   const envToken = process.env.OPENCLAW_GATEWAY_TOKEN;
-  return (typeof envToken === 'string' && envToken.length > 0) ? envToken : undefined;
+  return (typeof envToken === 'string' && envToken.trim().length > 0) ? envToken.trim() : undefined;
 }

@@ -19,6 +19,8 @@ import type { ICliProvider, CliDiscoveryResult } from '../providers/base/IProvid
  * Within this window, panel opens and wizard status reads never re-probe.
  */
 export const CLI_DISCOVERY_TTL_MS = 5 * 60 * 1000;
+/** Bound discovery + authentication so one stalled backend cannot block every provider. */
+export const CLI_DISCOVERY_TIMEOUT_MS = 15_000;
 
 /**
  * Cached discovery + authentication status for a single provider CLI.
@@ -73,9 +75,16 @@ type ForceableDiscoverCli = (force?: boolean) => Promise<CliDiscoveryResult>;
 export class CliDiscoveryService implements vscode.Disposable {
   private readonly _source: DiscoveryProviderSource;
   private readonly _ttlMs: number;
+  private readonly _probeTimeoutMs: number;
+  private _disposed = false;
   private readonly _cache: Map<string, CliStatus> = new Map();
   /** Single-flight guard: one in-flight probe per provider. */
-  private readonly _inflight: Map<string, Promise<CliStatus | undefined>> = new Map();
+  private readonly _inflight = new Map<string, {
+    promise: Promise<CliStatus | undefined>;
+    startTick: number;
+    force: boolean;
+    controller: AbortController;
+  }>();
   private readonly _disposables: vscode.Disposable[] = [];
 
   /**
@@ -93,16 +102,17 @@ export class CliDiscoveryService implements vscode.Disposable {
 
   private readonly _onDidChangeEmitter = new vscode.EventEmitter<CliStatus>();
   /**
-   * Fires when a probe flips a provider's installed or signed-in state — an
-   * install or sign-in finishing. Without it a panel only learned of an
-   * install when some unrelated read happened to start a background refresh.
-   * Not fired for the first probe of a provider (nothing to compare with).
+   * Fires for the first retained discovery and changes to availability,
+   * authentication, executable path or version. Open panels also consume this
+   * event to refresh capabilities that depend on the discovered CLI version.
+   * A new checkedAt alone does not require repainting the same provider facts.
    */
   public readonly onDidChange: vscode.Event<CliStatus> = this._onDidChangeEmitter.event;
 
-  constructor(source: DiscoveryProviderSource, options?: { ttlMs?: number }) {
+  constructor(source: DiscoveryProviderSource, options?: { ttlMs?: number; probeTimeoutMs?: number }) {
     this._source = source;
     this._ttlMs = options?.ttlMs ?? CLI_DISCOVERY_TTL_MS;
+    this._probeTimeoutMs = options?.probeTimeoutMs ?? CLI_DISCOVERY_TIMEOUT_MS;
 
     // Seed: as each provider's background initialize() settles, probe it once
     // (discovery + auth) so panel opens read a warm cache. initialize()
@@ -119,6 +129,7 @@ export class CliDiscoveryService implements vscode.Disposable {
     // Safety net: events fired before this service was constructed (or a
     // registry that settled instantly) — fill any entries still missing.
     void this._source.whenReady.then(() => {
+      if (this._disposed) { return; }
       for (const provider of this._source.getAllProviders()) {
         if (!this._cache.has(provider.id) && !this._inflight.has(provider.id)) {
           void this._probe(provider.id).catch((error) => {
@@ -157,6 +168,7 @@ export class CliDiscoveryService implements vscode.Disposable {
    * parallel (Promise.allSettled); fresh entries are served from the cache.
    */
   public async getAllStatuses(): Promise<CliStatus[]> {
+    if (this._disposed) { return []; }
     const providers = this._source.getAllProviders();
     const stale = providers.filter((p) => {
       const cached = this._cache.get(p.id);
@@ -202,6 +214,7 @@ export class CliDiscoveryService implements vscode.Disposable {
    * to discoverCli). Fires onDidUpdate with the refreshed statuses.
    */
   public async refresh(providerId?: string): Promise<CliStatus[]> {
+    if (this._disposed) { return []; }
     const ids = providerId
       ? [providerId]
       : this._source.getAllProviders().map((p) => p.id);
@@ -210,8 +223,11 @@ export class CliDiscoveryService implements vscode.Disposable {
 
     const statuses: CliStatus[] = [];
     for (const result of results) {
+      // A settings/auth mutation or a newer probe may supersede an individual
+      // result while a slower sibling finishes. Never broadcast that old state.
       if (result.status === 'fulfilled' && result.value) {
-        statuses.push(result.value);
+        const current = this._cache.get(result.value.providerId);
+        if (current && this.isFresh(current)) { statuses.push(current); }
       }
     }
     if (statuses.length > 0) {
@@ -247,6 +263,8 @@ export class CliDiscoveryService implements vscode.Disposable {
   }
 
   public dispose(): void {
+    this._disposed = true;
+    for (const run of this._inflight.values()) { run.controller.abort(); }
     for (const disposable of this._disposables) {
       disposable.dispose();
     }
@@ -268,9 +286,15 @@ export class CliDiscoveryService implements vscode.Disposable {
    * provider doesn't get re-probed on every read within the TTL.
    */
   private _probe(providerId: string, force = false): Promise<CliStatus | undefined> {
+    if (this._disposed) { return Promise.resolve(undefined); }
     const existing = this._inflight.get(providerId);
     if (existing) {
-      return existing;
+      if (this._isInvalidatedSince(providerId, existing.startTick) || (force && !existing.force)) {
+        // Preserve one active probe, but a refresh after installation/path/auth
+        // changes must actually re-probe. Concurrent waiters share the next run.
+        return existing.promise.then(() => this._probe(providerId, force));
+      }
+      return existing.promise;
     }
 
     const provider = this._source.getProviderInstance(providerId);
@@ -279,26 +303,32 @@ export class CliDiscoveryService implements vscode.Disposable {
     }
 
     const startTick = this._clock;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(new Error('Provider discovery timed out. Refresh detection to retry.')), this._probeTimeoutMs);
     const task = (async (): Promise<CliStatus | undefined> => {
       try {
         let discovery: CliDiscoveryResult;
         try {
           // Widened call: Ollama/LocalAI accept `force` to bypass their
           // probe-failure TTL (Plan 03 Phase 2); other providers ignore it.
-          discovery = await (provider.discoverCli.bind(provider) as ForceableDiscoverCli)(force);
+          discovery = await this._awaitProbe(() => (provider.discoverCli.bind(provider) as ForceableDiscoverCli)(force), controller.signal);
         } catch (error) {
+          if (this._disposed) { return undefined; }
           console.warn(`[Mysti] CliDiscoveryService: discoverCli failed for ${providerId}:`, error);
           discovery = { found: false, path: '' };
         }
+        if (this._disposed) { return undefined; }
 
         let authenticated = false;
         if (discovery.found) {
           try {
-            authenticated = (await provider.checkAuthentication()).authenticated;
+            authenticated = (await this._awaitProbe(() => provider.checkAuthentication(), controller.signal)).authenticated;
           } catch (error) {
+            if (this._disposed) { return undefined; }
             console.warn(`[Mysti] CliDiscoveryService: checkAuthentication failed for ${providerId}:`, error);
           }
         }
+        if (this._disposed) { return undefined; }
 
         const status: CliStatus = {
           providerId,
@@ -313,18 +343,41 @@ export class CliDiscoveryService implements vscode.Disposable {
         if (!this._isInvalidatedSince(providerId, startTick)) {
           const prev = this._cache.get(providerId);
           this._cache.set(providerId, status);
-          if (prev && (prev.found !== status.found || prev.authenticated !== status.authenticated)) {
+          if (!prev || prev.found !== status.found || prev.authenticated !== status.authenticated
+            || prev.path !== status.path || prev.version !== status.version) {
             this._onDidChangeEmitter.fire(status);
           }
         }
         return status;
       } finally {
+        clearTimeout(timeout);
         this._inflight.delete(providerId);
       }
     })();
 
-    this._inflight.set(providerId, task);
+    this._inflight.set(providerId, { promise: task, startTick, force, controller });
     return task;
+  }
+
+  /** Stop waiting on timeout/disposal and observe late results without publishing them. */
+  private _awaitProbe<T>(task: () => Promise<T>, signal: AbortSignal): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      let settled = false;
+      const finish = (complete: () => void) => {
+        if (settled) { return; }
+        settled = true;
+        signal.removeEventListener('abort', abort);
+        complete();
+      };
+      const abort = () => finish(() => reject(signal.reason));
+      if (signal.aborted) { abort(); return; }
+      signal.addEventListener('abort', abort, { once: true });
+      try {
+        task().then(value => finish(() => resolve(value)), error => finish(() => reject(error)));
+      } catch (error) {
+        finish(() => reject(error));
+      }
+    });
   }
 
   private _isInvalidatedSince(providerId: string, tick: number): boolean {

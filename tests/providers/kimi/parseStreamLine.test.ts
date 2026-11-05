@@ -7,7 +7,7 @@
  * KimiCodeProvider ACP parsing: the reactive JSON-RPC handshake
  * (initialize → session/new → session/prompt driven from parseStreamLine),
  * session/update mapping, permission auto-response, the diagnostic fallback
- * path, and Kimi-specific model env injection. Mirrors the Hermes ACP suite —
+ * path, and confirmed native session model selection. Mirrors the Hermes ACP suite —
  * both backends speak the Agent Client Protocol over `<cli> acp`.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
@@ -15,12 +15,13 @@ import type { ChildProcess } from 'child_process';
 import { Writable } from 'node:stream';
 import { TestableKimiProvider } from '../../helpers/providerFactory';
 import { createKimiSession } from '../../helpers/sessionFactory';
+import { clearMockConfig, setMockConfig } from '../../helpers/mockVscode';
 import type { KimiCodeSessionState } from '../../../src/providers/kimi/KimiCodeProvider';
 import type { Settings } from '../../../src/types';
 
 function settings(overrides?: Partial<Settings>): Settings {
   return {
-    mode: 'default', thinkingLevel: 'none', accessLevel: 'ask-permission',
+    mode: 'edit-automatically', thinkingLevel: 'none', accessLevel: 'full-access',
     contextMode: 'auto', model: '', provider: 'kimi-code', ...overrides,
   } as Settings;
 }
@@ -150,13 +151,13 @@ describe('Kimi Code ACP handshake', () => {
     session.acpSessionId = 'stale';
     session.sessionId = 'stale';
     session.rpcId = 9;
-    const args = provider.buildPersistentCliArgs(settings({ accessLevel: 'read-only', mode: 'quick-plan' }), session);
+    const args = provider.buildPersistentCliArgs(settings(), session);
     expect(args).toEqual(['acp']);
     expect(session.acpSessionId).toBeNull();
     expect(session.sessionId).toBeNull();
     expect(session.rpcId).toBe(0);
-    expect(session.acpAccessLevel).toBe('read-only');
-    expect(session.acpMode).toBe('quick-plan');
+    expect(session.acpAccessLevel).toBe('full-access');
+    expect(session.acpMode).toBe('edit-automatically');
   });
 });
 
@@ -381,13 +382,34 @@ describe('Kimi Code response boundary + interrupt + fallback + model env', () =>
   });
 
   it('boundary fires only on prompt responses (stopReason) and error responses', () => {
-    expect(provider.isResponseBoundary(JSON.stringify({ jsonrpc: '2.0', id: 3, result: { stopReason: 'end_turn' } }))).toBe(true);
-    expect(provider.isResponseBoundary(JSON.stringify({ jsonrpc: '2.0', id: 2, error: { code: -32000, message: 'auth' } }))).toBe(true);
-    expect(provider.isResponseBoundary(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { protocolVersion: 1 } }))).toBe(false);
-    expect(provider.isResponseBoundary(JSON.stringify({ jsonrpc: '2.0', id: 2, result: { sessionId: 's' } }))).toBe(false);
-    expect(provider.isResponseBoundary(JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'session/request_permission', params: {} }))).toBe(false);
-    expect(provider.isResponseBoundary(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: {} }))).toBe(false);
-    expect(provider.isResponseBoundary('not json')).toBe(false);
+    const boundary = (data: unknown) => provider.isResponseBoundary(JSON.stringify(data), session);
+    session.promptId = 3;
+    expect(boundary({ jsonrpc: '2.0', id: 3, result: { stopReason: 'end_turn' } })).toBe(true);
+    expect(boundary({ jsonrpc: '2.0', id: 3, result: { stop_reason: 'end_turn' } })).toBe(true);
+    expect(boundary({ jsonrpc: '2.0', id: 3, error: { code: -32000, message: 'prompt' } })).toBe(true);
+    session.promptId = null;
+    session.sessionNewId = 2;
+    expect(boundary({ jsonrpc: '2.0', id: 2, error: { code: -32000, message: 'auth' } })).toBe(true);
+    session.sessionNewId = null;
+    session.initializeId = 1;
+    expect(boundary({ jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'initialize' } })).toBe(true);
+    // initialize / session-new success responses do NOT end the turn
+    expect(boundary({ jsonrpc: '2.0', id: 1, result: { protocolVersion: 1 } })).toBe(false);
+    expect(boundary({ jsonrpc: '2.0', id: 1, error: null, result: { protocolVersion: 1 } })).toBe(false);
+    expect(boundary({ jsonrpc: '2.0', id: 1, result: { stopReason: 'end_turn' } })).toBe(false);
+    expect(boundary({ jsonrpc: '2.0', id: 2, result: { sessionId: 's' } })).toBe(false);
+    session.initializeId = null;
+    session.promptId = 4;
+    for (const id of [1, 2, 3, 99, '4', null]) {
+      expect(boundary({ jsonrpc: '2.0', id, result: { stopReason: 'end_turn' } })).toBe(false);
+      expect(boundary({ jsonrpc: '2.0', id, error: { message: 'unrelated' } })).toBe(false);
+    }
+    // server→client requests carry method — never a boundary
+    expect(boundary({ jsonrpc: '2.0', id: 4, method: 'session/request_permission', params: {} })).toBe(false);
+    // notifications and junk
+    expect(boundary({ jsonrpc: '2.0', method: 'session/update', params: {} })).toBe(false);
+    expect(provider.isResponseBoundary('not json', session)).toBe(false);
+    expect(provider.isResponseBoundary(JSON.stringify({ id: 4, result: { stopReason: 'end_turn' } }))).toBe(false);
   });
 
   it('interrupt DROPS the process (no session/cancel, no raw Ctrl+C byte) so the next turn respawns clean', () => {
@@ -402,8 +424,10 @@ describe('Kimi Code response boundary + interrupt + fallback + model env', () =>
   });
 
   it('_persistentSettingsMatch forces a respawn when access level changes under a plan mode (fresh permission snapshot)', () => {
-    provider.buildPersistentCliArgs(settings({ accessLevel: 'full-access', mode: 'detailed-plan' }), session);
-    session.persistentSettings = { model: undefined, permissionMode: 'plan', thinkingLevel: 'none', effortLevel: '' };
+    // Synthetic snapshot comparison; public Plan admission is rejected.
+    session.acpMode = 'detailed-plan';
+    session.acpAccessLevel = 'full-access';
+    session.persistentSettings = { cwd: '/mock/workspace', model: undefined, permissionMode: 'plan', thinkingLevel: 'none', effortLevel: '' };
 
     expect(provider.persistentSettingsMatch(session, settings({ accessLevel: 'full-access', mode: 'detailed-plan' }))).toBe(true);
     expect(provider.persistentSettingsMatch(session, settings({ accessLevel: 'read-only', mode: 'detailed-plan' }))).toBe(false);
@@ -420,11 +444,46 @@ describe('Kimi Code response boundary + interrupt + fallback + model env', () =>
     expect(provider.parseStreamLine('more output', session)).toBeNull();
   });
 
-  it('getExtraSpawnEnv injects ANTHROPIC_MODEL only when a model is selected', () => {
-    expect(provider.getExtraSpawnEnv(settings({ model: '' }))).toEqual({});
-    expect(provider.getExtraSpawnEnv(settings({ model: 'default' }))).toEqual({});
-    expect(provider.getExtraSpawnEnv(settings({ model: 'kimi-for-coding-highspeed' }))).toEqual({ ANTHROPIC_MODEL: 'kimi-for-coding-highspeed' });
-    // An explicitly routed model wins.
-    expect(provider.getExtraSpawnEnv(settings({ model: 'x', routedModel: 'k3' }))).toEqual({ ANTHROPIC_MODEL: 'k3' });
+  it('captures the effective session model without injecting a model environment override', () => {
+    for (const [selection, expected] of [
+      [{ model: '' }, undefined], [{ model: 'default' }, undefined],
+      [{ model: 'kimi-for-coding-highspeed' }, 'kimi-for-coding-highspeed'],
+      [{ model: 'x', routedModel: 'k3' }, 'k3'],
+    ] as const) {
+      const options = settings(selection);
+      expect(provider.getExtraSpawnEnv(options)).toEqual({});
+      session.confirmedModel = 'old-model';
+      provider.buildPersistentCliArgs(options, session);
+      expect(session.requestedModel).toBe(expected);
+      expect(session.confirmedModel).toBeUndefined();
+      expect(session.modelSetId).toBeNull();
+    }
+    try {
+      setMockConfig('kimiCodeModel', 'custom-model');
+      provider.buildPersistentCliArgs(settings({ model: 'selected-model' }), session);
+      expect(session.requestedModel).toBe('custom-model');
+      provider.buildPersistentCliArgs(settings({ routedModel: 'routed-model' }), session);
+      expect(session.requestedModel).toBe('routed-model');
+    } finally { clearMockConfig(); }
+  });
+
+  it('terminates ambiguous or malformed model confirmations without releasing the staged prompt', () => {
+    const valid = { id: 'model', type: 'select', currentValue: 'selected-model' };
+    for (const configOptions of [undefined, [], [valid, valid], [{ ...valid, type: 'boolean' }],
+      [{ ...valid, currentValue: '' }], [{ ...valid, currentValue: ' selected-model ' }],
+      [{ ...valid, currentValue: 'invalid\nmodel' }]]) {
+      const current = createKimiSession();
+      const fake = fakeProc();
+      Object.assign(current, { persistentProcess: fake.proc, acpSessionId: 'owned', requestedModel: 'selected-model',
+        pendingPrompt: 'must not dispatch', modelSetId: 3, rpcId: 3 });
+      const line = JSON.stringify({ jsonrpc: '2.0', id: 3, result: { configOptions } });
+      expect(provider.isResponseBoundary(line, current)).toBe(true);
+      expect(provider.parseStreamLine(line, current)).toMatchObject({ type: 'error', content: expect.stringMatching(/model selection failed/) });
+      expect(current.pendingPrompt).toBeNull();
+      expect(current.persistentProcess).toBeNull();
+      expect(current.confirmedModel).toBeUndefined();
+      expect(fake.written).toEqual([]);
+      expect(provider.parseStreamLine(line, current)).toBeNull();
+    }
   });
 });

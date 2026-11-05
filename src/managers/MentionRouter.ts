@@ -12,10 +12,13 @@
  */
 
 import * as crypto from 'crypto';
-import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { ProviderManager } from './ProviderManager';
+import { readWorkspaceFileMention, WorkspaceFileMentionContentError } from '../services/WorkspaceFileMention';
+import type { ExpectedWorkspaceFileIdentity } from '../services/WorkspaceFileMention';
+import type { FileMentionReference } from '../services/FileMentionBindings';
+import { resolveWorkspaceFileShorthand } from '../services/WorkspaceFileShorthand';
 import type { NativeApprovalHandler } from '../providers/base/IProvider';
 import { getProviderDisplayName } from '../providers/base/ProviderManifest';
 import { SUBAGENT_TIMEOUT_MS, SUBAGENT_MAX_RETRIES, SUBAGENT_QUESTION_TIMEOUT_MS } from '../constants';
@@ -88,8 +91,11 @@ export class MentionRouter {
     settings: Settings,
     conversation: Conversation | null,
     panelId: string,
-    onSubAgentQuestion?: SubAgentQuestionCallback
+    onSubAgentQuestion?: SubAgentQuestionCallback,
+    isPreparationCancelled: () => boolean = () => false,
+    fileReferences?: readonly FileMentionReference[]
   ): AsyncGenerator<MentionStreamChunk> {
+    if (isPreparationCancelled()) { return; }
     const previous = this._activeRuns.get(panelId);
     if (previous) { this._cancelRun(previous); }
     const controller = new AbortController();
@@ -99,7 +105,7 @@ export class MentionRouter {
     };
     this._activeRuns.set(panelId, run);
     try {
-      yield* this._processMentions(content, mentions, context, settings, conversation, panelId, run, onSubAgentQuestion);
+      yield* this._processMentions(content, mentions, context, settings, conversation, panelId, run, onSubAgentQuestion, isPreparationCancelled, fileReferences);
     } catch (error) {
       if (!controller.signal.aborted) { throw error; }
     } finally {
@@ -116,33 +122,40 @@ export class MentionRouter {
     conversation: Conversation | null,
     panelId: string,
     run: MentionRun,
-    onSubAgentQuestion?: SubAgentQuestionCallback
+    onSubAgentQuestion?: SubAgentQuestionCallback,
+    isPreparationCancelled: () => boolean = () => false,
+    fileReferences?: readonly FileMentionReference[]
   ): AsyncGenerator<MentionStreamChunk> {
     // 1. Resolve file mentions into transient ContextItems
-    const fileMentions = mentions.filter(m => m.type === 'file');
-    const { items: resolvedFiles, failedFiles } = await this._resolveFileMentions(fileMentions);
+    const resolved = await this.resolveFileContext(mentions, () => run.controller.signal.aborted || isPreparationCancelled(), fileReferences);
     run.controller.signal.throwIfAborted();
+    if (!resolved || isPreparationCancelled()) { return; }
+    const { items: resolvedFiles, failedFiles } = resolved;
 
     if (resolvedFiles.length > 0) {
       yield { type: 'files_resolved', resolvedFiles };
     }
+    if (isPreparationCancelled()) { return; }
 
     // M7: Warn user about unresolvable file mentions
     if (failedFiles.length > 0) {
       yield {
         type: 'file_resolution_warning',
-        content: `Could not read ${failedFiles.length} file(s): ${failedFiles.join(', ')}`
+        content: resolved.warning ?? `Could not read ${failedFiles.length} file(s): ${failedFiles.join(', ')}`
       };
     }
+    if (isPreparationCancelled()) { return; }
 
     // 1b. Workspace-state mentions (Plan 27 Phase 5). `@problems` and `@git`
     // resolve to a generated summary, not a file: they are read-only views of
     // state the user can already see in the editor, and nothing writes back.
     const stateItems = await this._resolveStateMentions(mentions);
     run.controller.signal.throwIfAborted();
+    if (isPreparationCancelled()) { return; }
     if (stateItems.length > 0) {
       yield { type: 'files_resolved', resolvedFiles: stateItems };
     }
+    if (isPreparationCancelled()) { return; }
 
     // 2. Generate task list for agent mentions
     const agentMentions = mentions.filter(m => m.type === 'agent');
@@ -157,6 +170,7 @@ export class MentionRouter {
       taskList = await this._generateTaskListWithAI(content, agentMentions, settings, panelId, run);
     }
     run.controller.signal.throwIfAborted();
+    if (isPreparationCancelled()) { return; }
 
     console.log(`[Mysti] MentionRouter: Generated ${taskList.tasks.length} task(s) (confidence: ${taskList.confidence})`);
     for (const task of taskList.tasks) {
@@ -966,41 +980,98 @@ export class MentionRouter {
     return parts.join('\n');
   }
 
-  private async _resolveFileMentions(fileMentions: Mention[]): Promise<{ items: ContextItem[]; failedFiles: string[] }> {
+  /**
+   * Materialize transient file context without starting or replacing an agent
+   * run. Undefined means the caller lost ownership; cancelled reads are not
+   * reported as missing files. A pending filesystem read is allowed to settle,
+   * but its result and subsequent reads are discarded after cancellation.
+   */
+  public async resolveFileContext(
+    mentions: readonly Mention[],
+    isCancelled: () => boolean = () => false,
+    fileReferences?: readonly FileMentionReference[]
+  ): Promise<{ items: ContextItem[]; failedFiles: string[]; warning?: string } | undefined> {
+    if (isCancelled()) { return undefined; }
     const items: ContextItem[] = [];
     const failedFiles: string[] = [];
+    const warningDetails: string[] = [];
+    const roots = vscode.workspace.workspaceFolders?.map(folder => folder.uri.fsPath) ?? [];
+    let rootsRevoked = false;
+    // Latch events as well as comparing snapshots: a folder can be removed and
+    // restored while an asynchronous catalogue query still reflects its absence.
+    const workspaceSubscription = vscode.workspace.onDidChangeWorkspaceFolders?.(() => { rootsRevoked = true; });
+    const workspaceChanged = () => {
+      if (rootsRevoked) { return true; }
+      const current = vscode.workspace.workspaceFolders?.map(folder => folder.uri.fsPath) ?? [];
+      rootsRevoked = current.length !== roots.length || current.some((root, index) => root !== roots[index]);
+      return rootsRevoked;
+    };
+    const interrupted = () => isCancelled() || workspaceChanged();
+    // A workspace change invalidates the entire file-context snapshot. Report
+    // the references as unavailable instead of dispatching a partial old-root
+    // result or confusing this event with cancellation of the host turn.
+    const unavailable = () => ({ items: [], failedFiles: mentions.filter(mention => mention.type === 'file').map(mention => mention.value) });
 
-    for (const mention of fileMentions) {
-      const filePath = mention.value;
+    try {
+      for (const mention of mentions) {
+        if (isCancelled()) { return undefined; }
+        if (workspaceChanged()) { return unavailable(); }
+        if (mention.type !== 'file') { continue; }
+        const filePath = mention.value;
 
-      try {
-        let resolvedPath = filePath;
-        if (!path.isAbsolute(filePath)) {
-          const workspaceFolders = vscode.workspace.workspaceFolders;
-          if (workspaceFolders && workspaceFolders.length > 0) {
-            resolvedPath = path.join(workspaceFolders[0].uri.fsPath, filePath);
+        try {
+          let expected: ExpectedWorkspaceFileIdentity | undefined;
+          let selectedPath = filePath;
+          // Only the host's content validator supplies these token descriptors.
+          // Legacy direct callers supply already-selected paths without source text.
+          if (fileReferences) {
+            const reference = fileReferences.find(candidate => candidate.startIndex === mention.startIndex
+              && candidate.endIndex === mention.endIndex && candidate.suppliedPath === filePath);
+            if (!reference) { throw new Error('File reference changed after validation.'); }
+            if (!reference.absolute) {
+              const selection = await resolveWorkspaceFileShorthand(reference, roots, interrupted);
+              if (isCancelled()) { return undefined; }
+              if (workspaceChanged()) { return unavailable(); }
+              if (!selection) { return undefined; }
+              if (selection.kind !== 'unique') {
+                failedFiles.push(filePath);
+                warningDetails.push(selection.reason);
+                continue;
+              }
+              expected = selection.expected;
+              selectedPath = selection.selectedPath;
+            }
           }
+          const resolved = await readWorkspaceFileMention(selectedPath, roots, interrupted, expected);
+          if (isCancelled()) { return undefined; }
+          if (workspaceChanged()) { return unavailable(); }
+          if (!resolved) { return undefined; }
+          const { path: resolvedPath, content } = resolved;
+          const ext = path.extname(resolvedPath).toLowerCase();
+          const language = this._getLanguageFromExtension(ext);
+
+          items.push({
+            id: `mention_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            type: 'file',
+            path: resolvedPath,
+            content,
+            language
+          });
+        } catch (error) {
+          if (isCancelled()) { return undefined; }
+          if (workspaceChanged()) { return unavailable(); }
+          // M7: Track failed files so caller can report to user
+          console.warn(`[Mysti] Failed to resolve file mention: ${filePath}`, error);
+          failedFiles.push(filePath);
+          if (error instanceof WorkspaceFileMentionContentError) { warningDetails.push(error.message); }
         }
-
-        const content = await fs.promises.readFile(resolvedPath, 'utf-8');
-        const ext = path.extname(resolvedPath).toLowerCase();
-        const language = this._getLanguageFromExtension(ext);
-
-        items.push({
-          id: `mention_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-          type: 'file',
-          path: resolvedPath,
-          content,
-          language
-        });
-      } catch (error) {
-        // M7: Track failed files so caller can report to user
-        console.warn(`[Mysti] Failed to resolve file mention: ${filePath}`, error);
-        failedFiles.push(filePath);
       }
-    }
 
-    return { items, failedFiles };
+      const warning = warningDetails.length
+        ? `Could not read ${failedFiles.length} file(s): ${failedFiles.join(', ')}. ${[...new Set(warningDetails)].join(' ')}`
+        : undefined;
+      return isCancelled() ? undefined : workspaceChanged() ? unavailable() : { items, failedFiles, ...(warning ? { warning } : {}) };
+    } finally { workspaceSubscription?.dispose(); }
   }
 
   private _getLanguageFromExtension(ext: string): string {

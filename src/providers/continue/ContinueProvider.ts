@@ -71,6 +71,7 @@ export class ContinueProvider extends BaseCliProvider {
   };
 
   readonly capabilities: ProviderCapabilities = {
+    supportsAskPermission: false,
     supportsStreaming: true,
     supportsThinking: true,      // <think> blocks parsed from headless output
     // Headless `cn -p` prints only the final response — no tool events
@@ -275,6 +276,27 @@ export class ContinueProvider extends BaseCliProvider {
       return settings.model;
     }
     return undefined;
+  }
+
+  protected override async *processStream(stderrRef: { output: string }, session: PanelSessionState, drainOnReturn = false): AsyncGenerator<StreamChunk> {
+    const issuingProcess = session.process;
+    let hasThinking = false;
+    let hasFinalText = false;
+    let hasError = false;
+    for await (const chunk of super.processStream(stderrRef, session, drainOnReturn)) {
+      if (chunk.type === 'thinking' && chunk.content?.trim()) { hasThinking = true; }
+      if (chunk.type === 'text' && chunk.content?.trim()) { hasFinalText = true; }
+      if (chunk.type === 'error' || chunk.type === 'auth_error') { hasError = true; }
+      yield chunk;
+    }
+
+    // Reasoning alone is not a final answer. Only ordinary completion of this
+    // reader may add the error; Stop, replacement and consumer return must not.
+    if (issuingProcess && session.process === issuingProcess && !session.cancelled
+      && issuingProcess.exitCode === 0 && issuingProcess.signalCode === null
+      && hasThinking && !hasFinalText && !hasError) {
+      yield { type: 'error', content: 'Continue returned no final answer. The reasoning output was preserved; retry the request.' };
+    }
   }
 
   /**

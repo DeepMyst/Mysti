@@ -30,9 +30,12 @@ export function initializeClaudeControl(state: ClaudeControlState, prompt: strin
   } }) + '\n';
 }
 
-export function isClaudeControlFailure(data: Record<string, unknown>): boolean {
-  return data.type === 'control_response' && isRecord(data.response)
-    && data.response.request_id === INITIALIZE_ID && data.response.subtype === 'error';
+export function isClaudeControlFailure(data: Record<string, unknown>, state?: ClaudeControlState): boolean {
+  // Only the outstanding initialization owns this response. A repeated frame
+  // after success must not terminate a later turn on the same process.
+  return !!state && !state.initialized && state.pendingPrompt !== undefined
+    && data.type === 'control_response' && isRecord(data.response)
+    && data.response.request_id === INITIALIZE_ID && data.response.subtype !== 'success';
 }
 
 /** Handles only SDK control frames; ordinary streaming stays in the provider. */
@@ -81,7 +84,12 @@ export function handleClaudeControl(
     // Mysti renders these native tools as question/plan cards from the stream.
     // Their answers start a scoped follow-up turn; never leave a second generic
     // permission card pending or authorize a plan-mode change implicitly.
-    if (name === 'AskUserQuestion' || name === 'ExitPlanMode') { respond(false); return null; }
+    if (name === 'AskUserQuestion' || name === 'ExitPlanMode') {
+      reply({ behavior: 'deny', message: name === 'AskUserQuestion'
+        ? 'Mysti is presenting a pending question to the user. Their answer will arrive in a scoped follow-up message. End this turn and wait for that answer; do not infer an answer or describe this handoff as a refusal or cancellation.'
+        : 'Mysti is presenting a pending plan for user review. Their decision and any execution instructions will arrive in a scoped follow-up message. Keep the current permission mode, end this turn, and wait; do not execute the plan or describe this handoff as a rejection.' });
+      return null;
+    }
     if (!state?.initialized || !requests) { respond(false); return null; }
     requests.request(data.request_id, {
       id: typeof request.tool_use_id === 'string' ? request.tool_use_id : data.request_id,

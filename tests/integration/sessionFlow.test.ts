@@ -31,6 +31,7 @@ vi.mock('../../src/managers/PlanOptionManager', () => ({
 }));
 
 import { ChatViewProvider } from '../../src/providers/ChatViewProvider';
+import { ContextManager } from '../../src/managers/ContextManager';
 import { PermissionManager } from '../../src/managers/PermissionManager';
 import { clearMockConfig, Uri } from '../helpers/mockVscode';
 import { createModelRegistryStub } from '../helpers/modelRegistryStub';
@@ -96,7 +97,7 @@ function createHarness(): Harness {
   const provider: any = new ChatViewProvider({
     extensionUri: extensionContext.extensionUri,
     extensionContext,
-    contextManager: { getContext: () => [], setAutoContext: () => undefined, clearPanelContext: () => undefined } as any,
+    contextManager: new ContextManager(extensionContext),
     conversationManager,
     providerManager,
     suggestionManager: noop,
@@ -227,6 +228,55 @@ describe('a session, end to end', () => {
     await start(h, { shape: 'review', agentIds: ['claude-code', 'openai-codex'], brief: 'x' });
     expect(h.messages.some(m => m.type === 'responseComplete')).toBe(true);
     expect(h.added.filter(m => m.role === 'assistant')).toHaveLength(1);
+  });
+
+  it.each(['done', 'error'])('a stopped session cannot publish late %s or mark its replacement idle', async outcome => {
+    const host = h.provider;
+    host._brainstormManager.cancelSession = vi.fn();
+    const starts: Array<() => void> = [], releases: Array<() => void> = [];
+    const ready = [0, 1].map(index => new Promise<void>(resolve => { starts[index] = resolve; }));
+    const waits = [0, 1].map(index => new Promise<void>(resolve => { releases[index] = resolve; }));
+    let calls = 0;
+    host._sessionManager = { cancelPanel: vi.fn(), run: vi.fn(async function* () {
+      const own = calls++;
+      starts[own](); await waits[own];
+      if (own === 0 && outcome === 'error') { throw new Error('Obsolete session failed'); }
+      yield { type: 'session_complete', markdown: own === 0 ? 'Obsolete session result' : 'Replacement session result', lanes: [] };
+    }) };
+    const first = start(h, { shape: 'review', agentIds: ['claude-code', 'openai-codex'], brief: 'Original task' });
+    let second: Promise<void> | undefined;
+    try {
+      await ready[0]; await host._handleMessage({ type: 'cancelRequest', panelId: 'sidebar' });
+      second = start(h, { shape: 'review', agentIds: ['claude-code', 'openai-codex'], brief: 'Replacement task' });
+      await ready[1];
+      const beforeLate = h.messages.length;
+      host._lifecycleManager.markIdle.mockClear();
+      releases[0](); await first;
+      expect(h.messages.slice(beforeLate)).toEqual([]);
+      expect(h.added.filter(message => message.role === 'assistant')).toEqual([]);
+      expect(host._lifecycleManager.markIdle).not.toHaveBeenCalled();
+      expect(host._runningPanels.has('sidebar')).toBe(true);
+      releases[1](); await second;
+      expect(h.added.filter(message => message.role === 'assistant').map(message => message.content)).toEqual(['Replacement session result']);
+      expect(h.messages.filter(message => message.type === 'responseComplete')).toHaveLength(1);
+      expect(host._runningPanels.has('sidebar')).toBe(false);
+    } finally { releases.forEach(release => release()); await first; await second; }
+  });
+
+  it.each(['conversation', 'turn', 'Stop'])('a session waiting for compaction cannot overwrite replacement %s work', async replacement => {
+    const host = h.provider;
+    host._brainstormManager.cancelSession = vi.fn();
+    let release!: () => void;
+    host._panelCompactions.set('sidebar', new Promise<void>(resolve => { release = resolve; }));
+    const pending = start(h, { shape: 'review', agentIds: ['claude-code', 'openai-codex'], brief: 'Delayed original session' });
+    if (replacement === 'conversation') host._panelStates.get('sidebar').currentConversationId = 'replacement';
+    if (replacement === 'turn') host._mystiRunGen.set('sidebar', (host._mystiRunGen.get('sidebar') || 0) + 1);
+    if (replacement === 'Stop') await host._handleMessage({ type: 'cancelRequest', panelId: 'sidebar' });
+    const beforeLate = h.messages.length;
+    release(); await pending;
+    expect(h.sends).toEqual([]);
+    expect(h.added).toEqual([]);
+    expect(h.messages.slice(beforeLate)).toEqual([]);
   });
 });
 

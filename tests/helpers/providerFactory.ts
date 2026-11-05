@@ -12,6 +12,7 @@ import { ClineProvider } from '../../src/providers/cline/ClineProvider';
 import { CopilotProvider } from '../../src/providers/copilot/CopilotProvider';
 import { CursorProvider } from '../../src/providers/cursor/CursorProvider';
 import { OpenClawProvider } from '../../src/providers/openclaw/OpenClawProvider';
+import { openClawBackendRedactor } from '../../src/providers/openclaw/OpenClawBackendDiagnostics';
 import { OpenCodeProvider } from '../../src/providers/opencode/OpenCodeProvider';
 import { QwenCodeProvider } from '../../src/providers/qwen/QwenCodeProvider';
 import { HermesProvider } from '../../src/providers/hermes/HermesProvider';
@@ -128,21 +129,27 @@ export class TestableCursorProvider extends CursorProvider {
 }
 
 export class TestableOpenClawProvider extends OpenClawProvider {
-  constructor() { super(createMockContext()); }
+  protected override async _captureRequestDiagnostics(cwd: string, env: NodeJS.ProcessEnv): Promise<(text: string) => string> {
+    return this._captureBackendDiagnostics(cwd, env);
+  }
+  protected override _captureBackendDiagnostics(_cwd: string, env: NodeJS.ProcessEnv): (text: string) => string {
+    // Config diagnostic reads are covered by the owned production-bundle
+    // fixtures; source fixtures must not read the developer's native profile.
+    return openClawBackendRedactor(undefined, env);
+  }
+  constructor() {
+    super(createMockContext());
+    // Source fixtures qualify an unknown CLI unless a test selects one. Do not
+    // borrow the developer machine's installed package/version for auth tests.
+    this._cachedCliPath = '/owned-unavailable-fixture/openclaw';
+  }
   public parseStreamLine(line: string, session: PanelSessionState): StreamChunk | null {
     return super.parseStreamLine(line, session);
   }
   public buildCliArgs(settings: Settings, session: PanelSessionState): string[] {
     return super.buildCliArgs(settings, session);
   }
-  /** `openclaw agent` reads the prompt from a file, not stdin — see _deliverPrompt. */
-  public deliverPrompt(
-    proc: Parameters<OpenClawProvider['_deliverPromptForTest']>[0],
-    prompt: string,
-    session: PanelSessionState
-  ): Promise<void> {
-    return this._deliverPromptForTest(proc, prompt, session);
-  }
+
 }
 
 export class TestableOpenCodeProvider extends OpenCodeProvider {
@@ -203,8 +210,8 @@ export class TestableHermesProvider extends HermesProvider {
   public formatPersistentInput(prompt: string, session: PanelSessionState): string {
     return super._formatPersistentInput(prompt, session);
   }
-  public isResponseBoundary(line: string): boolean {
-    return super._isResponseBoundary(line);
+  public isResponseBoundary(line: string, session?: PanelSessionState): boolean {
+    return super._isResponseBoundary(line, session);
   }
   public interruptPersistentProcess(session: PanelSessionState): void {
     super._interruptPersistentProcess(session);
@@ -228,8 +235,8 @@ export class TestableKimiProvider extends KimiCodeProvider {
   public formatPersistentInput(prompt: string, session: PanelSessionState): string {
     return super._formatPersistentInput(prompt, session);
   }
-  public isResponseBoundary(line: string): boolean {
-    return super._isResponseBoundary(line);
+  public isResponseBoundary(line: string, session?: PanelSessionState): boolean {
+    return super._isResponseBoundary(line, session);
   }
   public interruptPersistentProcess(session: PanelSessionState): void {
     super._interruptPersistentProcess(session);

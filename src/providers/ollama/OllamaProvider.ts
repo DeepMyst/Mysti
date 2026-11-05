@@ -14,16 +14,18 @@
 import * as vscode from 'vscode';
 import { BaseCliProvider, type PanelSessionState } from '../base/BaseCliProvider';
 import { toolKind } from '../../utils/toolNames';
-import { clampEffort } from '../../utils/effort';
+import { clampEffort, EFFORT_ORDER } from '../../utils/effort';
+import { createAbortScope } from '../../utils/abortScope';
 import type { EffortLevel } from '../../types';
 
-/** Ollama `think` graded strings — reasoning models accept low/medium/high/max (no xhigh). */
-const OLLAMA_EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'max'];
+/** Effort intent is resolved against the selected model's actual thinking controls. */
+const OLLAMA_EFFORT_LEVELS: EffortLevel[] = [...EFFORT_ORDER];
 import type {
   CliDiscoveryResult,
   AuthConfig,
   ProviderCapabilities,
   PersonaConfig,
+  ProviderInputResolver,
 } from '../base/IProvider';
 import type {
   Settings,
@@ -126,6 +128,7 @@ export class OllamaProvider extends BaseCliProvider {
     supportsStreaming: true,
     supportsThinking: false,
     supportsToolUse: true,
+    toolCallsAreProposals: true,
     supportsSessions: false,
     // Flag/reality alignment (Plan 02 Phase 1): attachments are dropped
     // before the request (Plan 00 Batch 3.5 owns wiring real image support).
@@ -135,7 +138,7 @@ export class OllamaProvider extends BaseCliProvider {
     // Plan 02 Phase 1 capability matrix
     thinkingStyle: 'none',
     thinkingLevelEffective: false,
-    effortLevels: OLLAMA_EFFORT_LEVELS,  // `think` graded strings (reasoning models)
+    effortLevels: OLLAMA_EFFORT_LEVELS,
     effortDefault: 'medium',
     planMode: 'detected',
     sessionKind: 'none',           // stateless HTTP requests
@@ -226,6 +229,56 @@ export class OllamaProvider extends BaseCliProvider {
     return this._getEndpoint();
   }
 
+  /** Resolve advisory effort without sending controls the selected model cannot honor. */
+  private async _thinkingControl(
+    endpoint: string, model: string, effort: EffortLevel, requestSignal: AbortSignal,
+  ): Promise<string | boolean | undefined> {
+    const scope = createAbortScope([requestSignal], DISCOVERY_PROBE_TIMEOUT_MS);
+    try {
+      requestSignal.throwIfAborted();
+      const response = await fetch(`${endpoint}/api/show`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model }),
+        signal: scope.signal,
+      });
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => {});
+        return undefined;
+      }
+      const data: unknown = await response.json();
+      if (!data || typeof data !== 'object' || Array.isArray(data)) { return undefined; }
+      const { thinking, capabilities } = data as Record<string, unknown>;
+      if (thinking === undefined || thinking === null) {
+        // Older servers advertise boolean support without named-level metadata.
+        return Array.isArray(capabilities)
+          && capabilities.every(value => typeof value === 'string')
+          && capabilities.includes('thinking') ? true : undefined;
+      }
+      if (typeof thinking !== 'object' || Array.isArray(thinking)) { return undefined; }
+      const descriptor = thinking as Record<string, unknown>;
+      const values = descriptor.values;
+      if (!Array.isArray(values) || values.length === 0
+        || !values.every(value => typeof value === 'boolean'
+          || (typeof value === 'string' && value.length > 0))
+        || new Set(values).size !== values.length
+        || !values.includes(descriptor.default)) {
+        return undefined;
+      }
+      const named = clampEffort(effort, EFFORT_ORDER.filter(level => values.includes(level)));
+      if (named) { return named; }
+      if (values.includes(true)) { return true; }
+      // Custom level names have no shared ordering; preserve the declared default.
+      return typeof descriptor.default === 'string' ? descriptor.default : undefined;
+    } catch {
+      // Unknown controls leave the model default intact. The caller separately
+      // checks request cancellation before dispatching any chat.
+      return undefined;
+    } finally {
+      scope.dispose();
+    }
+  }
+
   /**
    * The window Ollama actually loaded `model` with: `/api/ps` `context_length`,
    * the runtime num_ctx after its VRAM-tier default (4k / 32k / 256k), the
@@ -233,9 +286,10 @@ export class OllamaProvider extends BaseCliProvider {
    * the catalog lists is up to 64x too big — and Ollama silently cuts the
    * middle out of an over-long prompt, so fill never reached the threshold.
    */
-  private async _loadedContextLength(endpoint: string, model: string): Promise<number | undefined> {
+  private async _loadedContextLength(endpoint: string, model: string, requestSignal: AbortSignal): Promise<number | undefined> {
+    const scope = createAbortScope([requestSignal], DISCOVERY_PROBE_TIMEOUT_MS);
     try {
-      const response = await fetch(`${endpoint}/api/ps`, { signal: AbortSignal.timeout(DISCOVERY_PROBE_TIMEOUT_MS) });
+      const response = await fetch(`${endpoint}/api/ps`, { signal: scope.signal });
       if (!response.ok) { return undefined; }
       const data = await response.json() as { models?: Array<{ name?: string; model?: string; context_length?: number }> };
       const bare = (id?: string) => id?.replace(/:latest$/, '');
@@ -243,6 +297,8 @@ export class OllamaProvider extends BaseCliProvider {
       return typeof loaded?.context_length === 'number' && loaded.context_length > 0 ? loaded.context_length : undefined;
     } catch {
       return undefined;
+    } finally {
+      scope.dispose();
     }
   }
 
@@ -351,6 +407,13 @@ export class OllamaProvider extends BaseCliProvider {
     return undefined;
   }
 
+  protected override _getEffectiveModel(settings: Settings): string {
+    // Keep the existing picker-first policy in one place for wire requests
+    // and host attribution, including the configured fallback.
+    return settings.routedModel || settings.model
+      || vscode.workspace.getConfiguration('mysti').get<string>('ollamaModel', '') || this.config.defaultModel;
+  }
+
   // --- Message Sending (HTTP API with NDJSON streaming) ---
 
   async *sendMessage(
@@ -363,7 +426,9 @@ export class OllamaProvider extends BaseCliProvider {
     _providerManager?: unknown,
     agentConfig?: AgentConfiguration,
     attachments?: Attachment[],
+    resolveInput?: ProviderInputResolver,
   ): AsyncGenerator<StreamChunk> {
+    if (resolveInput && !resolveInput()) { return; }
     const session = this._getSession(panelId) as OllamaSessionState;
     const config = vscode.workspace.getConfiguration('mysti');
 
@@ -372,21 +437,29 @@ export class OllamaProvider extends BaseCliProvider {
     // Model precedence: effective/routed model FIRST (so the Mysti coordinator's
     // tier-routing / routedModel is honored, not silently dropped), then the
     // user-configured provider model, then the provider default.
-    const model = this._getEffectiveModel(settings) || config.get<string>('ollamaModel', '') || this.config.defaultModel;
+    const model = this._getEffectiveModel(settings);
     const temperature = config.get<number>('ollamaTemperature', 0.7);
     const contextLength = config.get<number>('ollamaContextLength', 0);
     const keepAlive = config.get<string>('ollamaKeepAlive', '5m');
     const timeout = config.get<number>('ollamaRequestTimeout', 120000);
 
     // Set up cancellation
-    session.abortController = new AbortController();
-    const timeoutId = setTimeout(() => session.abortController?.abort(), timeout);
+    const requestController = new AbortController();
+    session.abortController = requestController;
+    let requestUsage: OllamaSessionState['lastUsageStats'] = null;
+    session.lastUsageStats = null;
+    const timeoutId = setTimeout(() => requestController.abort(), timeout);
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let dispatched = false;
 
     try {
-      // Build prompt using inherited method
-      const fullPrompt = await this.buildPromptAsync(
+      const render = resolveInput ? await this.preparePromptRenderer(
+        conversation, settings, persona, agentConfig, attachments,
+      ) : undefined;
+      const fullPrompt = render ? '' : await this.buildPromptAsync(
         content, context, conversation, settings, persona, agentConfig, attachments,
       );
+      requestController.signal.throwIfAborted();
 
       // Build request body
       const body: Record<string, unknown> = {
@@ -399,20 +472,26 @@ export class OllamaProvider extends BaseCliProvider {
       if (contextLength > 0) {
         (body.options as Record<string, unknown>).num_ctx = contextLength;
       }
-      // Reasoning effort → Ollama `think` (top-level graded string). Reasoning
-      // models accept low/medium/high/max; non-reasoning models ignore it.
-      const ollamaEffort = clampEffort(settings.effortLevel, OLLAMA_EFFORT_LEVELS);
-      if (ollamaEffort) {
-        body.think = ollamaEffort;
+      if (settings.effortLevel) {
+        const think = await this._thinkingControl(endpoint, model, settings.effortLevel, requestController.signal);
+        if (think !== undefined) { body.think = think; }
       }
+      if (resolveInput && render) {
+        if (requestController.signal.aborted || session.abortController !== requestController) { return; }
+        const input = resolveInput();
+        if (!input || requestController.signal.aborted || session.abortController !== requestController) { return; }
+        body.messages = [{ role: 'user', content: render(input.content, input.context) }];
+      }
+      requestController.signal.throwIfAborted();
 
       console.log(`[Mysti] Ollama: Sending request to ${endpoint}/api/chat with model ${model}`);
 
+      dispatched = true;
       const response = await fetch(`${endpoint}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
-        signal: session.abortController.signal,
+        signal: requestController.signal,
       });
 
       if (!response.ok) {
@@ -429,32 +508,46 @@ export class OllamaProvider extends BaseCliProvider {
       }
 
       // Read NDJSON stream
-      const reader = response.body.getReader();
+      reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
+      let sawTerminal = false;
 
       while (true) {
+        requestController.signal.throwIfAborted();
         const { done, value } = await reader.read();
-        if (done) { break; }
-
-        buffer += decoder.decode(value, { stream: true });
+        requestController.signal.throwIfAborted();
+        buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
         buffer = lines.pop()!;
+        // Some transports end immediately after the final JSON object. Flush
+        // decoder state and process that tail before classifying completion.
+        if (done && buffer.trim()) { lines.push(buffer); buffer = ''; }
 
         for (const line of lines) {
+          // Stop can arrive at a yield while later records are already buffered.
+          requestController.signal.throwIfAborted();
           if (!line.trim()) { continue; }
 
           try {
             const chunk = JSON.parse(line);
+            if (!chunk || typeof chunk !== 'object' || Array.isArray(chunk)) {
+              throw new Error('Ollama returned invalid streaming data; the answer may be incomplete.');
+            }
+            // Once streaming starts, Ollama reports generation failures inside
+            // the NDJSON body while retaining the original HTTP status.
+            if (typeof chunk.error === 'string') {
+              throw new Error(`Ollama error: ${chunk.error || 'Generation failed'}`);
+            }
 
             // Handle tool calls.
             // Tool-card resolution strategy (Plan 02 Phase 3): Ollama never
             // executes tools, so no tool_result is EVER emitted — and we must
             // NOT fabricate one. The manifest declares emitsToolResults: false
-            // and the webview auto-resolves running tool cards for such
-            // providers when the response completes.
+            // and every request remains an unexecuted proposal.
             if (chunk.message?.tool_calls && Array.isArray(chunk.message.tool_calls)) {
               for (const toolCall of chunk.message.tool_calls) {
+                requestController.signal.throwIfAborted();
                 const fn = toolCall.function;
                 if (fn) {
                   yield {
@@ -463,40 +556,65 @@ export class OllamaProvider extends BaseCliProvider {
                       id: `ollama-tool-${Date.now()}`,
                       name: fn.name || '',
                       input: fn.arguments || {},
-                      status: 'running',
+                      status: 'proposed',
+                      proposalOnly: true,
                       kind: toolKind(fn.name || ''),
                     }
                   };
                 }
               }
-              continue;
             }
 
+            // A record may contain both proposals and text, including its
+            // terminal usage. Stop can arrive at the final proposal yield.
+            requestController.signal.throwIfAborted();
             // Handle text content
             if (chunk.message?.content) {
               yield { type: 'text', content: chunk.message.content };
             }
+            requestController.signal.throwIfAborted();
 
             // Handle completion
             if (chunk.done === true) {
-              session.lastUsageStats = {
+              sawTerminal = true;
+              requestUsage = {
                 input_tokens: chunk.prompt_eval_count || 0,
                 output_tokens: chunk.eval_count || 0,
               };
-              console.log('[Mysti] Ollama: Stream complete, usage:', session.lastUsageStats);
+              // Keep the legacy accessor scoped to the current request. The
+              // terminal chunk uses this invocation's own usage below.
+              if (session.abortController === requestController) {
+                session.lastUsageStats = requestUsage;
+              }
+              console.log('[Mysti] Ollama: Stream complete, usage:', requestUsage);
             }
           } catch (parseErr) {
-            console.log('[Mysti] Ollama: Failed to parse NDJSON line:', line.substring(0, 200));
+            // Cancellation inside a parsed record is not malformed NDJSON.
+            requestController.signal.throwIfAborted();
+            if (parseErr instanceof SyntaxError) {
+              throw new Error('Ollama returned malformed streaming data; the answer may be incomplete.', { cause: parseErr });
+            }
+            throw parseErr;
           }
         }
+        if (done) { break; }
       }
 
-      const storedUsage = session.lastUsageStats;
-      session.lastUsageStats = null;
-      const contextWindow = await this._loadedContextLength(endpoint, model) ?? (contextLength > 0 ? contextLength : undefined);
+      requestController.signal.throwIfAborted();
+      if (!sawTerminal) {
+        throw new Error('Ollama response ended before completion; the answer may be incomplete.');
+      }
+      const storedUsage = requestUsage;
+      if (session.lastUsageStats === requestUsage) {
+        session.lastUsageStats = null;
+      }
+      const contextWindow = await this._loadedContextLength(endpoint, model, requestController.signal)
+        ?? (contextLength > 0 ? contextLength : undefined);
+      requestController.signal.throwIfAborted();
       yield { type: 'done', ...(storedUsage ? { usage: storedUsage } : {}), ...(contextWindow ? { contextWindow } : {}) };
 
     } catch (error) {
+      if (resolveInput && !dispatched && (requestController.signal.aborted || session.abortController !== requestController)) { return; }
       if (error instanceof Error && error.name === 'AbortError') {
         yield { type: 'error', content: 'Request cancelled or timed out' };
       } else {
@@ -505,22 +623,30 @@ export class OllamaProvider extends BaseCliProvider {
       yield { type: 'done' };
     } finally {
       clearTimeout(timeoutId);
+      if (session.lastUsageStats === requestUsage) {
+        session.lastUsageStats = null;
+      }
       // Plan 18 (2.4 audit): ABORT on the way out — a consumer that abandons
       // this generator (Stop, new message, collaborator teardown) otherwise
       // leaks the connection and the local model keeps generating (GPU burn)
       // to completion. Aborting an already-finished request is a no-op.
-      session.abortController?.abort();
-      session.abortController = null;
+      requestController.abort();
+      await reader?.cancel().catch(() => {});
+      reader?.releaseLock();
+      if (session.abortController === requestController) {
+        session.abortController = null;
+      }
     }
   }
 
   // --- Cancellation ---
 
   cancelCurrentRequest(panelId?: string): void {
-    if (panelId) {
-      const session = this._panelSessions.get(panelId) as OllamaSessionState | undefined;
+    const sessions = panelId ? [this._panelSessions.get(panelId)] : [...this._panelSessions.values()];
+    for (const state of sessions) {
+      const session = state as OllamaSessionState | undefined;
       if (session?.abortController) {
-        console.log('[Mysti] Ollama: Cancelling request for panel:', panelId);
+        console.log('[Mysti] Ollama: Cancelling request for panel:', session.panelId);
         session.abortController.abort();
         session.abortController = null;
       }
@@ -539,16 +665,19 @@ export class OllamaProvider extends BaseCliProvider {
   }
 
   clearSession(panelId?: string): void {
+    this.cancelCurrentRequest(panelId);
     super.clearSession(panelId);
-    if (panelId) {
-      const session = this._panelSessions.get(panelId) as OllamaSessionState | undefined;
+    const sessions = panelId ? [this._panelSessions.get(panelId)] : [...this._panelSessions.values()];
+    for (const state of sessions) {
+      const session = state as OllamaSessionState | undefined;
       if (session) {
         session.lastUsageStats = null;
-        if (session.abortController) {
-          session.abortController.abort();
-          session.abortController = null;
-        }
       }
     }
+  }
+
+  dispose(): void {
+    this.cancelCurrentRequest();
+    super.dispose();
   }
 }

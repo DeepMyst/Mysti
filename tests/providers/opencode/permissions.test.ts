@@ -19,19 +19,12 @@ describe('OpenCode permission flag mapping', () => {
     provider = new TestableOpenCodeProvider();
   });
 
-  it.each([
-    ['quick-plan'],
-    ['detailed-plan'],
-  ] as const)('should use --agent plan for %s mode', (mode) => {
-    const args = provider.buildCliArgs(s({ mode }), createOpenCodeSession());
-    expect(args).toContain('--agent');
-    expect(args).toContain('plan');
+  it.each(['quick-plan', 'detailed-plan'] as const)('rejects unsupported local %s before dispatch', mode => {
+    expect(() => provider.buildCliArgs(s({ mode }), createOpenCodeSession())).toThrow(/OpenCode CLI cannot enforce.*native approvals/);
   });
 
-  it('should use --agent plan for read-only access', () => {
-    const args = provider.buildCliArgs(s({ accessLevel: 'read-only' }), createOpenCodeSession());
-    expect(args).toContain('--agent');
-    expect(args).toContain('plan');
+  it('rejects unsupported local read-only access', () => {
+    expect(() => provider.buildCliArgs(s({ accessLevel: 'read-only' }), createOpenCodeSession())).toThrow(/OpenCode CLI cannot enforce.*native approvals/);
   });
 
   it.each([
@@ -39,7 +32,11 @@ describe('OpenCode permission flag mapping', () => {
     { mode: 'default' as const, accessLevel: 'ask-permission' as const },
     { mode: 'edit-automatically' as const, accessLevel: 'full-access' as const },
     { mode: 'ask-before-edit' as const, accessLevel: 'ask-permission' as const },
-  ])('should use --agent build for mode=$mode access=$accessLevel', ({ mode, accessLevel }) => {
+  ])('honors or explicitly rejects mode=$mode access=$accessLevel', ({ mode, accessLevel }) => {
+    if (accessLevel !== 'full-access') {
+      expect(() => provider.buildCliArgs(s({ mode, accessLevel }), createOpenCodeSession())).toThrow(/native approvals/);
+      return;
+    }
     const args = provider.buildCliArgs(s({ mode, accessLevel }), createOpenCodeSession());
     expect(args).toContain('--agent');
     expect(args).toContain('build');

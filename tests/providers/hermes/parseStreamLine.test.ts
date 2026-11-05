@@ -368,16 +368,34 @@ describe('Hermes response boundary + interrupt + fallback', () => {
   });
 
   it('boundary fires only on prompt responses (stopReason) and error responses', () => {
-    expect(provider.isResponseBoundary(JSON.stringify({ jsonrpc: '2.0', id: 3, result: { stopReason: 'end_turn' } }))).toBe(true);
-    expect(provider.isResponseBoundary(JSON.stringify({ jsonrpc: '2.0', id: 2, error: { code: -32000, message: 'auth' } }))).toBe(true);
+    const boundary = (data: unknown) => provider.isResponseBoundary(JSON.stringify(data), session);
+    session.promptId = 3;
+    expect(boundary({ jsonrpc: '2.0', id: 3, result: { stopReason: 'end_turn' } })).toBe(true);
+    expect(boundary({ jsonrpc: '2.0', id: 3, result: { stop_reason: 'end_turn' } })).toBe(true);
+    expect(boundary({ jsonrpc: '2.0', id: 3, error: { code: -32000, message: 'prompt' } })).toBe(true);
+    session.promptId = null;
+    session.sessionNewId = 2;
+    expect(boundary({ jsonrpc: '2.0', id: 2, error: { code: -32000, message: 'auth' } })).toBe(true);
+    session.sessionNewId = null;
+    session.initializeId = 1;
+    expect(boundary({ jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'initialize' } })).toBe(true);
     // initialize / session-new success responses do NOT end the turn
-    expect(provider.isResponseBoundary(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { protocolVersion: 1 } }))).toBe(false);
-    expect(provider.isResponseBoundary(JSON.stringify({ jsonrpc: '2.0', id: 2, result: { sessionId: 's' } }))).toBe(false);
+    expect(boundary({ jsonrpc: '2.0', id: 1, result: { protocolVersion: 1 } })).toBe(false);
+    expect(boundary({ jsonrpc: '2.0', id: 1, error: null, result: { protocolVersion: 1 } })).toBe(false);
+    expect(boundary({ jsonrpc: '2.0', id: 1, result: { stopReason: 'end_turn' } })).toBe(false);
+    expect(boundary({ jsonrpc: '2.0', id: 2, result: { sessionId: 's' } })).toBe(false);
+    session.initializeId = null;
+    session.promptId = 4;
+    for (const id of [1, 2, 3, 99, '4', null]) {
+      expect(boundary({ jsonrpc: '2.0', id, result: { stopReason: 'end_turn' } })).toBe(false);
+      expect(boundary({ jsonrpc: '2.0', id, error: { message: 'unrelated' } })).toBe(false);
+    }
     // server→client requests carry method — never a boundary
-    expect(provider.isResponseBoundary(JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'session/request_permission', params: {} }))).toBe(false);
+    expect(boundary({ jsonrpc: '2.0', id: 4, method: 'session/request_permission', params: {} })).toBe(false);
     // notifications and junk
-    expect(provider.isResponseBoundary(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: {} }))).toBe(false);
-    expect(provider.isResponseBoundary('not json')).toBe(false);
+    expect(boundary({ jsonrpc: '2.0', method: 'session/update', params: {} })).toBe(false);
+    expect(provider.isResponseBoundary('not json', session)).toBe(false);
+    expect(provider.isResponseBoundary(JSON.stringify({ id: 4, result: { stopReason: 'end_turn' } }))).toBe(false);
   });
 
   it('interrupt DROPS the process (no session/cancel, no raw Ctrl+C byte) so the next turn respawns clean', () => {
@@ -398,7 +416,7 @@ describe('Hermes response boundary + interrupt + fallback', () => {
     // 'plan', so WITHOUT the override a read-only flip would NOT respawn and
     // the permission snapshot would go stale (the confirmed bug).
     provider.buildPersistentCliArgs(settings({ accessLevel: 'full-access', mode: 'detailed-plan' }), session);
-    session.persistentSettings = { model: undefined, permissionMode: 'plan', thinkingLevel: 'none', effortLevel: '' };
+    session.persistentSettings = { cwd: '/mock/workspace', model: undefined, permissionMode: 'plan', thinkingLevel: 'none', effortLevel: '' };
 
     expect(provider.persistentSettingsMatch(session, settings({ accessLevel: 'full-access', mode: 'detailed-plan' }))).toBe(true);
     // Flip access to read-only under the same plan mode → must break the match

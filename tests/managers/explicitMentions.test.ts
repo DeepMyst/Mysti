@@ -30,6 +30,57 @@ describe('explicit assignment planning', () => {
     expect(resolved.map(m => m.value)).toEqual(['claude-code', 'openai-codex']);
     expect(resolved[1].role).toBe('reviewer');
   });
+  it('recognizes sentence punctuation without treating similarly named files as agents', () => {
+    const text = 'Get a second opinion from @codex. Compare @claude... Keep @claude.md as a file.';
+    const resolved = resolveExplicitMentions(text);
+    expect(resolved.map(m => m.value)).toEqual(['openai-codex', 'claude-code']);
+    expect(resolved.map(m => text.slice(m.startIndex, m.endIndex))).toEqual(['@codex', '@claude']);
+  });
+  it('does not mistake filename backticks for code or hide the following real agent', () => {
+    const text = '@"/workspace/a`file.ts" @gemini `example`';
+    expect(resolveExplicitMentions(text).map(token => token.value)).toEqual(['google-gemini']);
+  });
+  it('keeps unfinished quoted examples inside code separate from following agent assignments', () => {
+    expect(resolveExplicitMentions('`@"unfinished` @gemini').map(token => token.value)).toEqual(['google-gemini']);
+  });
+  for (const prefix of ['\\', '名字', '𐐀', '𝟘']) {
+    it(`does not reconstruct an escaped or embedded agent after ${JSON.stringify(prefix)}`, () => {
+      expect(resolveExplicitMentions(`${prefix}@gemini then @codex:reviewer`).map(token => token.value))
+        .toEqual(['openai-codex']);
+    });
+  }
+  it('allows an agent after an even pair of escaped backslashes', () => {
+    expect(resolveExplicitMentions(String.raw`\\@gemini then @codex:reviewer`).map(token => token.value))
+      .toEqual(['google-gemini', 'openai-codex']);
+  });
+  it('keeps an explicit agent after emoji punctuation', () => {
+    expect(resolveExplicitMentions('🙂@gemini explain this').map(token => token.value)).toEqual(['google-gemini']);
+  });
+  it('keeps each agent’s assigned file when different files are mentioned in one request', () => {
+    const text = '@claude review @src/auth.ts; @codex assess @src/cache.ts';
+    const files = ['src/auth.ts', 'src/cache.ts'].map(value => ({
+      type: 'file' as const, value, displayName: `@${value}`,
+      startIndex: text.indexOf(`@${value}`), endIndex: text.indexOf(`@${value}`) + value.length + 1,
+    }));
+    const phases = planExplicitMentions(text, resolveExplicitMentions(text, files));
+    expect(phases).toHaveLength(1);
+    expect(phases[0].assignments.map(a => a.brief)).toEqual(['review src/auth.ts', 'assess src/cache.ts']);
+  });
+  it.each([
+    '/workspace/ref\n# Filename is not a new task.md',
+    '/workspace/say "hello"\\notes.ts',
+    '/workspace/雪 then @gemini note.md',
+  ])('preserves the quoted filename spelling in the assigned task: %j', value => {
+    const spelling = JSON.stringify(value), token = '@' + spelling;
+    const text = '@codex review ' + token;
+    const startIndex = text.indexOf(token);
+    const file: Mention = { type: 'file', value, displayName: token, startIndex, endIndex: startIndex + token.length };
+    const phases = planExplicitMentions(text, resolveExplicitMentions(text, [file]));
+    expect(phases).toHaveLength(1);
+    expect(phases[0].assignments).toEqual([
+      { agentId: 'openai-codex', roleId: undefined, brief: 'review ' + spelling, advisory: true },
+    ]);
+  });
   it.each([
     '@claude @codex What are your opinions on this design?',
     'Ask @claude and @codex for their opinions on this design',
@@ -169,6 +220,24 @@ describe('explicit assignment execution through the real bounded pool', () => {
     h.pm.streamFactories.set('openai-codex', () => textStream('Codex assessment'));
     const result = await h.run('@claude @codex opinions?');
     expect(result).toContain('Codex assessment'); expect(result).toContain('No opinion was substituted');
+  });
+  it('preserves completed work and blocks dependents if preparing a later phase throws', async () => {
+    const h = harness(); h.pm.setProviderAvailable('google-gemini');
+    const manager = new CollaborationManager(new CollaboratorPool(h.pm as any), {
+      buildRoleContext: async () => { throw new Error('Role catalog could not be read'); },
+    } as any);
+    h.pm.streamFactories.set('claude-code', () => textStream('COMPLETED_PARSER'));
+    h.pm.streamFactories.set('google-gemini', () => textStream('INDEPENDENT_ASSESSMENT'));
+    const result = await runExplicitMentions(manager,
+      plan('@claude write parser, then @codex:reviewer review it, then @claude fix the issues; @gemini assess documentation'),
+      h.input, m => h.events.push(m));
+    expect(h.pm.sendCalls.map(c => c.providerId)).toEqual(['claude-code', 'google-gemini']);
+    expect(result).toContain('COMPLETED_PARSER');
+    expect(result).toContain('Role catalog could not be read');
+    expect(result).toContain('preceding assignment');
+    expect(result).toContain('INDEPENDENT_ASSESSMENT');
+    expect(h.events.filter(e => e.type === 'collaborationStarted')).toHaveLength(4);
+    expect(h.events.filter(e => e.type === 'collaborationComplete')).toHaveLength(4);
   });
   it('does not start an assignment when cancelled during role resolution', async () => {
     const h = harness();

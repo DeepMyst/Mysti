@@ -15,12 +15,14 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import { spawn } from "child_process";
+import { spawn, type ChildProcess } from "child_process";
 import { BaseCliProvider, type PanelSessionState, type ProcessTracker } from "../base/BaseCliProvider";
+import { assertNonInteractivePermissionSupport } from "../base/NativeApprovalPolicy";
 import type {
 	CliDiscoveryResult,
 	AuthConfig,
 	ProviderCapabilities,
+	ProviderInputResolver,
 } from "../base/IProvider";
 import type {
 	Settings,
@@ -31,13 +33,17 @@ import type {
 	Conversation,
 	SlashCommandDefinition,
 	AgentConfiguration,
+	Attachment,
 	ToolCall,
+	UsageStats,
 } from "../../types";
 import { PROCESS_KILL_GRACE_PERIOD_MS } from "../../constants";
-import { killProcessTree, isProcessLive } from "../../utils/processKill";
+import { killProcessTree, isProcessLive, markOwnedProcessGroup } from "../../utils/processKill";
 import { getEnrichedEnv } from "../../utils/platform";
 import { toolKind } from "../../utils/toolNames";
 import { isRecord } from "../../utils/valueGuards";
+import { validateModelName } from "../../utils/validation";
+import { addUsage, hasUsageSignal, normalizeUsage } from "../../services/TokenAccounting";
 
 function toolStatus(value: unknown, fallback: ToolCall['status']): ToolCall['status'] {
 	return value === "pending" || value === "running" || value === "completed" || value === "failed"
@@ -50,17 +56,14 @@ function toolStatus(value: unknown, fallback: ToolCall['status']): ToolCall['sta
 interface ClineSessionState extends PanelSessionState {
 	activeToolCalls: Map<string, { id: string; name: string; inputJson: string }>;
 	completedToolCalls: Set<string>;
-	lastUsageStats: {
-		input_tokens: number;
-		output_tokens: number;
-		cache_creation_input_tokens?: number;
-		cache_read_input_tokens?: number;
-	} | null;
+	lastUsageStats: UsageStats | null;
+	/** Modern totals and latest-call context are different measurements. */
+	lastContextUsageStats?: UsageStats | null;
+	/** done and run_result can repeat the same terminal failure. */
+	terminalFailureReported?: boolean;
 	lastUserInput: string;
 	askReceived: boolean;
 	jsonBuffer: string[];
-	clineruleBackup: string | null;
-	clineruleWritten: boolean;
 }
 
 /**
@@ -75,6 +78,8 @@ interface ClineSessionState extends PanelSessionState {
 export class ClineProvider extends BaseCliProvider {
 	readonly id = "cline";
 	readonly displayName = "Cline";
+	private readonly _clineRequests = new Map<string, AbortController>();
+	private readonly _timedOutProcesses = new WeakSet<ChildProcess>();
 
 	readonly config: ProviderConfig = {
 		name: "cline",
@@ -141,23 +146,33 @@ export class ClineProvider extends BaseCliProvider {
 		defaultModel: "deepseek/deepseek-chat",
 	};
 
-	readonly capabilities: ProviderCapabilities = {
-		supportsStreaming: true,
-		supportsThinking: true,
-		supportsToolUse: true,
-		supportsSessions: true,
-		supportsAutoInstall: true,
-		supportsPromptEnhancement: true,
-		// Plan 02 Phase 1 capability matrix
-		thinkingStyle: 'complete-blocks',  // say:"reasoning" blocks arrive whole
-		thinkingLevelEffective: true,      // levels map to real CLI behavior
-		planMode: 'detected',
-		sessionKind: 'prompt-history',     // no actual resume — history replayed into the prompt
-		emitsToolResults: true,
-		emitsUsage: true,
-		usageConvention: 'auto',   // Cline fronts whichever vendor the user configured and passes that vendor's own numbers straight through.
-		modelSelection: 'none',            // model configured via cline CLI config; dropdown is a no-op (F18)
-	};
+	get capabilities(): ProviderCapabilities {
+		const legacy = (this._getCliMajorVersion() ?? 2) < 2;
+		return {
+			supportsAskPermission: false,
+			supportsReadOnly: legacy,
+			supportsStreaming: true,
+			supportsThinking: true,
+			supportsToolUse: true,
+			supportsSessions: true,
+			supportsAutoInstall: true,
+			// No qualified tool-free enhancement transport: the ordinary CLI starts
+			// an agent, and the former legacy text flags fail on modern Cline.
+			supportsPromptEnhancement: false,
+			// Plan 02 Phase 1 capability matrix
+			thinkingStyle: 'complete-blocks',  // say:"reasoning" blocks arrive whole
+			thinkingLevelEffective: false,     // reasoning is emitted, but this adapter sends no level/budget control
+			planMode: legacy ? 'detected' : 'none',
+			sessionKind: 'prompt-history',     // no actual resume — history replayed into the prompt
+			emitsToolResults: true,
+			emitsUsage: true,
+			// Legacy usage follows the vendor; modern Cline is normalized at parsing.
+			usageConvention: 'auto',
+			// Match the argument builder: 1.x has no model override; modern Cline
+			// accepts IDs for the account's configured backend, not a universal catalog.
+			modelSelection: (this._getCliMajorVersion() ?? 2) < 2 ? 'none' : 'custom-only',
+		};
+	}
 
 	// ============================================================================
 	// Slash command menu: Cline-specific commands
@@ -183,8 +198,6 @@ export class ClineProvider extends BaseCliProvider {
 			lastUserInput: "",
 			askReceived: false,
 			jsonBuffer: [],
-			clineruleBackup: null,
-			clineruleWritten: false,
 		};
 	}
 
@@ -192,6 +205,7 @@ export class ClineProvider extends BaseCliProvider {
 	 * Override clearSession to clear all Cline-specific state
 	 */
 	clearSession(panelId?: string): void {
+		this._abortClineRequests(panelId);
 		super.clearSession(panelId);
 
 		if (panelId) {
@@ -200,11 +214,11 @@ export class ClineProvider extends BaseCliProvider {
 				session.activeToolCalls.clear();
 				session.completedToolCalls.clear();
 				session.lastUsageStats = null;
+				session.lastContextUsageStats = undefined;
+				session.terminalFailureReported = false;
 				session.lastUserInput = "";
 				session.askReceived = false;
 				session.jsonBuffer = [];
-				session.clineruleBackup = null;
-				session.clineruleWritten = false;
 			}
 		} else {
 			for (const session of this._panelSessions.values()) {
@@ -212,17 +226,52 @@ export class ClineProvider extends BaseCliProvider {
 				clineSession.activeToolCalls.clear();
 				clineSession.completedToolCalls.clear();
 				clineSession.lastUsageStats = null;
+				clineSession.lastContextUsageStats = undefined;
+				clineSession.terminalFailureReported = false;
 				clineSession.lastUserInput = "";
 				clineSession.askReceived = false;
 				clineSession.jsonBuffer = [];
-				clineSession.clineruleBackup = null;
-				clineSession.clineruleWritten = false;
 			}
 		}
 	}
 
+	private _abortClineRequests(panelId?: string): void {
+		if (panelId) { this._clineRequests.get(panelId)?.abort(); }
+		else { for (const controller of this._clineRequests.values()) { controller.abort(); } }
+	}
+
+	protected override _prepareTimeoutCleanup(proc: ChildProcess, session: PanelSessionState): 'SIGTERM' | null {
+		const alreadyStarted = session.cancelled || this._timedOutProcesses.has(proc);
+		this._timedOutProcesses.add(proc);
+		// Timeout still emits error/done. Only transfer process cleanup so Stop,
+		// replacement, an earlier ask and finally cannot send another TERM.
+		if (session.process === proc) { session.process = null; }
+		return alreadyStarted ? null : 'SIGTERM';
+	}
+
+	override cancelCurrentRequest(panelId?: string): void {
+		this._abortClineRequests(panelId);
+		super.cancelCurrentRequest(panelId);
+	}
+
+	override dispose(): void {
+		this._abortClineRequests();
+		super.dispose();
+	}
+
 	async discoverCli(): Promise<CliDiscoveryResult> {
 		return this._discoverCliCommon();
+	}
+
+	// Modern Cline checks for updates even before parsing --version, then can
+	// launch a detached global package update on exit. Keep managed invocations
+	// stable without changing the user's native settings or explicit update flow.
+	protected override getExtraProbeEnv(): Record<string, string> {
+		return { CLINE_NO_AUTO_UPDATE: '1' };
+	}
+
+	protected override getExtraSpawnEnv(_settings: Settings): Record<string, string> {
+		return { CLINE_NO_AUTO_UPDATE: '1' };
 	}
 
 	getCliPath(): string {
@@ -353,16 +402,22 @@ export class ClineProvider extends BaseCliProvider {
 			args.push("--verbose");
 		}
 
-		// Map Mysti modes to Cline modes.
-		// Cline uses 'plan' (read-only) or 'act' (can make changes).
+		// Preserve legacy mode mapping. Modern headless CLI approval is not a
+		// usable read-only boundary: hub rejects noninteractive approval, while
+		// the local desktop callback lacks its session ID until the turn ends.
 		const { mode, accessLevel } = settings;
+		assertNonInteractivePermissionSupport(this.displayName, settings);
 		const planMode =
 			mode === "quick-plan" ||
 			mode === "detailed-plan" ||
 			accessLevel === "read-only";
+		if (planMode && !legacy) {
+			const version = /\d{1,6}\.\d{1,6}\.\d{1,6}/.exec(this._cachedCliVersion ?? '')?.[0];
+			throw new Error(`Cline${version ? ` ${version}` : ''} cannot use Plan or Read Only safely through this CLI connection. Choose another provider for this mode.`);
+		}
 
 		if (planMode) {
-			args.push(...(legacy ? ["--mode", "plan"] : ["--plan"]));
+			args.push("--mode", "plan");
 			console.log("[Mysti] Cline: Using plan mode (read-only)");
 		} else if (legacy) {
 			// 2.x+ has no act flag — act IS the default.
@@ -370,13 +425,12 @@ export class ClineProvider extends BaseCliProvider {
 			console.log("[Mysti] Cline: Using act mode");
 		}
 
-		// Auto-approve tools so the CLI never blocks on its own stdin prompt; the
-		// stream-level tool-use gate in ChatViewProvider is what actually asks the
-		// user. In act mode only — plan mode changes nothing to approve.
+		// Auto-approval is reserved for explicitly unrestricted authority. The
+		// CLI's tool notifications provide no blocking native approval response.
 		if (!planMode) {
 			args.push(...(legacy ? ["--yolo"] : ["--auto-approve", "true"]));
 			console.log(
-				`[Mysti] Cline: auto-approving tools (stream gate handles UI prompts) [mode=${mode}, access=${accessLevel}]`,
+				`[Mysti] Cline: explicitly unrestricted tools [mode=${mode}, access=${accessLevel}]`,
 			);
 		}
 
@@ -390,6 +444,17 @@ export class ClineProvider extends BaseCliProvider {
 		}
 
 		return args;
+	}
+
+	protected override _getEffectiveModel(settings: Settings): string | undefined {
+		const major = this._getCliMajorVersion();
+		// Cline 1.x has no per-request model flag. Do not claim the configured
+		// or routed selection is used by that older CLI.
+		if (major !== null && major < 2) { return undefined; }
+		if (settings.routedModel) { return settings.routedModel; }
+		const custom = vscode.workspace.getConfiguration("mysti").get<string>("clineModel", "");
+		if (custom && validateModelName(custom).valid) { return custom; }
+		return settings.model || undefined;
 	}
 
 	/**
@@ -529,20 +594,20 @@ export class ClineProvider extends BaseCliProvider {
 	 *   {"type":"agent_event","event":{"type":"usage","inputTokens":…}}
 	 *   {"type":"agent_event","event":{"type":"done","reason":"completed",…}}
 	 *   {"type":"run_result","finishReason":"completed","usage":{…},"text":"…"}
+	 * Installed 3.0.61 also emits content_start/content_end with contentType
+	 * "tool", and content_start with contentType "reasoning" and a reasoning
+	 * delta. Tool and reasoning payloads must not be treated as answer text.
 	 *
 	 * `text` is the DELTA and `accumulated` is the running total; emitting both
 	 * would double every character.
 	 */
 	private _handleModernEvent(data: Record<string, unknown>, session: ClineSessionState): StreamChunk | null {
+		if (session.lastContextUsageStats === undefined) { session.lastContextUsageStats = null; }
 		if (data.type === "run_result") {
 			if (isRecord(data.usage)) {
-				session.lastUsageStats = this._parseUsage(data.usage);
+				session.lastUsageStats = this._parseModernUsage(data.usage);
 			}
-			const finishReason = data.finishReason;
-			if (finishReason && finishReason !== "completed") {
-				return { type: "error", content: `Cline stopped: ${String(finishReason)}` };
-			}
-			return null;
+			return this._modernTerminalFailure(data.finishReason, data.text, session);
 		}
 
 		// Lifecycle only — nothing to render.
@@ -551,22 +616,49 @@ export class ClineProvider extends BaseCliProvider {
 		}
 
 		const event = isRecord(data.event) ? data.event : {};
-		switch (event.type) {
+		// Current Cline wraps tool lifecycle events in the content vocabulary.
+		// Normalize the envelope while retaining the same per-session tool IDs
+		// and inputs used by older tool_start/tool_end streams.
+		const eventType = event.contentType === "tool"
+			? event.type === "content_start" ? "tool_start"
+				: event.type === "content_end" ? "tool_end" : event.type
+			: event.type;
+		switch (eventType) {
 			case "content_start":
 			case "content_delta": {
 				// The delta, never `accumulated` — see the note above.
-				const text = typeof event.text === "string" ? event.text : "";
+				if (event.contentType === "reasoning" && event.redacted === true) { return null; }
+				if (event.contentType && !["text", "thinking", "reasoning"].includes(String(event.contentType))) {
+					return null;
+				}
+				const delta = event.contentType === "reasoning" ? event.reasoning : event.text;
+				const text = typeof delta === "string" ? delta : "";
 				if (!text) {
 					return null;
 				}
-				return event.contentType === "thinking"
+				return event.contentType === "thinking" || event.contentType === "reasoning"
 					? { type: "thinking", content: text }
 					: { type: "text", content: text };
 			}
 
 			case "usage": {
-				session.lastUsageStats = this._parseUsage(event);
+				const call = this._parseModernUsage(event, true);
+				session.lastContextUsageStats = hasUsageSignal(call) ? call : null;
+				const previous = session.lastUsageStats;
+				session.lastUsageStats = previous ? addUsage(previous, call) : { ...call };
+				if (typeof event.totalCost === 'number' && Number.isFinite(event.totalCost) && event.totalCost >= 0) {
+					session.lastUsageStats.reportedCostUsd = event.totalCost;
+				} else if (previous?.reportedCostUsd !== undefined && call.reportedCostUsd !== undefined) {
+					session.lastUsageStats.reportedCostUsd = previous.reportedCostUsd + call.reportedCostUsd;
+				}
 				return null;
+			}
+
+			case "done": {
+				// Successful text repeats the answer, but error text is the native
+				// diagnostic (for example, an invalid model ID).
+				if (isRecord(event.usage)) { session.lastUsageStats = this._parseModernUsage(event.usage); }
+				return this._modernTerminalFailure(event.reason, event.text, session);
 			}
 
 			case "tool_call":
@@ -595,7 +687,7 @@ export class ClineProvider extends BaseCliProvider {
 					type: "tool_result",
 					toolCall: {
 						id,
-						name: active?.name ?? "tool",
+						name: active?.name ?? String(event.toolName ?? event.name ?? "tool"),
 						input,
 						output,
 						status: event.isError || event.error ? "failed" : "completed",
@@ -604,14 +696,15 @@ export class ClineProvider extends BaseCliProvider {
 			}
 
 			case "error": {
-				const message = String(event.message ?? event.text ?? "Cline reported an error");
+				const nativeError = typeof event.error === "string" ? event.error
+					: isRecord(event.error) && typeof event.error.message === "string" ? event.error.message : undefined;
+				const message = String(event.message ?? event.text ?? nativeError ?? "Cline reported an error");
 				return { type: "error", content: message };
 			}
 
-			// `done` carries the full accumulated text, which has already been
-			// streamed delta by delta; re-emitting it would duplicate the answer.
-			case "done":
 			case "iteration_start":
+				session.lastContextUsageStats = null;
+				return null;
 			case "iteration_end":
 			case "content_end":
 				return null;
@@ -621,10 +714,19 @@ export class ClineProvider extends BaseCliProvider {
 		}
 	}
 
+	private _modernTerminalFailure(reason: unknown, text: unknown, session: ClineSessionState): StreamChunk | null {
+		if (!reason || reason === "completed" || session.terminalFailureReported) { return null; }
+		session.terminalFailureReported = true;
+		// Other stop reasons can carry a partial answer summary, not a diagnostic.
+		const content = reason === "error" && typeof text === "string" && text.trim()
+			? text : `Cline stopped: ${String(reason)}`;
+		// Shared processStream normalization retains issuing-process credential
+		// redaction and authentication classification before this reaches the UI.
+		return { type: "error", content };
+	}
+
 	private _handleParsedMessage(data: unknown, session: ClineSessionState): StreamChunk | null {
 		if (!isRecord(data)) { return null; }
-		console.log("[Mysti] Cline: Parsed JSON type:", data.type, "say:", data.say);
-
 		// Cline 2.0 replaced the whole event vocabulary. Both shapes are handled
 		// because the format is self-describing — `type:"say"` is 1.x, the
 		// envelope below is 2.x+ — so a user on either CLI works without Mysti
@@ -641,10 +743,6 @@ export class ClineProvider extends BaseCliProvider {
 		if (data.type === "say") {
 			// Handle thinking/reasoning messages
 			if (data.say === "reasoning" && typeof data.reasoning === "string" && data.reasoning) {
-				console.log(
-					"[Mysti] Cline: Found thinking:",
-					data.reasoning.substring(0, 50),
-				);
 				return { type: "thinking", content: data.reasoning };
 			}
 
@@ -661,13 +759,11 @@ export class ClineProvider extends BaseCliProvider {
 
 			// Handle completion_result (Cline's final clean answer)
 			if (data.say === "completion_result" && typeof data.text === "string" && data.text) {
-				console.log("[Mysti] Cline: Got completion_result:", data.text.substring(0, 100));
 				return { type: "text", content: data.text };
 			}
 
 			// Surface error messages from Cline
 			if (data.say === "error" && typeof data.text === "string" && data.text) {
-				console.log("[Mysti] Cline: Error from say message:", data.text.substring(0, 100));
 				return { type: "error", content: data.text };
 			}
 
@@ -681,7 +777,6 @@ export class ClineProvider extends BaseCliProvider {
 							: reqData.streamingFailedMessage;
 						if (isRecord(failData) && typeof failData.message === "string" && failData.message) {
 							const modelInfo = failData.modelId ? ` (model: ${failData.modelId})` : '';
-							console.log("[Mysti] Cline: Streaming failed:", failData.message);
 							return { type: "error", content: failData.message + modelInfo };
 						}
 					}
@@ -709,7 +804,6 @@ export class ClineProvider extends BaseCliProvider {
 				// Handle API request failures (e.g. missing API key, model errors)
 				if (data.ask === "api_req_failed" && typeof askData.message === "string" && askData.message) {
 					const modelInfo = askData.modelId ? ` (model: ${askData.modelId})` : '';
-					console.log("[Mysti] Cline: API request failed:", askData.message);
 					session.askReceived = true;
 					return { type: "error", content: askData.message + modelInfo };
 				}
@@ -719,7 +813,6 @@ export class ClineProvider extends BaseCliProvider {
 					if (askData.question.trim() === session.lastUserInput) {
 						return null;
 					}
-					console.log("[Mysti] Cline: Found question (ask):", askData.question);
 					// Signal that Cline is waiting for user input;
 					// sendMessage will handle process termination
 					session.askReceived = true;
@@ -853,15 +946,32 @@ export class ClineProvider extends BaseCliProvider {
 		};
 	}
 
+	private _parseModernUsage(usage: Record<string, unknown>, perCall = false): UsageStats {
+		const number = (value: unknown): number | undefined =>
+			typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+		const input = number(usage.inputTokens ?? usage.input_tokens);
+		const read = number(usage.cacheReadTokens ?? usage.cacheReadInputTokens ?? usage.cache_read_input_tokens ?? 0);
+		const write = number(usage.cacheWriteTokens ?? usage.cacheCreationInputTokens ?? usage.cache_creation_input_tokens ?? 0);
+		const validPrompt = input !== undefined && read !== undefined && write !== undefined && read + write <= input;
+		// A zero incremental cost is omitted by the native translator. Its
+		// cumulative totalCost must never become that call's incremental charge.
+		const cost = perCall ? number(usage.cost) : number(usage.totalCost) ?? number(usage.cost);
+		// Installed @cline/core normalizes inputTokens to the ENTIRE prompt,
+		// including both cache buckets, regardless of the selected model vendor.
+		// Convert here, once. Legacy wire records still use _parseUsage above.
+		return normalizeUsage({
+			input_tokens: validPrompt ? input - read - write : 0,
+			output_tokens: number(usage.outputTokens ?? usage.output_tokens) ?? 0,
+			...(validPrompt && read > 0 ? { cache_read_input_tokens: read } : {}),
+			...(validPrompt && write > 0 ? { cache_creation_input_tokens: write } : {}),
+			...(cost !== undefined ? { reportedCostUsd: cost } : {}),
+		}, 'anthropic');
+	}
+
 	/**
 	 * Get stored usage stats for a specific panel session
 	 */
-	getStoredUsage(panelId?: string): {
-		input_tokens: number;
-		output_tokens: number;
-		cache_creation_input_tokens?: number;
-		cache_read_input_tokens?: number;
-	} | null {
+	getStoredUsage(panelId?: string): UsageStats | null {
 		const session = this._getSession(panelId) as ClineSessionState;
 		const usage = session.lastUsageStats;
 		session.lastUsageStats = null;
@@ -883,283 +993,152 @@ export class ClineProvider extends BaseCliProvider {
 		panelId?: string,
 		providerManager?: unknown,
 		agentConfig?: AgentConfiguration,
+		_attachments?: Attachment[],
+		resolveInput?: ProviderInputResolver,
 	): AsyncGenerator<StreamChunk> {
-		const session = this._getSession(panelId) as ClineSessionState;
-
-		// Reset per-message state from any previous interrupted message
-		session.jsonBuffer = [];
-		session.askReceived = false;
-
+		if (resolveInput) {
+			const input = resolveInput();
+			if (!input) { return; }
+			({ content, context } = input);
+		}
+		const previous = this._getSession(panelId);
+		// Validate authority before replacing a running request or building context.
 		const cliPath = this.getCliPath();
-		const baseArgs = this.buildCliArgs(settings, session);
+		const baseArgs = this.buildCliArgs(settings, previous);
+		const key = previous.panelId;
+		this.cancelCurrentRequest(key);
 
-		// Store user input to filter out echoed text from Cline's response
+		// A late stream or finally block must never touch its replacement's parser,
+		// usage, process or cancellation state. Cline starts a fresh native process
+		// per turn, so only the panel's context and display session ID carry forward.
+		const session = this._createSession(key);
+		session.channelSystemContext = previous.channelSystemContext;
+		session.sessionId = previous.sessionId;
+		session.autonomousMode = settings.autonomousMode === true;
 		session.lastUserInput = content.trim();
-
-		// Build system instructions separately — these go into .clinerules so Cline
-		// injects them as real system prompt, not visible user message text.
-		const agentInstructions = await this.buildAgentInstructionsAsync(agentConfig);
-		const systemParts: string[] = [];
-		if (agentInstructions) {
-			systemParts.push(agentInstructions);
-		} else if (persona) {
-			const personaPrompt = this.getPersonaPrompt(persona);
-			if (personaPrompt) {
-				systemParts.push(personaPrompt);
-			}
-		}
-		if (session.channelSystemContext) {
-			systemParts.push(session.channelSystemContext);
-		}
-		const systemInstructions = systemParts.join('\n\n');
-
-		// Build user prompt WITHOUT agent config or system context (moved to .clinerules)
-		// Include conversation history since each Cline CLI invocation is a
-		// fresh process with no memory of prior turns
-		const fullPrompt = await this.buildPromptAsync(
-			content,
-			context,
-			conversation,
-			settings,
-			undefined, // persona — handled in .clinerules above
-			undefined, // agentConfig — handled in .clinerules above
-			undefined, // attachments
-			undefined, // systemContext — handled in .clinerules above
-		);
-
-		console.log(`[Mysti] Cline: Prompt length: ${fullPrompt.length} chars, preview: ${fullPrompt.substring(0, 200)}...`);
-
-		// Pass prompt as CLI argument unless it exceeds OS limits (~256KB on macOS)
-		const MAX_ARG_LENGTH = 200_000;
-		// Cline 2.x+ has NO working stdin path. It advertises one — the error says
-		// "requires a prompt argument or piped stdin" — but 3.0.61 rejects a pipe
-		// AND a file redirect, and the `-` sentinel 1.x used is now parsed as a
-		// command ("Unknown command or unquoted prompt: -"). The positional
-		// argument is the only route that works, so long prompts cannot fall back
-		// to stdin the way they could on 1.x.
-		const legacyCli = (this._getCliMajorVersion() ?? 2) < 2;
-		const useStdin = legacyCli && fullPrompt.length > MAX_ARG_LENGTH;
-		const args = useStdin ? [...baseArgs, "-"] : [...baseArgs, fullPrompt];
-
-		if (useStdin) {
-			console.log(`[Mysti] Cline: Prompt too long for CLI arg (${fullPrompt.length} chars), using stdin`);
-		} else if (fullPrompt.length > MAX_ARG_LENGTH) {
-			// Beyond this the spawn fails with E2BIG, which surfaces as an opaque
-			// "process exited" — say what actually happened instead.
-			console.warn(`[Mysti] Cline: Prompt is ${fullPrompt.length} chars and this CLI has no stdin path`);
-			yield {
-				type: "error",
-				content:
-					`This request is too large for the Cline CLI (${Math.round(fullPrompt.length / 1000)}k characters). `
-					+ `Cline 2.0 and later accept a prompt only as a command-line argument, with no stdin fallback. `
-					+ `Start a new conversation or reduce the attached context.`,
-			};
-			return;
-		}
-
-		// Declare outside try so finally block can access for cleanup
+		this._panelSessions.set(key, session);
+		const controller = new AbortController();
+		this._clineRequests.set(key, controller);
+		const isCurrent = () => !controller.signal.aborted && this._clineRequests.get(key) === controller;
+		const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || process.cwd();
+		let proc: ChildProcess | undefined;
+		let cleanupStarted = false;
 		const stderrRef = { output: "" };
 		const stderrHandler = (data: Buffer) => {
-			const text = data.toString();
-			stderrRef.output += text;
-			console.log("[Mysti] Cline stderr:", text);
+			// Redact the complete diagnostic in Base, where split credentials can be
+			// recognized. Never log raw fragments at the adapter boundary.
+			stderrRef.output += data.toString();
 		};
 
-		// Resolve workspace root early so we can write .clinerules and clean up in finally
-		const workspaceFolders = vscode.workspace.workspaceFolders;
-		const cwd = workspaceFolders
-			? workspaceFolders[0].uri.fsPath
-			: process.cwd();
-
-		// Write system instructions to .clinerules so Cline injects them
-		// as proper system prompt (not part of user message)
-		if (systemInstructions) {
-			this._writeClinerules(cwd, systemInstructions, session);
-		}
-
 		try {
-			console.log("[Mysti] Cline: Starting CLI");
-			console.log("[Mysti] Cline: Working directory:", cwd);
+			// Mysti persona/agent/channel instructions are request context, using the
+			// same prompt builder as other CLI adapters. Cline retains its own native
+			// system/tool/mode prompt and automatically loaded project rules. Never
+			// replace .clinerules or use --system, which replaces Cline's native prompt.
+			const render = resolveInput ? await this.preparePromptRenderer(
+				conversation, settings, persona, agentConfig, undefined, session.channelSystemContext,
+			) : undefined;
+			let fullPrompt = render ? '' : await this.buildPromptAsync(
+				content, context, conversation, settings, persona, agentConfig,
+				undefined, session.channelSystemContext,
+			);
+			if (!isCurrent()) { return; }
+			if (resolveInput && render) {
+				const input = resolveInput();
+				if (!input) { controller.abort(); return; }
+				fullPrompt = render(input.content, input.context);
+				session.lastUserInput = input.content.trim();
+			}
+			if (!isCurrent()) { return; }
+			console.log(`[Mysti] Cline: Prompt length: ${fullPrompt.length} chars`);
 
-			// SECURITY: Never use shell mode for Cline -- the user prompt is passed
-			// as a CLI argument which is fundamentally incompatible with shell: true
-			session.process = spawn(cliPath, args, {
-				cwd,
-				env: getEnrichedEnv(),
-				stdio: [useStdin ? "pipe" : "ignore", "pipe", "pipe"],
-				shell: false,
+			// Modern Cline's working headless transport takes a positional prompt.
+			// Legacy 1.x can use stdin when it would exceed the argument limit.
+			const MAX_ARG_LENGTH = 200_000;
+			const legacyCli = (this._getCliMajorVersion() ?? 2) < 2;
+			const useStdin = legacyCli && fullPrompt.length > MAX_ARG_LENGTH;
+			if (!legacyCli && fullPrompt.length > MAX_ARG_LENGTH) {
+				yield {
+					type: "error",
+					content: `This request is too large for the Cline CLI (${Math.round(fullPrompt.length / 1000)}k characters). `
+						+ 'Cline 2.0 and later accept a prompt only as a command-line argument, with no stdin fallback. '
+						+ 'Start a new conversation or reduce the attached context.',
+				};
+				return;
+			}
+			const args = useStdin ? [...baseArgs, "-"] : [...baseArgs, fullPrompt];
+			const env = getEnrichedEnv(this.getExtraSpawnEnv(settings));
+			// The prompt is an argument: shell mode would interpret user content.
+			proc = spawn(cliPath, args, {
+				cwd, env, stdio: [useStdin ? "pipe" : "ignore", "pipe", "pipe"], shell: false,
+				...(process.platform !== 'win32' ? { detached: true } : {}),
 			});
-
-			// Plan 18 (2.4 audit): early error listener — an async spawn failure
-			// otherwise emits an unhandled 'error' event before waitForProcess
-			// attaches its own listener.
-			session.process.on("error", (err) => {
-				console.error("[Mysti] Cline: Spawn error:", err);
-				stderrRef.output += `\nspawn error: ${err.message}`;
+			// Own the POSIX group so Stop/finally also clean ordinary descendants
+			// after their launcher exits, matching the shared single-shot path.
+			markOwnedProcessGroup(proc);
+			this._captureProcessAuthentication(proc, env);
+			session.process = proc;
+			proc.on("error", (error) => {
+				const diagnostic = this._redactProcessError(error.message, proc);
+				console.error("[Mysti] Cline: Spawn error:", diagnostic);
+				stderrRef.output += `\nspawn error: ${diagnostic}`;
 			});
+			proc.stderr?.on("data", stderrHandler);
 
-			// Send prompt via stdin for large prompts
-			if (useStdin && session.process.stdin) {
-				session.process.stdin.write(fullPrompt);
-				session.process.stdin.end();
+			if (panelId && providerManager && typeof (providerManager as ProcessTracker).registerProcess === "function") {
+				(providerManager as ProcessTracker).registerProcess(panelId, proc, this.id);
 			}
-
-			// Register process
-			if (
-				panelId &&
-				providerManager &&
-				typeof (providerManager as ProcessTracker).registerProcess === "function"
-			) {
-				(providerManager as ProcessTracker).registerProcess(panelId, session.process, this.id);
-			}
-
-			// Capture stderr for error reporting and auth error detection
-			if (session.process.stderr) {
-				session.process.stderr.on("data", stderrHandler);
-			}
-
-			// Emit session_active so the webview shows the session indicator
-			if (!session.sessionId) {
-				session.sessionId = `cline-${panelId || 'default'}-${Date.now()}`;
-			}
-			yield { type: 'session_active' as const, sessionId: session.sessionId };
-
-			// Process output
-			yield* this.processStream(stderrRef, session);
-
-			// If Cline sent an "ask" message, terminate the process gracefully
-			if (session.askReceived && isProcessLive(session.process)) {
-				console.log("[Mysti] Cline: Killing process after ask message");
-				void killProcessTree(session.process, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
-			}
-
-			// Yield single authoritative done chunk
-			const storedUsage = this.getStoredUsage(panelId);
-			yield storedUsage
-				? { type: "done", usage: storedUsage }
-				: { type: "done" };
-		} catch (error) {
-			yield this.handleError(error);
-			yield { type: "done" };
-		} finally {
-			// Restore original .clinerules (or remove temp one)
-			this._restoreClinerules(cwd, session);
-
-			// Liveness-gated (not `.killed`): a SIGTERM'd-but-alive CLI must still be
-			// escalated to SIGKILL, which the old `!killed` guard skipped.
-			if (isProcessLive(session.process)) {
-				try {
-					// Remove only our stderr handler -- don't strip waitForProcess listeners
-					if (session.process!.stderr) {
-						session.process!.stderr.removeListener("data", stderrHandler);
-					}
-					// SIGTERM with reliable SIGKILL escalation (timer cleared on exit).
-					void killProcessTree(session.process, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
-				} catch (e) {
-					console.error("[Mysti] Cline: Error cleaning up process:", e);
-				}
-			}
-			session.process = null;
-			if (
-				panelId &&
-				providerManager &&
-				typeof (providerManager as ProcessTracker).clearProcess === "function"
-			) {
-				(providerManager as ProcessTracker).clearProcess(panelId);
-			}
-		}
-	}
-
-	/**
-	 * Enhance a prompt using Cline
-	 */
-	async enhancePrompt(prompt: string): Promise<string> {
-		const clinePath = this.getCliPath();
-
-		const enhancePrompt = `Please enhance the following prompt to be more specific and effective for a coding assistant. Return only the enhanced prompt without any explanation:\n\nOriginal prompt: "${prompt}"\n\nEnhanced prompt:`;
-
-		return new Promise((resolve) => {
-			const args = ["--print", "--output-format", "text"];  // enhancePrompt uses text output, not --json
-
-			const proc = spawn(clinePath, args, {
-				stdio: ["pipe", "pipe", "pipe"],
-			});
-
-			let output = "";
-
-			if (proc.stdin) {
-				proc.stdin.write(enhancePrompt);
+			if (useStdin && proc.stdin) {
+				proc.stdin.write(fullPrompt);
 				proc.stdin.end();
 			}
+			if (!session.sessionId) { session.sessionId = `cline-${key}-${Date.now()}`; }
+			yield { type: 'session_active', sessionId: session.sessionId };
+			if (!isCurrent()) { return; }
 
-			proc.stdout?.on("data", (data) => {
-				output += data.toString();
-			});
-
-			proc.on("close", (code) => {
-				if (code === 0 && output.trim()) {
-					resolve(output.trim());
-				} else {
-					resolve(prompt);
-				}
-			});
-
-			proc.on("error", () => {
-				resolve(prompt);
-			});
-		});
+			for await (const chunk of this.processStream(stderrRef, session, true)) {
+				if (!isCurrent()) { return; }
+				yield chunk;
+				if (!isCurrent()) { return; }
+			}
+			if (!isCurrent()) { return; }
+			if (session.askReceived && proc && !this._timedOutProcesses.has(proc) && isProcessLive(proc)) {
+				cleanupStarted = true;
+				// Transfer cleanup to the captured handle before yielding done: a
+				// replacement or Stop during that yield must not signal it again.
+				if (session.process === proc) { session.process = null; }
+				void killProcessTree(proc, PROCESS_KILL_GRACE_PERIOD_MS, { label: this.displayName });
+			}
+			const storedUsage = this.getStoredUsage(panelId);
+			const contextUsage = session.lastContextUsageStats;
+			session.lastContextUsageStats = undefined;
+			yield { type: 'done', ...(storedUsage ? { usage: storedUsage } : {}),
+				...(contextUsage !== undefined ? { contextUsage } : {}) };
+		} catch (error) {
+			if (isCurrent()) {
+				yield this.handleError(error, proc);
+				if (isCurrent()) { yield { type: 'done' }; }
+			}
+		} finally {
+			proc?.stderr?.removeListener("data", stderrHandler);
+			if (proc) {
+				// Native Cline hard-exits on a second termination signal. Observe
+				// cleanup already started for this captured session without cutting
+				// off its abort acknowledgment; hung owned groups still escalate.
+				void killProcessTree(proc, PROCESS_KILL_GRACE_PERIOD_MS, {
+					label: this.displayName, initialSignal: session.cancelled || cleanupStarted || this._timedOutProcesses.has(proc) ? null : 'SIGTERM',
+				});
+			}
+			if (session.process === proc) { session.process = null; }
+			if (proc && panelId && providerManager && typeof (providerManager as ProcessTracker).clearProcess === "function") {
+				(providerManager as ProcessTracker).clearProcess(panelId, proc);
+			}
+			controller.abort();
+			if (this._clineRequests.get(key) === controller) { this._clineRequests.delete(key); }
+		}
 	}
 
 	// Private helper methods
-
-	/**
-	 * Write system instructions to a .clinerules file in the workspace root.
-	 * Cline CLI auto-discovers this file and injects its content into the
-	 * system prompt slot of API requests (not the user message).
-	 * Backs up any existing .clinerules content on the session for later restore.
-	 */
-	private _writeClinerules(cwd: string, instructions: string, session: ClineSessionState): void {
-		const rulesPath = path.join(cwd, '.clinerules');
-		try {
-			if (fs.existsSync(rulesPath)) {
-				session.clineruleBackup = fs.readFileSync(rulesPath, 'utf-8');
-				console.log('[Mysti] Cline: Backed up existing .clinerules');
-			} else {
-				session.clineruleBackup = null;
-			}
-			fs.writeFileSync(rulesPath, instructions, 'utf-8');
-			session.clineruleWritten = true;
-			console.log(`[Mysti] Cline: Wrote .clinerules (${instructions.length} chars)`);
-		} catch (error) {
-			console.warn('[Mysti] Cline: Failed to write .clinerules:', error);
-			session.clineruleWritten = false;
-		}
-	}
-
-	/**
-	 * Restore the original .clinerules file (or delete the temp one).
-	 */
-	private _restoreClinerules(cwd: string, session: ClineSessionState): void {
-		if (!session.clineruleWritten) {
-			return;
-		}
-		const rulesPath = path.join(cwd, '.clinerules');
-		try {
-			if (session.clineruleBackup !== null) {
-				fs.writeFileSync(rulesPath, session.clineruleBackup, 'utf-8');
-				console.log('[Mysti] Cline: Restored original .clinerules');
-			} else {
-				if (fs.existsSync(rulesPath)) {
-					fs.unlinkSync(rulesPath);
-					console.log('[Mysti] Cline: Removed temp .clinerules');
-				}
-			}
-		} catch (error) {
-			console.warn('[Mysti] Cline: Failed to restore .clinerules:', error);
-		}
-		session.clineruleBackup = null;
-		session.clineruleWritten = false;
-	}
 
 	private _findVSCodeExtensionCli(): string | null {
 		const homeDir = os.homedir();

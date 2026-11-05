@@ -109,11 +109,19 @@ export type ModelSelectionMode = 'full' | 'custom-only' | 'none';
  * Provider capabilities - what each provider supports
  */
 export interface ProviderCapabilities {
+  /** Text/thinking chunks may revise earlier content; append-only readers need finalization. */
+  emitsTextRevisions?: boolean;
   supportsStreaming: boolean;
   supportsThinking: boolean;
   supportsToolUse: boolean;
   /** Native request/response approval is implemented; tool notifications are display-only. */
   supportsNativeApproval?: boolean;
+  /** This transport can hold tool execution while Mysti asks for permission. */
+  supportsAskPermission?: boolean;
+  /** False when even Read Only/plan cannot be enforced by the transport. */
+  supportsReadOnly?: boolean;
+  /** Tool calls are model proposals only; this adapter never executes them. */
+  toolCallsAreProposals?: boolean;
   supportsSessions: boolean;
   supportsNativeCompact?: boolean;
   /**
@@ -181,6 +189,8 @@ export interface ProviderCapabilities {
    * hides the effort selector. Subset of EffortLevel, ordered low→high.
    */
   effortLevels?: EffortLevel[];
+  /** Per-model overrides; an empty list disables effort for that exact model. */
+  effortLevelsByModel?: Record<string, EffortLevel[]>;
   /** The backend's default effort tier when the setting is unset (e.g. Claude 'high'). */
   effortDefault?: EffortLevel;
   /** Supports Claude's independent Ultracode workflow setting. */
@@ -486,6 +496,15 @@ export const DEVELOPER_SKILLS: Record<SkillId, Skill> = {
 /**
  * Base interface for all CLI-based AI providers
  */
+/** Trusted, transient request input. Never serialized into settings or history. */
+export interface ProviderRequestInput {
+  content: string;
+  context: ContextItem[];
+}
+
+/** Resolve at delivery; undefined revokes this request before any input is sent. */
+export type ProviderInputResolver = () => ProviderRequestInput | undefined;
+
 export interface ICliProvider {
   // Identity
   readonly id: string;
@@ -528,8 +547,12 @@ export interface ICliProvider {
   // Authentication & Setup
   getAuthConfig(): Promise<AuthConfig>;
   checkAuthentication(): Promise<AuthStatus>;
-  /** Interactive host-owned API setup; credentials never pass through the webview. */
-  configureAuthentication?(): Promise<AuthStatus>;
+  /**
+   * Interactive host-owned API setup; credentials never pass through the webview.
+   * Cancellation closes outstanding prompts and must be checked before each
+   * credential mutation. Already-started storage writes are not rolled back.
+   */
+  configureAuthentication?(signal?: AbortSignal): Promise<AuthStatus>;
   getAuthCommand(): string;
   getInstallCommand(): string;
 
@@ -543,7 +566,8 @@ export interface ICliProvider {
     panelId?: string,
     providerManager?: unknown,  // ProviderManager for process registration
     agentConfig?: AgentConfiguration,  // Agent configuration (personas + skills)
-    attachments?: Attachment[]  // Image/file attachments
+    attachments?: Attachment[],  // Image/file attachments
+    resolveInput?: ProviderInputResolver
   ): AsyncGenerator<StreamChunk>;
 
   // Request Management (panelId enables per-panel isolation)

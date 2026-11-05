@@ -1,0 +1,61 @@
+/* Local synthetic filesystem/command controls only. No editor or model. */
+'use strict';
+const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),assert=require('node:assert/strict');
+const c=require('./codex-f2-test-proof.cjs');
+const {spawnSync}=require('node:child_process');
+const root=fs.realpathSync(path.resolve(__dirname,'../../out-test/feature-tests/PB-02'));
+const directory=fs.mkdtempSync(path.join(root,'f2-test-proof-controls-')),checks=[];
+const check=(name,fn)=>{fn();checks.push({name,status:'PASS'});};
+const rejects=(name,fn)=>check(name,()=>assert.throws(fn));
+const source=path.join(directory,'source');fs.mkdirSync(source);fs.mkdirSync(path.join(source,'bin'));fs.writeFileSync(path.join(source,'bin/tool'),Buffer.alloc(1024*1024,65));fs.symlinkSync('bin/tool',path.join(source,'tool'));
+const sourceSha=c.identity(path.join(source,'bin/tool')).sha256;
+const force=path.join(directory,'force-clone');
+let forcedClone;
+check('actual forced-clone capability observed without assuming support',()=>{try{fs.copyFileSync(path.join(source,'bin/tool'),force,fs.constants.COPYFILE_FICLONE_FORCE|fs.constants.COPYFILE_EXCL);forcedClone={supported:true};}catch(error){assert(['ENOSYS','ENOTSUP','EOPNOTSUPP','EINVAL'].includes(error.code));forcedClone={supported:false,errorCode:error.code};assert(!fs.existsSync(force));}});
+if(forcedClone.supported){
+ check('forced clone has distinct inode and no hardlinks',()=>{assert.notEqual(fs.statSync(force).ino,fs.statSync(path.join(source,'bin/tool')).ino);assert.equal(fs.statSync(force).nlink,1);});
+ check('forced clone destination mutation preserves original bytes',()=>{fs.writeFileSync(force,'changed cloned bytes');assert.equal(c.identity(path.join(source,'bin/tool')).sha256,sourceSha);});
+}
+const target=path.join(directory,'private');let copied;
+check('actual recursive clone-request copy preserves files and own links',()=>{copied=c.copyPrivateDependencies(source,target);assert.equal(fs.realpathSync(path.join(target,'tool')),path.join(target,'bin/tool'));assert.equal(copied.files,1);});
+check('copied executable mutation does not affect frozen original',()=>{fs.writeFileSync(path.join(target,'bin/tool'),'changed destination');assert.equal(c.identity(path.join(source,'bin/tool')).sha256,sourceSha);});
+check('source mutation does not affect cloned destination',()=>{const sha=c.identity(path.join(target,'bin/tool')).sha256;fs.writeFileSync(path.join(source,'bin/tool'),'changed source');assert.equal(c.identity(path.join(target,'bin/tool')).sha256,sha);});
+check('ordinary copy fallback also has private byte ownership',()=>{const copy=path.join(directory,'ordinary-fallback');fs.copyFileSync(path.join(source,'bin/tool'),copy,fs.constants.COPYFILE_EXCL);assert.notEqual(fs.statSync(copy).ino,fs.statSync(path.join(source,'bin/tool')).ino);const sha=c.identity(path.join(source,'bin/tool')).sha256;fs.writeFileSync(copy,'fallback mutation');assert.equal(c.identity(path.join(source,'bin/tool')).sha256,sha);});
+rejects('existing destination rejected',()=>c.copyPrivateDependencies(source,target));
+const unsafe=path.join(directory,'unsafe');fs.mkdirSync(unsafe);fs.symlinkSync(path.join(source,'bin/tool'),path.join(unsafe,'external'));
+rejects('absolute external dependency link rejected before copy',()=>c.copyPrivateDependencies(unsafe,path.join(directory,'unsafe-copy')));
+check('rejected dependency copy creates no target',()=>assert(!fs.existsSync(path.join(directory,'unsafe-copy'))));
+fs.unlinkSync(path.join(unsafe,'external'));fs.symlinkSync('../source/bin/tool',path.join(unsafe,'external'));
+rejects('relative external dependency link rejected',()=>c.copyPrivateDependencies(unsafe,path.join(directory,'unsafe-copy')));
+const hard=path.join(directory,'hard');fs.mkdirSync(hard);fs.linkSync(path.join(source,'bin/tool'),path.join(hard,'linked'));
+rejects('hardlinked source rejected',()=>c.copyPrivateDependencies(hard,path.join(directory,'hard-copy')));fs.unlinkSync(path.join(hard,'linked'));
+const workspace=path.join(directory,'workspace');fs.mkdirSync(workspace);fs.mkdirSync(path.join(workspace,'client'));fs.mkdirSync(path.join(workspace,'.git'));fs.writeFileSync(path.join(workspace,'.git/index'),'owned index');fs.writeFileSync(path.join(workspace,'README.md'),'owned source');
+const dep=c.copyPrivateDependencies(source,path.join(workspace,'client/node_modules'));
+const proof=c.createProof(workspace);for(const dir of Object.values(proof.cacheDirectories))fs.mkdirSync(dir,{recursive:true});
+const fixture={workspace,proof,repairs:{},files:{'.git/index':c.identity(path.join(workspace,'.git/index')),'README.md':c.identity(path.join(workspace,'README.md'))},indexSha256:c.identity(path.join(workspace,'.git/index')).sha256,dependencyCopies:[dep],generatedDirectories:['client/build','client/node_modules','node_modules','server/.tmp','server/node_modules']};
+check('empty owned proof snapshot accepted',()=>assert.equal(c.verifySnapshot(fixture).cacheSnapshot.fileCount,0));
+check('prompt requests one per-command escalation without broadening thread policy',()=>{assert(proof.prompt.includes('sandbox_permissions="require_escalated"'));assert(proof.prompt.includes('Do not edit source, tests or Git files'));assert(!proof.prompt.includes('Do not edit files.'));assert.equal(proof.step.commands.length,1);assert.equal(c.MAIN_CAP,1);assert.equal(c.HELPER_CAP,3);});
+check('exact command accepted including canonical shell wrapper',()=>{assert(c.exactCommand(proof.command,proof.command));assert(c.exactCommand('/bin/zsh -c '+"'"+proof.command.replace(/'/g,"'\\''")+"'",proof.command));});
+for(const [name,cmd] of [['extra command',proof.command+'; touch README.md'],['cache change',proof.command.replace(proof.cacheDirectories.jest,'/tmp/shared-jest')],['removed cache',proof.command.replace(/ --cacheDirectory=.*$/,'')],['install command','npm install']])check(name+' rejected',()=>assert(!c.exactCommand(cmd,proof.command)));
+for(const relative of ['client/build','server/.tmp']){const dir=path.join(workspace,relative);fs.mkdirSync(dir,{recursive:true});fs.writeFileSync(path.join(dir,'unapproved.txt'),'unapproved generated bytes');rejects('unrelated generated directory rejected: '+relative,()=>c.verifySnapshot(fixture));fs.rmSync(dir,{recursive:true});}
+const cacheFile=path.join(proof.cacheDirectories.jest,'haste-map');fs.writeFileSync(cacheFile,'actual generated cache bytes');
+check('exact generated cache regular file recorded with byte hash',()=>{const s=c.verifySnapshot(fixture);assert.equal(s.cacheSnapshot.fileCount,1);assert.equal(s.cacheSnapshot.files[0].sha256,c.hash('actual generated cache bytes'));});
+fs.mkdirSync(path.join(path.dirname(proof.cacheRoot),'empty-sibling'));rejects('empty sibling dependency directory rejected',()=>c.verifySnapshot(fixture));fs.rmdirSync(path.join(path.dirname(proof.cacheRoot),'empty-sibling'));
+fs.writeFileSync(path.join(path.dirname(proof.cacheRoot),'sibling'),'unapproved');rejects('sibling cache write rejected by dependency bytes',()=>c.verifySnapshot(fixture));fs.unlinkSync(path.join(path.dirname(proof.cacheRoot),'sibling'));
+fs.writeFileSync(path.join(dep.target,'bin/tool'),'mutated dependency');rejects('dependency byte mutation rejected',()=>c.verifySnapshot(fixture));fs.copyFileSync(path.join(source,'bin/tool'),path.join(dep.target,'bin/tool'));
+fs.writeFileSync(path.join(workspace,'README.md'),'mutated source');rejects('source mutation rejected',()=>c.verifySnapshot(fixture));fs.writeFileSync(path.join(workspace,'README.md'),'owned source');
+fs.writeFileSync(path.join(workspace,'.git/index'),'mutated index');rejects('Git index mutation rejected',()=>c.verifySnapshot(fixture));fs.writeFileSync(path.join(workspace,'.git/index'),'owned index');
+fs.symlinkSync(path.join(source,'bin/tool'),path.join(proof.cacheDirectories.jest,'escape'));rejects('cache symlink rejected',()=>c.verifySnapshot(fixture));fs.unlinkSync(path.join(proof.cacheDirectories.jest,'escape'));
+fs.linkSync(cacheFile,path.join(proof.cacheDirectories.jest,'hardlink'));rejects('cache hardlink rejected',()=>c.verifySnapshot(fixture));fs.unlinkSync(path.join(proof.cacheDirectories.jest,'hardlink'));
+fs.mkdirSync(path.join(proof.cacheRoot,'other'));rejects('undeclared cache root child rejected',()=>c.verifySnapshot(fixture));fs.rmdirSync(path.join(proof.cacheRoot,'other'));
+check('restored exact owned snapshot accepted',()=>assert.equal(c.verifySnapshot(fixture).cacheSnapshot.fileCount,1));
+const preparer=require.resolve('./prepare-vscode-codex-f2-test-proof.cjs');
+function refusedPreparation(label,target,pattern){check(label,()=>{const result=spawnSync(process.execPath,[preparer],{encoding:'utf8',env:{...process.env,MYSTI_PB02_F2_TEST_PROOF_ARTIFACT_DIR:target},timeout:10000});assert.equal(result.status,1);assert(pattern.test(result.stderr));assert(!fs.existsSync(target));});}
+refusedPreparation('actual preparer rejects outside PB02 root',path.join(os.tmpdir(),'pb02-proof-outside-'+path.basename(directory)),/Owned descendant required/);
+const old=path.join(directory,'old-evidence');fs.mkdirSync(old);fs.writeFileSync(path.join(old,'prepared.json'),'{}');
+refusedPreparation('actual preparer rejects nested prior evidence',path.join(old,'new'),/Never prepare inside earlier native evidence/);
+const actualParent=path.join(directory,'real-parent'),aliasParent=path.join(directory,'alias-parent');fs.mkdirSync(actualParent);fs.symlinkSync(actualParent,aliasParent);
+refusedPreparation('actual preparer rejects symlink parent',path.join(aliasParent,'new'),/AssertionError/);
+check('actual preparer rejects an existing destination',()=>{const result=spawnSync(process.execPath,[preparer],{encoding:'utf8',env:{...process.env,MYSTI_PB02_F2_TEST_PROOF_ARTIFACT_DIR:actualParent},timeout:10000});assert.equal(result.status,1);assert(result.stderr.includes('exclusive new directory'));assert.deepEqual(fs.readdirSync(actualParent),[]);});
+const report={status:'PASS',directory,checks,passed:checks.length,source:c.identity(__filename),contract:c.identity(require.resolve('./codex-f2-test-proof.cjs')),inferenceInputs:0,forcedClone,cloneQualification:'Recursive copies request COPYFILE_FICLONE and permit native ordinary-copy fallback. Actual forced-clone capability is reported separately; extent sharing for copied files is not asserted.'};
+fs.writeFileSync(path.join(directory,'checks.json'),JSON.stringify(report,null,2)+'\n',{flag:'wx'});console.log(JSON.stringify({directory,passed:checks.length,status:'PASS'}));

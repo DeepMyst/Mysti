@@ -80,6 +80,21 @@ describe('CompactionManager token math', () => {
   });
 
   describe('lifetime totals vs current fill', () => {
+    it('retains whole-turn totals while measuring only the latest model call', () => {
+      const totals = normalizeUsage({ input_tokens: 95797, output_tokens: 311, cache_read_input_tokens: 193088 }, 'anthropic');
+      const latest = normalizeUsage({ input_tokens: 367, output_tokens: 90, cache_read_input_tokens: 96256 }, 'anthropic');
+      expect(cm.recordUsage('p1', latest, 200000, totals)).toBe(false);
+      expect(cm.getLastFill('p1')).toEqual(latest);
+      expect(cm.getUsage('p1')).toMatchObject({ totalInputTokens: 95797, totalOutputTokens: 311, totalCacheReadTokens: 193088, messageCount: 1 });
+    });
+
+    it('clears an earlier fill when latest context is explicitly unknown without losing output totals', () => {
+      cm.recordUsage('p1', anthropicTurn(2000, 0, 178000), 200000);
+      expect(cm.recordUsage('p1', null, 200000, { input_tokens: 0, output_tokens: 20 })).toBe(false);
+      expect(cm.getLastFill('p1')).toBeNull();
+      expect(cm.getUsage('p1')).toMatchObject({ totalInputTokens: 2000, totalOutputTokens: 120, totalCacheCreationTokens: 178000, messageCount: 2 });
+    });
+
     it('keeps them separate — the totals are a spend, the fill is a position', () => {
       // Manual /compact used to report the CUMULATIVE totals as "before", a
       // number that grows past the context window after a few turns and made

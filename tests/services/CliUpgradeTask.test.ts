@@ -73,4 +73,30 @@ describe('CLI upgrade terminal task', () => {
     await assertion;
     expect(execution.terminate).toHaveBeenCalledOnce();
   });
+  it('terminates a task whose execution handle arrives after the upgrade timed out', async () => {
+    vi.useFakeTimers();
+    let launch!: (value: any) => void;
+    mock.execute.mockImplementationOnce(task => {
+      execution = { task, terminate: vi.fn() };
+      return new Promise(resolve => { launch = resolve; });
+    });
+    const pending = runCliUpgradeTask('Claude', plan);
+    const assertion = expect(pending).rejects.toThrow('timed out');
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    await assertion;
+    launch(execution);
+    await Promise.resolve();
+    expect(execution.terminate).toHaveBeenCalledOnce();
+  });
+  it('still reports timeout and removes listeners when termination throws', async () => {
+    vi.useFakeTimers();
+    const pending = runCliUpgradeTask('Claude', plan).then(() => undefined, error => error as Error);
+    execution.terminate.mockImplementation(() => { throw new Error('Task service disconnected'); });
+    let timerError: unknown;
+    try { await vi.advanceTimersByTimeAsync(10 * 60_000); }
+    catch (error) { timerError = error; finish(undefined); }
+    const result = await pending;
+    expect(timerError).toBeUndefined();
+    expect(result?.message).toContain('timed out');
+  });
 });
