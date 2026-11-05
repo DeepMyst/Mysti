@@ -246,6 +246,8 @@ describe('MystiLocalTools — credential path filter (Plan 21 Phase 0)', () => {
     '.git/config',
     '.git/modules/vendor/lib/config',
     '.git/worktrees/feature/config',
+    '.git/config.worktree',
+    'vendor/mirror.git/config',
     'terraform.tfstate',
     'terraform.tfstate.backup',
     'prod.tfvars',
@@ -275,6 +277,10 @@ describe('MystiLocalTools — credential path filter (Plan 21 Phase 0)', () => {
     'src/index.ts',
     'README.md',
     'docs/secrets-policy.md',
+    '.git/HEAD',
+    'src/config',
+    '.github/config',
+    'my.git.notes/config',
   ];
 
   for (const rel of mustAllow) {
