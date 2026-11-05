@@ -75,6 +75,12 @@ Warnings remain useful debt signals. Do not suppress lint errors, make a failing
 job advisory, or add retries to get a green result. Fix the cause or document an
 explicitly bounded follow-up with evidence.
 
+The Linux Playwright test job uses `ubuntu-24.04`: locked Playwright 1.58.2
+rejects dependency installation on Ubuntu 26.04, which `ubuntu-latest` selected
+on 5 November 2026. The matrix label stays `ubuntu-latest` to preserve the required
+check name. Revisit the runner pin with a qualified Playwright upgrade; do not
+change assertions or skip browser tests to accommodate a runner-image update.
+
 ### Live developer conversations
 
 Run `npm run test:live:conversations` explicitly with authenticated Claude Code

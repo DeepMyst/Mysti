@@ -50,6 +50,10 @@ Provide descriptive alt text and captions, and avoid screenshots containing
 private workspaces, accounts or credentials. Follow the [media guide](media/README.md)
 for native GitHub players and source provenance.
 
+Inspect diagrams on GitHub at narrow widths as well as in a local preview.
+GitHub's pan and zoom controls can cover a bottom corner; keep meaningful labels
+clear of those controls and confirm that the diagram remains readable.
+
 ## Discovery files
 
 [AGENTS.md](https://agents.md/) provides repository working guidance.

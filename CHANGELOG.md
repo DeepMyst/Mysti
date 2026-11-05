@@ -13,6 +13,7 @@ These documentation updates do not change the already qualified 2.0.1 Beta 2 VSI
 
 ### Maintenance
 
+- Pin Linux browser tests to Ubuntu 24.04 because the locked Playwright version cannot install on the newer `ubuntu-latest` image; retain all required checks and test assertions.
 - Await agent initialization and dispose owned resources in the model-attribution test fixture so background work cannot outlive test teardown.
 
 All notable changes to the Mysti extension are documented here.

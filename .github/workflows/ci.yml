@@ -41,7 +41,9 @@ jobs:
 
   test:
     name: test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    # Playwright 1.58.2 does not support Ubuntu 26.04. Keep required check
+    # names stable while using a supported Linux image for browser suites.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
     timeout-minutes: 30
     strategy:
       fail-fast: false

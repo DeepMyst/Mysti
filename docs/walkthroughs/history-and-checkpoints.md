@@ -53,6 +53,8 @@ flowchart TB
   B --> C[Original replies and later work]
   B --> D[New fork]
   D --> E[Explore the alternative]
+  C -.-> F[Shared workspace]
+  E -.-> F
 ```
 
 Both conversations still use the same workspace. If an agent edits files in one

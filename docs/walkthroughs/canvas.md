@@ -79,6 +79,8 @@ flowchart TB
   D --> E{Keep it?}
   E -->|Yes| F[Export]
   E -->|No| G[Restore the saved version]
+  F --> H[Review the result]
+  G --> H
 ```
 
 ## Save and export
