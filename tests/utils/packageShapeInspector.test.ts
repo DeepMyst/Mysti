@@ -111,6 +111,19 @@ describe('package shape inspects the artifact contents', () => {
     ]);
   });
 
+  it('allows the required root manifest without exempting unrelated large JSON', () => {
+    const metadata = JSON.stringify({ ...manifest, description: 'Contributed setting metadata. '.repeat(4000) });
+    const result = inspectArchive(archive({
+      'dist/extension.js': 'module.exports = {};',
+      'package.json': metadata,
+      'resources/unreviewed-manifest.json': metadata,
+    }), manifest);
+    expect(result.failures).toHaveLength(1);
+    expect(result.failures[0].assertion).toBe('G (large assets allowlisted)');
+    expect(result.failures[0].details).toHaveLength(1);
+    expect(result.failures[0].details[0]).toContain('resources/unreviewed-manifest.json');
+  });
+
   it('does not retain findings from a previously inspected artifact', () => {
     const failed = inspectArchive(archive({}), manifest);
     expect(failed.failures.length).toBeGreaterThan(0);

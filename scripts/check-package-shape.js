@@ -80,6 +80,7 @@ const VSCE = path.join(REPO_ROOT, 'node_modules', '@vscode', 'vsce', 'vsce');
 const LARGE_FILE_BYTES = 100 * 1024;
 
 const LARGE_ASSET_ALLOWLIST = [
+  [/^package\.json$/, 'required extension manifest: contributed commands, settings, views, schemas and package metadata'],
   [/^l10n\/bundle\.l10n\.ru\.json$/, 'Russian runtime translation catalog declared by package.l10n'],
   [/^dist\/extension\.js$/,                       'the extension bundle itself'],
   [/^dist\/canvasWebview\.js$/,                   'the canvas webview bundle (Plan 22)'],

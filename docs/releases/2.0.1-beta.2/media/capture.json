@@ -1,7 +1,7 @@
 {
   "version": "2.0.1",
   "releaseLabel": "2.0.1 · Beta 2",
-  "capturedAt": "2026-11-05T08:01:35.597Z",
+  "capturedAt": "2026-11-05T10:56:08.751Z",
   "sourceAssetHashes": {
     "media/chat/chat.js": "08d8b554952060b9342fff92103813271ebc414b1f555c8a95b819ad956cbe06",
     "media/chat/chat.css": "5512af0f96910ae14c907369accd9dec72040df3a90316b3e78ebb234f9b8731",
@@ -14,7 +14,8 @@
     "media/connections/connections.js": "a08aea60419a2a2b51b9fab85d2e73867938ff9c8bf4e789ba5367323ef3cab0",
     "media/proactive/proactive.js": "eb27167e374b4a1eece9e97ef8b22b46ced58696023e3abe98cc8a3b955ee660",
     "resources/dompurify.min.js": "cd37898f9782adf54820c413191b5691803f0f137c799d6edcfd38523b4c2c31",
-    "scripts/record-release-demos.cjs": "1ad282c00128a2023873400353a0746d485149c734c5fd2ef00c7e6ead872c48",
+    "resources/marked.min.js": "9eb730d2362ae1a8c6201698f17009e16671be6946d3d06503ddc0575283db7c",
+    "scripts/record-release-demos.cjs": "68ca3bf724a74ef32e83418f1f56cbdf348f3e659db369f4d98d247b1e65f58d",
     "scripts/release-demo-scenes.cjs": "8b0fd2d53ce7fb805892e00ff0e83b9580d8c94e883fbd458323d6c400b3443d"
   },
   "source": "Shipped chat, Canvas, Visual Test, Connections and Proactive webviews",
@@ -28,15 +29,15 @@
         "PC-02",
         "AR-21"
       ],
-      "durationSeconds": 9.32,
-      "bytes": 257647,
-      "startSeconds": 0,
-      "capturedAt": "2026-11-05T07:58:52.327Z",
+      "capturedAt": "2026-11-05T10:29:59.502Z",
       "recorderSourceHashes": {
-        "scripts/record-release-demos.cjs": "af2537ced333b5d72e3bc79285f4003a7a8f04eb5e9816970d174a768ebff455",
+        "scripts/record-release-demos.cjs": "789036af4a036f2de3021ff68a40325890d955f1a951f205e1fb56a7d4f87490",
         "scripts/release-demo-scenes.cjs": "8b0fd2d53ce7fb805892e00ff0e83b9580d8c94e883fbd458323d6c400b3443d"
       },
-      "sha256": "0a35c768497dbf43cf191a202f4120d476ab5c0a3e04ef10980e698599ac8c2c"
+      "durationSeconds": 11.32,
+      "bytes": 210718,
+      "sha256": "9adffcf3ba9cd73c0cb2c5488da53f3f95787d69b700e2a97a007907f9bcd60c",
+      "startSeconds": 0
     },
     {
       "name": "provider-switching",
@@ -45,15 +46,15 @@
         "PC-04",
         "PC-06"
       ],
-      "capturedAt": "2026-11-05T08:01:27.811Z",
+      "capturedAt": "2026-11-05T10:35:10.470Z",
       "recorderSourceHashes": {
-        "scripts/record-release-demos.cjs": "1ad282c00128a2023873400353a0746d485149c734c5fd2ef00c7e6ead872c48",
+        "scripts/record-release-demos.cjs": "789036af4a036f2de3021ff68a40325890d955f1a951f205e1fb56a7d4f87490",
         "scripts/release-demo-scenes.cjs": "8b0fd2d53ce7fb805892e00ff0e83b9580d8c94e883fbd458323d6c400b3443d"
       },
-      "durationSeconds": 11.64,
-      "bytes": 223501,
-      "sha256": "eee62705c36f63d33359e36badf5197c9b61ab9e9bb4eb1d634d88dd16202187",
-      "startSeconds": 9.32
+      "durationSeconds": 21.36,
+      "bytes": 329257,
+      "sha256": "257eb7d86e563c90e641028eb90da4b7e941932295cbb7212f4cf448813983e9",
+      "startSeconds": 11.32
     },
     {
       "name": "context-and-trust",
@@ -64,15 +65,15 @@
         "EW-05",
         "AR-21"
       ],
-      "durationSeconds": 9.56,
-      "bytes": 141554,
-      "startSeconds": 20.96,
-      "capturedAt": "2026-11-05T07:58:52.327Z",
+      "capturedAt": "2026-11-05T10:30:24.916Z",
       "recorderSourceHashes": {
-        "scripts/record-release-demos.cjs": "af2537ced333b5d72e3bc79285f4003a7a8f04eb5e9816970d174a768ebff455",
+        "scripts/record-release-demos.cjs": "789036af4a036f2de3021ff68a40325890d955f1a951f205e1fb56a7d4f87490",
         "scripts/release-demo-scenes.cjs": "8b0fd2d53ce7fb805892e00ff0e83b9580d8c94e883fbd458323d6c400b3443d"
       },
-      "sha256": "172f86ecd9d3075d0f8d5b39a023e32ef66dc4a0f02719786ffdd5151a85bcee"
+      "durationSeconds": 11.88,
+      "bytes": 194053,
+      "sha256": "0f194c92d590ebfbef3b4a76291b16c591b1a8a9188ddf998a15141529057823",
+      "startSeconds": 32.68
     },
     {
       "name": "composer-controls",
@@ -80,15 +81,15 @@
       "features": [
         "PC-04"
       ],
-      "capturedAt": "2026-11-05T08:01:35.087Z",
+      "capturedAt": "2026-11-05T10:36:51.721Z",
       "recorderSourceHashes": {
-        "scripts/record-release-demos.cjs": "1ad282c00128a2023873400353a0746d485149c734c5fd2ef00c7e6ead872c48",
+        "scripts/record-release-demos.cjs": "789036af4a036f2de3021ff68a40325890d955f1a951f205e1fb56a7d4f87490",
         "scripts/release-demo-scenes.cjs": "8b0fd2d53ce7fb805892e00ff0e83b9580d8c94e883fbd458323d6c400b3443d"
       },
-      "durationSeconds": 6.76,
-      "bytes": 167404,
-      "sha256": "43cbe95b978335af5f1703b760fd951364fa5136047d7004327e97a375202ef5",
-      "startSeconds": 30.52
+      "durationSeconds": 7.24,
+      "bytes": 123612,
+      "sha256": "380a07639a16b4d3aa86d5e0001f9740424758505a7f1f0804bc38c68f9ab481",
+      "startSeconds": 44.56
     },
     {
       "name": "agent-workflow",
@@ -96,15 +97,15 @@
       "features": [
         "AR-02"
       ],
-      "durationSeconds": 9.08,
-      "bytes": 153985,
-      "startSeconds": 37.28,
-      "capturedAt": "2026-11-05T07:58:52.327Z",
+      "capturedAt": "2026-11-05T10:32:51.203Z",
       "recorderSourceHashes": {
-        "scripts/record-release-demos.cjs": "af2537ced333b5d72e3bc79285f4003a7a8f04eb5e9816970d174a768ebff455",
+        "scripts/record-release-demos.cjs": "789036af4a036f2de3021ff68a40325890d955f1a951f205e1fb56a7d4f87490",
         "scripts/release-demo-scenes.cjs": "8b0fd2d53ce7fb805892e00ff0e83b9580d8c94e883fbd458323d6c400b3443d"
       },
-      "sha256": "fc5bd557106cf418b7320b92fe3442011fc51f030cab0b04ea7d4e0bf6cc9314"
+      "durationSeconds": 16.92,
+      "bytes": 258553,
+      "sha256": "58cab74f46067802643541f95b4d9c2b05267688f9881904d583b9240988aa33",
+      "startSeconds": 51.8
     },
     {
       "name": "agent-opinions",
@@ -112,15 +113,15 @@
       "features": [
         "AR-01"
       ],
-      "durationSeconds": 9,
-      "bytes": 127908,
-      "startSeconds": 46.36,
-      "capturedAt": "2026-11-05T07:58:52.327Z",
+      "capturedAt": "2026-11-05T10:31:08.699Z",
       "recorderSourceHashes": {
-        "scripts/record-release-demos.cjs": "af2537ced333b5d72e3bc79285f4003a7a8f04eb5e9816970d174a768ebff455",
+        "scripts/record-release-demos.cjs": "789036af4a036f2de3021ff68a40325890d955f1a951f205e1fb56a7d4f87490",
         "scripts/release-demo-scenes.cjs": "8b0fd2d53ce7fb805892e00ff0e83b9580d8c94e883fbd458323d6c400b3443d"
       },
-      "sha256": "7b5d7a5447f769965ce86aa36c5b93d7fe0036ffc38e70c5c2565fcf805cafca"
+      "durationSeconds": 10.48,
+      "bytes": 143350,
+      "sha256": "4c956a32cd36159c38057933af20d96fbe8906ed934501b8f4bbd45eeee0f73e",
+      "startSeconds": 68.72
     },
     {
       "name": "second-opinion",
@@ -128,15 +129,15 @@
       "features": [
         "PC-06"
       ],
-      "durationSeconds": 6.24,
-      "bytes": 86848,
-      "startSeconds": 55.36,
-      "capturedAt": "2026-11-05T07:58:52.327Z",
+      "capturedAt": "2026-11-05T10:31:23.748Z",
       "recorderSourceHashes": {
-        "scripts/record-release-demos.cjs": "af2537ced333b5d72e3bc79285f4003a7a8f04eb5e9816970d174a768ebff455",
+        "scripts/record-release-demos.cjs": "789036af4a036f2de3021ff68a40325890d955f1a951f205e1fb56a7d4f87490",
         "scripts/release-demo-scenes.cjs": "8b0fd2d53ce7fb805892e00ff0e83b9580d8c94e883fbd458323d6c400b3443d"
       },
-      "sha256": "7d8e5a46e4293735a8f3e75b68a0e22ee96c018f5fc71c5a1a19091f0aad9edb"
+      "durationSeconds": 5.72,
+      "bytes": 80298,
+      "sha256": "2f8dcc105f06deabbc4174a65ca92f73a3a55764fc649bbdeb49c36e717c5b2e",
+      "startSeconds": 79.2
     },
     {
       "name": "brainstorm",
@@ -144,15 +145,15 @@
       "features": [
         "AR-05"
       ],
-      "durationSeconds": 9.88,
-      "bytes": 190469,
-      "startSeconds": 61.6,
-      "capturedAt": "2026-11-05T07:58:52.327Z",
+      "capturedAt": "2026-11-05T10:36:22.113Z",
       "recorderSourceHashes": {
-        "scripts/record-release-demos.cjs": "af2537ced333b5d72e3bc79285f4003a7a8f04eb5e9816970d174a768ebff455",
+        "scripts/record-release-demos.cjs": "789036af4a036f2de3021ff68a40325890d955f1a951f205e1fb56a7d4f87490",
         "scripts/release-demo-scenes.cjs": "8b0fd2d53ce7fb805892e00ff0e83b9580d8c94e883fbd458323d6c400b3443d"
       },
-      "sha256": "fec987b2f6ed8f750b92c0544d0fc8d87692a9a7847a8c61e59c00f03cac94c1"
+      "durationSeconds": 11.96,
+      "bytes": 259873,
+      "sha256": "673cad468cd96f28d7f99cfa5b2263a9cf5a036bba9d351b0d5fb95cf802231d",
+      "startSeconds": 84.92
     },
     {
       "name": "stop-and-recovery",
@@ -161,15 +162,15 @@
         "PC-07"
       ],
       "scope": "UI cancellation request and sampled recovery; not native process-cleanup evidence.",
-      "durationSeconds": 8.08,
-      "bytes": 112190,
-      "startSeconds": 71.48,
-      "capturedAt": "2026-11-05T07:58:52.327Z",
+      "capturedAt": "2026-11-05T10:40:03.388Z",
       "recorderSourceHashes": {
-        "scripts/record-release-demos.cjs": "af2537ced333b5d72e3bc79285f4003a7a8f04eb5e9816970d174a768ebff455",
+        "scripts/record-release-demos.cjs": "789036af4a036f2de3021ff68a40325890d955f1a951f205e1fb56a7d4f87490",
         "scripts/release-demo-scenes.cjs": "8b0fd2d53ce7fb805892e00ff0e83b9580d8c94e883fbd458323d6c400b3443d"
       },
-      "sha256": "58266ea5e4e34ea35c26059eedead8ff63b2f58886fdbe0ea2f74d6b2e521de7"
+      "durationSeconds": 10.68,
+      "bytes": 110034,
+      "sha256": "5673b5b88a656d52b19b5ecc98e4c3afb3400b915ab24584513616acd1b22c9a",
+      "startSeconds": 96.88
     },
     {
       "name": "history-and-rewind",
@@ -180,15 +181,15 @@
         "AR-26"
       ],
       "scope": "History, fork and rewind controls; host persistence and disk rewind are not executed.",
-      "durationSeconds": 11.64,
-      "bytes": 190285,
-      "startSeconds": 79.56,
-      "capturedAt": "2026-11-05T07:58:52.327Z",
+      "capturedAt": "2026-11-05T10:38:23.347Z",
       "recorderSourceHashes": {
-        "scripts/record-release-demos.cjs": "af2537ced333b5d72e3bc79285f4003a7a8f04eb5e9816970d174a768ebff455",
+        "scripts/record-release-demos.cjs": "789036af4a036f2de3021ff68a40325890d955f1a951f205e1fb56a7d4f87490",
         "scripts/release-demo-scenes.cjs": "8b0fd2d53ce7fb805892e00ff0e83b9580d8c94e883fbd458323d6c400b3443d"
       },
-      "sha256": "31b74ba3fd407fb01f80b5e434d5522833f1a7d06de015e2d00e5f16049fb43b"
+      "durationSeconds": 21.12,
+      "bytes": 250092,
+      "sha256": "c0cce59a23bb08f556ff0e5870d133d7f4d31bb6875a0dd802e36606d601a12a",
+      "startSeconds": 107.56
     },
     {
       "name": "settings-and-help",
@@ -198,15 +199,15 @@
         "EW-22",
         "EW-25"
       ],
-      "durationSeconds": 13.52,
-      "bytes": 171711,
-      "startSeconds": 91.2,
-      "capturedAt": "2026-11-05T07:58:52.327Z",
+      "capturedAt": "2026-11-05T10:55:55.589Z",
       "recorderSourceHashes": {
-        "scripts/record-release-demos.cjs": "af2537ced333b5d72e3bc79285f4003a7a8f04eb5e9816970d174a768ebff455",
+        "scripts/record-release-demos.cjs": "68ca3bf724a74ef32e83418f1f56cbdf348f3e659db369f4d98d247b1e65f58d",
         "scripts/release-demo-scenes.cjs": "8b0fd2d53ce7fb805892e00ff0e83b9580d8c94e883fbd458323d6c400b3443d"
       },
-      "sha256": "5c90b7708ef42b0157dd4361f286b16a257d60215abfbf0de193f2d4b43c491f"
+      "durationSeconds": 24.92,
+      "bytes": 379888,
+      "sha256": "1b13e1e43cefc329d5db096fe7631972fc6b400a02b46215db47327a92fdb3ba",
+      "startSeconds": 128.68
     },
     {
       "name": "canvas-design",
@@ -218,15 +219,15 @@
         "CI-13"
       ],
       "scope": "Real Canvas app and sandbox runtime; sampled artifact and host operations. Export request only.",
-      "durationSeconds": 13.04,
-      "bytes": 361297,
-      "startSeconds": 104.72,
-      "capturedAt": "2026-11-05T07:58:52.327Z",
+      "capturedAt": "2026-11-05T10:43:36.685Z",
       "recorderSourceHashes": {
-        "scripts/record-release-demos.cjs": "af2537ced333b5d72e3bc79285f4003a7a8f04eb5e9816970d174a768ebff455",
+        "scripts/record-release-demos.cjs": "789036af4a036f2de3021ff68a40325890d955f1a951f205e1fb56a7d4f87490",
         "scripts/release-demo-scenes.cjs": "8b0fd2d53ce7fb805892e00ff0e83b9580d8c94e883fbd458323d6c400b3443d"
       },
-      "sha256": "17d827626abc6d092ef8d753ccf3845f28b95408c5bdc8bad4759dde66b3748d"
+      "durationSeconds": 15.32,
+      "bytes": 241239,
+      "sha256": "95c917f4c7a080a33d73d440201817f74d880a6983ddc7fc07352de2ac132f43",
+      "startSeconds": 153.6
     },
     {
       "name": "visual-test",
@@ -235,15 +236,15 @@
         "CI-18"
       ],
       "scope": "Real dashboard with a deterministic sample screenshot and sample findings; no live agent visual test.",
-      "durationSeconds": 8.56,
-      "bytes": 152938,
-      "startSeconds": 117.76,
-      "capturedAt": "2026-11-05T07:58:52.327Z",
+      "capturedAt": "2026-11-05T10:45:12.328Z",
       "recorderSourceHashes": {
-        "scripts/record-release-demos.cjs": "af2537ced333b5d72e3bc79285f4003a7a8f04eb5e9816970d174a768ebff455",
+        "scripts/record-release-demos.cjs": "789036af4a036f2de3021ff68a40325890d955f1a951f205e1fb56a7d4f87490",
         "scripts/release-demo-scenes.cjs": "8b0fd2d53ce7fb805892e00ff0e83b9580d8c94e883fbd458323d6c400b3443d"
       },
-      "sha256": "05d3b8d02771056d30a34cf718689b471bf0f0e9a88657ff3c2190c151ca1b59"
+      "durationSeconds": 14.8,
+      "bytes": 151373,
+      "sha256": "90f69c3d20f401f13cd63e9c04a17a445f92363f8273d54aed397028f3629bb5",
+      "startSeconds": 168.92
     },
     {
       "name": "connected-tools",
@@ -251,15 +252,15 @@
       "features": [
         "CI-22"
       ],
-      "durationSeconds": 6.88,
-      "bytes": 246249,
-      "startSeconds": 126.32,
-      "capturedAt": "2026-11-05T07:58:52.327Z",
+      "capturedAt": "2026-11-05T10:35:45.402Z",
       "recorderSourceHashes": {
-        "scripts/record-release-demos.cjs": "af2537ced333b5d72e3bc79285f4003a7a8f04eb5e9816970d174a768ebff455",
+        "scripts/record-release-demos.cjs": "789036af4a036f2de3021ff68a40325890d955f1a951f205e1fb56a7d4f87490",
         "scripts/release-demo-scenes.cjs": "8b0fd2d53ce7fb805892e00ff0e83b9580d8c94e883fbd458323d6c400b3443d"
       },
-      "sha256": "ef32ab8aa6d623dab40694aa4b469ba36236c710c50771dfd6d0e3ddab586d2f"
+      "durationSeconds": 7.32,
+      "bytes": 129602,
+      "sha256": "1dc304afcc925bc7adfed3965a4f4291ca6ed9b892bec5901442bebb211f97af",
+      "startSeconds": 183.72
     },
     {
       "name": "proactive-inbox",
@@ -268,19 +269,24 @@
         "CI-30",
         "CI-31"
       ],
-      "durationSeconds": 6.84,
-      "bytes": 323277,
-      "startSeconds": 133.2,
-      "capturedAt": "2026-11-05T07:58:52.327Z",
+      "capturedAt": "2026-11-05T10:37:18.750Z",
       "recorderSourceHashes": {
-        "scripts/record-release-demos.cjs": "af2537ced333b5d72e3bc79285f4003a7a8f04eb5e9816970d174a768ebff455",
+        "scripts/record-release-demos.cjs": "789036af4a036f2de3021ff68a40325890d955f1a951f205e1fb56a7d4f87490",
         "scripts/release-demo-scenes.cjs": "8b0fd2d53ce7fb805892e00ff0e83b9580d8c94e883fbd458323d6c400b3443d"
       },
-      "sha256": "7cc5cb1e99bd1f3acfcf507486e8c29cf4384719c59b2ff11b9b5404084b1953"
+      "durationSeconds": 7.8,
+      "bytes": 202686,
+      "sha256": "bfaede8fac2e1c11b8064578de4010c03f1a31a6115b5be987f9159c417ecbc7",
+      "startSeconds": 191.04
     }
   ],
   "data": "Deterministic sample responses and evidence; no live agent or connected-account calls; HTTP(S) blocked",
   "command": "npm run demo:record",
+  "environment": {
+    "MYSTI_DEMO_OUTPUT": "out-test/release-2.0.1-beta.2/marked-18.1.2-media",
+    "MYSTI_DEMO_SCENES": "settings-and-help"
+  },
+  "outputDirectory": "out-test/release-2.0.1-beta.2/marked-18.1.2-media",
   "viewport": {
     "width": 1120,
     "height": 840

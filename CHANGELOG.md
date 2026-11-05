@@ -26,7 +26,7 @@ This release collects the reliability work since Beta 1. It remains a beta;
 
 - Restrict the coordinator's local reads of Git configuration, including submodule, worktree and bare-repository configs, because remote URLs may contain credentials.
 - Apply the read-only tool allowlist only to a backend's built-in tools, including when connected MCP servers expose similarly named tools ([#77](https://github.com/DeepMyst/Mysti/pull/77)). Thanks to [@tynianov1](https://github.com/tynianov1) for responsibly reporting this and the Git-config issue.
-- Update DOMPurify to 3.4.17, Mermaid to 12.2.0 and vulnerable compatible transitive dependencies. Refresh the browser sanitizer and diagram bundle, with hash checks for both. The release audit has zero runtime advisories; bounded development-tool exceptions are documented in the maintenance guide.
+- Update DOMPurify to 3.4.17, Mermaid to 12.2.0, Marked to 18.1.2 and vulnerable compatible transitive dependencies. Refresh the browser sanitizer and rendering assets, with integrity checks and current-parser feature recordings. The release audit has zero runtime advisories; bounded development-tool exceptions are documented in the maintenance guide.
 
 ### Added and updated
 

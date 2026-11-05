@@ -160,6 +160,30 @@ hosted runners. Chromium is required for the portable browser suites; this
 external-fixture diagnostic is not claimed as hosted performance evidence.
 Final per-platform counts and skip reasons belong in the published release record.
 
+Candidate `c031af4` passed every platform test job and all four editor jobs in
+[CI 42006109928](https://github.com/DeepMyst/Mysti/actions/runs/42006109928) and
+[integration 42006130239](https://github.com/DeepMyst/Mysti/actions/runs/42006130239).
+The VSIX built successfully, but the package-shape gate rejected the required
+`package.json` manifest because it had crossed the 100 KB asset-review threshold.
+The correction allowlists only that root manifest with its purpose; a regression
+still rejects unrelated large JSON. All **15 package-inspector checks** passed
+locally. The general size threshold and other package checks are unchanged.
+
+Upstream runtime merge `f237550` was then integrated. Existing patched sanitizer
+and Mermaid inputs and artifact hashes remain unchanged; Marked is updated to
+18.1.2, alongside the upstream parser, MCP and packaging updates. The recordings
+are regenerated against the updated Markdown renderer, which is now included in
+their source hashes. The merged lockfile audit still reports **zero runtime
+advisories** and the same **16 development exceptions**. Fresh hosted checks are
+required for this merged source and its actual packaged artifact.
+
+The updated dependency graph passed **19 checks on Node 18.17.1**, including
+Canvas operations and an MCP tool round trip. A local rendering attempt passed
+44 checks, timed out in one structural JSDOM test, and did not execute three
+Mermaid cases after a suite setup failure. That attempt is retained as failed;
+its deadlines were not relaxed. The required hosted suites must establish the
+rendering result for the final source.
+
 ### Artifact identity and hosted checks
 
 Once qualified and published, the

@@ -1,23 +1,58 @@
 {
   "version": "2.0.1",
   "release": "Beta 2",
-  "checkedAt": "2026-11-05T08:04:33.197652+00:00",
+  "checkedAt": "2026-11-05T10:59:51.280649+00:00",
   "scenes": 15,
-  "tourDurationSeconds": 140.04,
+  "tourDurationSeconds": 198.84,
   "chapters": 15,
+  "captureManifestSha256": "2608d8e5d518ad98c637aab9ffddc586da1d7c89f0cd230b2f1c275ccc194e6a",
+  "tourSha256": "6e1ad53ab128b03e6531727b2c1af8fda2d33796a5796d886403c55dcb157f2e",
+  "captureRuntime": {
+    "node": "v22.20.0",
+    "nodeExecutable": "/usr/local/bin/node",
+    "platform": "darwin",
+    "note": "Actual recording runtime reported by the capture operator; release build and runtime qualification are recorded separately."
+  },
+  "captureInvocations": [
+    {
+      "command": "npm run demo:record",
+      "environment": {
+        "MYSTI_DEMO_SCENES": "",
+        "MYSTI_DEMO_OUTPUT": "out-test/release-2.0.1-beta.2/marked-18.1.2-media"
+      },
+      "scope": "All 15 scenes with Marked 18.1.2"
+    },
+    {
+      "command": "npm run demo:record",
+      "environment": {
+        "MYSTI_DEMO_OUTPUT": "out-test/release-2.0.1-beta.2/marked-18.1.2-media",
+        "MYSTI_DEMO_SCENES": "settings-and-help"
+      },
+      "scope": "Settings/help caption visibility correction and combined tour rebuild; 14 previously audited clips retained byte-for-byte"
+    }
+  ],
   "checks": {
     "sceneInteractionAssertions": "pass",
-    "sampleCaptionVisible": "pass",
+    "sampleCaptionVisible": "pass: final scene assertions, all posters, all clip midpoint samples, and corrected settings hub quarter-frame",
     "uncaughtBrowserErrors": 0,
     "brokenVisibleImages": 0,
-    "completeSceneAndTourDecode": "pass",
+    "completeSceneAndTourDecode": "pass: every clip decoded; corrected settings clip and rebuilt tour decoded again; unchanged clips verified by SHA256",
+    "gifDecode": "pass",
     "h264Yuv420p1120x840": "pass",
     "posterDimensions": "pass",
     "sceneDurationsAndSizes": "pass",
-    "clipAndSourceSha256": "pass",
-    "chapterCaptions": "pass",
-    "galleryAndChapterLocalLinks": "pass"
+    "clipAndSourceSha256": "pass, including resources/marked.min.js",
+    "perSceneRecorderProvenance": "pass: retained clips match their previously audited recorder hashes and unchanged UI assets",
+    "chapterCaptions": "15 matching WebVTT cues and embedded chapters; final newline checked",
+    "galleryAndChapterLocalLinks": "75 checked",
+    "temporaryTourFilesRemoved": "pass",
+    "maximumMediaFileBytes": 3055849
   },
-  "visualReview": "All posters reviewed in contact sheet; individual setup, context, history, Stop, settings, Canvas, Visual Test and model-control posters inspected; provider-switching mid-scene frame inspected; hero inspected.",
-  "scope": "Shipped webview interaction demonstrations with sample host data. No live providers, OAuth, native subprocess cleanup, disk rewind or exported design file validated by these recordings."
+  "visualReview": {
+    "posters": "All 15 current scene posters individually inspected, plus hero and contact sheet.",
+    "clipSamples": "One actual midpoint frame from every clip inspected; the corrected settings/help clip was additionally inspected at 25%, 50% and 75%. Primary controls/results and sample-data captions were readable in those samples.",
+    "findingResolved": "Hub CSS originally hid the recorder label. Recorder-only annotation visibility was corrected; actual settings hub frame now shows the interface-demo/sample-data banner.",
+    "limit": "Sampled visual review and complete technical decoding; this does not claim every frame was watched in real time."
+  },
+  "scope": "Shipped webview interaction demonstrations with deterministic sample host data; HTTP(S) blocked by the recorder. No live providers, OAuth, native subprocess cleanup, disk rewind, exported design file or operating-system parity validated by these recordings."
 }

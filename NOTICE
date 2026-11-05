@@ -27,11 +27,11 @@ Mermaid 12.2.0 — resources/mermaid.min.js
   by the bundle. Exact dependency versions and artifact SHA-256 hashes are
   recorded in resources/mermaid.provenance.json.
 
-Marked 18.0.14 — resources/marked.min.js
-  Copyright (c) 2011-2024, Christopher Jeffrey. (MIT Licensed)  [banner in file]
-  Copyright (c) 2018+, MarkedJS (https://github.com/markedjs/)
+Marked 18.1.2 — resources/marked.min.js
+  Copyright (c) 2011-2018, Christopher Jeffrey. (MIT License)  [banner in file]
+  Copyright (c) 2018-2026, MarkedJS. (MIT License)  [banner in file]
   Licence: MIT
-  https://github.com/markedjs/marked/blob/v18.0.14/LICENSE.md
+  https://github.com/markedjs/marked/blob/v18.1.2/LICENSE.md
 
 DOMPurify 3.4.17 — resources/dompurify.min.js
   (c) Cure53 and other contributors  [banner in file]

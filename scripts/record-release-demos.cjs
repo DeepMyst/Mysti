@@ -17,7 +17,7 @@ const output = path.resolve(root, process.env.MYSTI_DEMO_OUTPUT || 'docs/release
 const only = new Set((process.env.MYSTI_DEMO_SCENES || '').split(',').filter(Boolean));
 const viewport = {width:1120,height:840};
 const metadata = require('./release-demo-scenes.cjs').metadata;
-const sourceFiles=['media/chat/chat.js','media/chat/chat.css','media/chat/index.html','media/chat/markdownRenderer.js','media/chat/subAgentCards.js','media/canvas/canvas.css','media/canvas/index.html','media/vt-dashboard/vt-dashboard.js','media/connections/connections.js','media/proactive/proactive.js','resources/dompurify.min.js','scripts/record-release-demos.cjs','scripts/release-demo-scenes.cjs'];
+const sourceFiles=['media/chat/chat.js','media/chat/chat.css','media/chat/index.html','media/chat/markdownRenderer.js','media/chat/subAgentCards.js','media/canvas/canvas.css','media/canvas/index.html','media/vt-dashboard/vt-dashboard.js','media/connections/connections.js','media/proactive/proactive.js','resources/dompurify.min.js','resources/marked.min.js','scripts/record-release-demos.cjs','scripts/release-demo-scenes.cjs'];
 const hash=file=>require('node:crypto').createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 const sourceAssetHashes=Object.fromEntries(sourceFiles.map(file=>[file,hash(path.join(root,file))]));
 const recorderSourceHashes=Object.fromEntries(Object.entries(sourceAssetHashes).filter(([file])=>file.startsWith('scripts/')));
@@ -55,15 +55,19 @@ async function caption(page, text) {
   await page.evaluate(({text,releaseLabel}) => {
     let el=document.getElementById('release-caption');
     if(!el){el=document.createElement('div');el.id='release-caption';document.body.appendChild(el);}
+    // The shipped hub hides unrelated body children with !important. These
+    // two recorder-owned annotations must remain visible in that view too.
+    el.style.setProperty('display','block','important');
     el.replaceChildren();const title=document.createElement('strong');title.textContent=text;el.appendChild(title);
     const detail=document.createElement('small');detail.textContent='MYSTI '+releaseLabel+'  /  INTERFACE DEMO · SAMPLE DATA';el.appendChild(detail);
     if(!document.getElementById('release-pointer')){
-      const pointer=document.createElement('div');pointer.id='release-pointer';document.body.appendChild(pointer);
+      const pointer=document.createElement('div');pointer.id='release-pointer';pointer.style.setProperty('display','block','important');document.body.appendChild(pointer);
       document.addEventListener('mousemove',e=>{pointer.style.left=e.clientX+'px';pointer.style.top=e.clientY+'px';});
       document.addEventListener('mousedown',()=>{pointer.style.background='#9de9c9';});
       document.addEventListener('mouseup',()=>{pointer.style.background='#163c4099';});
     }
   }, {text,releaseLabel});
+  if(!await page.evaluate(()=>!!document.elementFromPoint(30,20)?.closest('#release-caption'))) throw new Error('Sample-data caption is obscured in this recording state');
   if(page.__captureReady===undefined) page.__captureReady=Date.now();
 }
 const asset = (file, mime='image/png') => 'data:'+mime+';base64,'+fs.readFileSync(file).toString('base64');
@@ -313,6 +317,7 @@ if (require.main === module) (async()=>{
   fs.writeFileSync(chapters,chapterText);fs.writeFileSync(path.join(output,'mysti-feature-tour.vtt'),captions.trimEnd()+'\n');
   fs.writeFileSync(path.join(output,'CHAPTERS.md'),'# Mysti feature tour\n\nAll chapters use the shipped webviews with clearly labelled sample data.\n\n| Start | Scene |\n| --- | --- |\n'+chapterRows.join('\n')+'\n');
   try{execFileSync('ffmpeg',['-y','-loglevel','error','-f','concat','-safe','0','-i',concat,'-i',chapters,'-map_metadata','1','-map_chapters','1','-c','copy','-movflags','+faststart',path.join(output,'mysti-feature-tour.mp4')]);}finally{fs.unlinkSync(concat);fs.unlinkSync(chapters);}
-  fs.writeFileSync(path.join(output,'capture.json'),JSON.stringify({version,releaseLabel,capturedAt:new Date().toISOString(),sourceAssetHashes,source:'Shipped chat, Canvas, Visual Test, Connections and Proactive webviews',recordings,data:'Deterministic sample responses and evidence; no live agent or connected-account calls; HTTP(S) blocked',command:'npm run demo:record',viewport},null,2)+'\n');
+  const captureEnvironment=Object.fromEntries(['MYSTI_DEMO_OUTPUT','MYSTI_DEMO_SCENES','MYSTI_DEMO_LABEL'].filter(key=>process.env[key]!==undefined).map(key=>[key,process.env[key]]));
+  fs.writeFileSync(path.join(output,'capture.json'),JSON.stringify({version,releaseLabel,capturedAt:new Date().toISOString(),sourceAssetHashes,source:'Shipped chat, Canvas, Visual Test, Connections and Proactive webviews',recordings,data:'Deterministic sample responses and evidence; no live agent or connected-account calls; HTTP(S) blocked',command:'npm run demo:record',environment:captureEnvironment,outputDirectory:path.relative(root,output),viewport},null,2)+'\n');
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
