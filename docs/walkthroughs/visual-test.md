@@ -135,7 +135,7 @@ fresh dashboard session:
 
 **15 seconds · screenshot, findings and action log**
 
-https://github.com/user-attachments/assets/c1c6aefa-fe50-4d76-aa56-243e2a010a1e
+https://github.com/user-attachments/assets/11042a18-0c80-445d-97a6-488ff0209dd6
 
 *This labelled sample report explains the display. It is not a live provider
 test or proof of an automatic fix loop.*

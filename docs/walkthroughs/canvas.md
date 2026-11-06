@@ -106,7 +106,7 @@ not mean those formats are available through this button.
 
 **15 seconds · theme, format and Export**
 
-https://github.com/user-attachments/assets/475aa1dd-4024-40dd-87f4-6def1a75778f
+https://github.com/user-attachments/assets/24cb574f-98d3-4bcf-9d18-f2be7a18e21f
 
 *This sample-data recording shows the real Canvas renderer and controls. Its
 host operations are fixtures; it does not write an export file.*

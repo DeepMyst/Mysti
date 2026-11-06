@@ -110,7 +110,7 @@ request also assigns work to it.
 
 **17 seconds · one agent designs, the next reviews**
 
-https://github.com/user-attachments/assets/c453b15b-39a0-41c3-98b8-7ad8709a6785
+https://github.com/user-attachments/assets/adab78a1-6c58-427e-aa8d-d2f362eae15a
 
 *The recording uses labelled sample responses. For all 15 demonstrations, open
 the [demo gallery](../DEMO_GALLERY.md). Native provider acceptance is tracked

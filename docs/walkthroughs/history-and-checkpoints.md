@@ -115,7 +115,7 @@ filesystem backup. See [settings](../SETTINGS.md) for
 
 **21 seconds · history, branching and the rewind choices**
 
-https://github.com/user-attachments/assets/daa6adf2-c763-4c8b-9bca-b6d38b9acf5b
+https://github.com/user-attachments/assets/d69c6c69-2f96-4440-935e-f0f4660d5b8a
 
 *This sample-data demonstration branches displayed history. It does not execute
 a workspace rewind or establish backup/restore compatibility.*
