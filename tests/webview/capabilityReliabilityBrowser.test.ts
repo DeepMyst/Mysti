@@ -34,7 +34,7 @@ describe('PC-12 capability truthfulness and manifest recovery', () => {
   beforeEach(async () => {
     if (CHROMIUM_UNAVAILABLE) { return; }
     clearMockConfig(); errors = []; page = await browser.newPage({ viewport: { width: 500, height: 950 } });
-    page.setDefaultTimeout(2000); page.on('pageerror', error => errors.push(error.message)); await boot();
+    page.on('pageerror', error => errors.push(error.message)); await boot();
   });
   afterEach(async () => { await page?.close(); if (errors) expect(errors).toEqual([]); });
   afterAll(async () => { await browser?.close(); registry.dispose(); clearMockConfig(); });

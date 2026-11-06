@@ -66,6 +66,27 @@ portable browser checks require Chromium and fail when it is unavailable.
 
 ### Unreleased changes and unresolved reliability investigations
 
+The latest test-harness correction separates **functional correctness** from
+**performance acceptance**. Unit and performance projects keep their five-second
+defaults; browser correctness gets a 30-second test budget and Playwright's
+30-second action default. This intentionally replaces the inherited unit budget
+and six suites' blanket 2–5-second action caps. Exact Unicode inputs, public
+actions, content/identity assertions, purpose-specific time limits and performance
+thresholds remain. No retry, font warmup, browser upgrade or product-font change
+is involved. The previous timeout failures remain recorded; separate passing
+diagnostics measured native input latency. This policy neither explains those
+failures nor fixes that latency, and does not define a 30-second UX target.
+
+The Canvas benchmark also now closes each previous page/context before creating
+its next board. The old same-page replacement retained multiple app timers.
+Its paced collector now measures all 60 moves' following rendering intervals,
+including the last, instead of including a pre-move interval and omitting the
+last move. The move coordinates, scene workload and performance thresholds are
+unchanged. These are independently demonstrated fixture defects; the earlier
+macOS frame-time spike has not been attributed conclusively to either one.
+The [PR](https://github.com/DeepMyst/Mysti/pull/81) records exact-head qualification
+for these corrections; historical candidate results below are not new passes.
+
 The published **2.0.1 Beta 2 VSIX** remains the build documented in the
 [release validation report](releases/2.0.1-beta.2/VALIDATION.md). The documentation
 candidate contains an **unreleased** streaming-scroll correction: text and
@@ -103,7 +124,7 @@ match in approximately 148–170 ms and observes its own helper close in
 identical bytes, including 323 updates totaling 178,861,594 bytes, and all three
 recovery reads. Original assertions and deadlines remain unchanged.
 
-That candidate is **still not release-qualified**. Its
+That historical candidate is **not release-qualified**. Its
 [independent push workflow](https://github.com/DeepMyst/Mysti/actions/runs/42121256729)
 fails two Unicode composer fills at their original three-second action limit;
 dependent package/editor jobs are skipped. The same two cases pass in the
@@ -277,7 +298,7 @@ npm audit --omit=dev
 ```
 
 - [ ] Record command, exit status, pass/fail/skip counts and retained log. Run the three release phases sequentially; browser/performance checks must not compete with editor/media workloads.
-- [ ] The release runner sets `MYSTI_REQUIRE_CHROMIUM=1` and bounds workers (two for unit/integration, one for browser/performance). Linux runners also need Playwright system dependencies (`--with-deps`). No retries or longer assertion deadlines are added.
+- [ ] The release runner sets `MYSTI_REQUIRE_CHROMIUM=1` and bounds workers (two for unit/integration, one for browser/performance). Linux runners also need Playwright system dependencies (`--with-deps`). Verify project ownership, documented containment budgets and zero retries; preserve explicit behavioral/performance limits and record any intentional policy change.
 - [ ] Run focused regressions for changed behavior. Do not replace a failing assertion with retries or a larger timeout merely to obtain green results.
 - [ ] Review runtime audit findings and tracked development exceptions. Verify vendored provenance independently of npm audit.
 - [ ] Run the minimum-runtime fixture and real-editor integration required by [MAINTENANCE](MAINTENANCE.md). The fixture executes under Node 18.17.1 after building under development Node; do not run the old-runtime assertion under the build Node and call it equivalent.

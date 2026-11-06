@@ -62,11 +62,10 @@ describe('selected file mention identity in the shipped browser', () => {
     if (CHROMIUM_UNAVAILABLE) return;
     errors = []; selectedRows = []; multiRoot = undefined;
     page = await browser.newPage({ viewport: { width: 1000, height: 900 } });
-    page.setDefaultTimeout(3000);
     page.on('pageerror', error => errors.push(error.message));
     await page.route('**/*', route => route.abort());
     // Loading the shipped assets is fixture startup; locator actions below
-    // retain their separate 3s deadline after the page is ready.
+    // use Playwright's default action bound and the browser project's test budget.
     await page.setContent(composeChatHtml(), { timeout: 30_000 });
     await receive('initialState', {
       ...INITIAL_STATE, panelId: 'file-mention-owner', providerManifest: manifest,

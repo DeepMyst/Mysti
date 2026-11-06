@@ -18,12 +18,14 @@ These unreleased changes are not included in the already qualified 2.0.1 Beta 2 
 
 ### Maintenance
 
+- Separate unit, browser correctness and Canvas performance into consistent Vitest projects. Browser correctness uses a 30-second containment budget instead of unit defaults and short blanket action caps; preserve public actions, exact inputs, assertions, purpose-specific limits and zero retries. This is a test-policy correction, not a native font latency fix.
+- Give each Canvas performance fixture its own page/context, closing the previous owner and its timers. Measure the rendering interval after every paced move, including the final one, with the same 60 moves and performance thresholds.
 - Avoid parsing and re-encoding each acknowledged history snapshot in the disk-recovery fixture. Preserve every physical write, byte-for-byte storage output, restart read, assertion and deadline.
 - Wait for foreground chat DOM readiness before the real-editor fixture tests background discovery and exact-tab reselection; keep its shared readiness deadline and subsequent user journey.
 - Supply VS Code's platform font defaults in the shared chat browser fixture instead of inheriting Chromium's Times fallback; retain original actions, assertions and deadlines.
 - Disable power-loss durability flushing only while constructing disposable SQLite test data; retain real files, SQL operations and production read-only credential checks.
 - Avoid rereading the growing JSON history on every recovery-fixture update; retain each physical write, detached snapshots, restart reads and storage-failure assertions.
-- Add failure-only phase diagnostics for an intermittent Windows browser rendering-test timeout; retain all assertions, streamed chunk boundaries and the existing deadline. Its cause remains under investigation.
+- Add failure-only phase diagnostics for an intermittent Windows browser rendering-test timeout; retain all assertions and streamed chunk boundaries. The later browser correctness policy explicitly changes the default containment budget; native latency remains under investigation.
 - Pin Linux browser tests to Ubuntu 24.04 because the locked Playwright version cannot install on the newer `ubuntu-latest` image; retain all required checks and test assertions.
 - Await agent initialization and dispose owned resources in the model-attribution test fixture so background work cannot outlive test teardown.
 

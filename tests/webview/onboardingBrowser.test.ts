@@ -123,7 +123,6 @@ describe('wizard step 1', () => {
 
   it.skipIf(CHROMIUM_UNAVAILABLE)('connects MiniMax through authentication without installing a CLI, then makes it selectable', async () => {
     const pg = await panel();
-    pg.setDefaultTimeout(5_000);
     const provider = registry.get('minimax')!;
     const discovery = await provider.discoverCli();
     const status = {

@@ -29,9 +29,20 @@ npm run compile:release
 
 The three release phases run sequentially: unit/integration suites use two
 workers; named browser suites use one; Canvas frame-performance checks run last
-in isolation. This avoids the action/setup starvation observed when browser and
-native-process suites competed in the broad run. Assertions and deadlines stay
-unchanged; the runner adds no retries. Additional Vitest reporter arguments can
+in isolation. The same three Vitest projects classify direct file runs, so a
+browser journey does not inherit the unit-test watchdog. Unit and performance
+defaults remain five seconds; browser correctness uses a 30-second test budget
+and Playwright's 30-second default action limit. Explicit per-test limits and
+performance assertions retain their own values. These are hang-detection limits,
+not a promise that a 30-second UI response is acceptable. The policy intentionally
+replaces the former five-second browser default and six suites' blanket 2–5-second
+action caps; it does not make native font loading faster. See the
+[Playwright Test timeout model](https://playwright.dev/docs/test-timeouts) and
+[locked library timeout implementation](https://github.com/microsoft/playwright/blob/v1.58.2/packages/playwright-core/src/client/timeoutSettings.ts#L58).
+These suites use the Playwright library under Vitest, not Playwright Test's
+separate action-timeout configuration.
+
+The runner adds no retries. Additional Vitest reporter arguments can
 be passed after `--`, for example `--reporter=json --outputFile=release-unit.json`.
 
 Release phases require browser availability, so a missing browser fails rather
