@@ -1,6 +1,18 @@
 # AI Providers
 
-Mysti offers its own coordinator plus 16 registered agent backends. You only need one to get started — install any two to unlock Brainstorm Mode.
+Mysti offers its own coordinator plus 16 registered agent backends. One configured provider is enough for chat; collaboration needs each participant configured and compatible with the requested access mode.
+
+[Documentation index](README.md) · [Troubleshooting](TROUBLESHOOTING.md) · [Privacy and data](PRIVACY.md) · [All settings](SETTINGS.md)
+
+## First successful request
+
+1. Select the provider in the composer. Use its setup card to install a CLI **only if that provider needs one**, then complete its authentication action. HTTP providers need an endpoint or API key instead.
+2. Refresh detection. Confirm the selected executable or endpoint, account readiness, and model separately. A detected binary or saved key is not a successful model request.
+3. Choose a supported access mode using the [compatibility table](#permissions-and-compatibility). Use a disposable workspace when trying a provider that requires unrestricted tools.
+4. Send `Reply with one sentence explaining what you can help me with. Do not use tools.` Expect a completed answer from the selected provider, with no setup or model error. This simple check does not validate tool safety or workspace editing.
+5. Add a small non-sensitive file through Context and ask it to explain that file. Move to collaboration after each participant succeeds independently.
+
+Model access, usage charges and quotas belong to the selected service/account. The [readiness report](PRODUCTION_READINESS.md#provider-acceptance-still-needed) distinguishes available adapters from completed native acceptance.
 
 ## Provider Overview
 
@@ -14,7 +26,7 @@ Mysti offers its own coordinator plus 16 registered agent backends. You only nee
 | GitHub Copilot | CLI | `copilot`, entitled GitHub account |
 | Cursor | CLI | `agent`, configured account |
 | OpenClaw | Gateway or local CLI | Running compatible gateway or `openclaw`, explicit full tool authority |
-| OpenCode | CLI | `opencode`, configured backend |
+| OpenCode | CLI or remote HTTP/SSE | Configured `opencode`, or an authenticated remote server |
 | Qwen Code | CLI | `qwen`, configured account |
 | Hermes | ACP over CLI | `hermes`, configured model/backend |
 | Kimi Code | ACP over CLI | `kimi`, configured account |
@@ -38,11 +50,25 @@ Codex uses native thread resume and sends the selected model explicitly. In rest
 
 OpenClaw accepts gateway protocols 3–4 and signs gateway challenges with a Mysti-owned device key stored in VS Code SecretStorage. A remote gateway may require pairing approval; Mysti does not bypass it. Its gateway/local CLI cannot enforce Mysti's Ask or Read Only policy, so Mysti rejects these combinations before sending a prompt. Use a provider with native approvals, or deliberately select Full Access with a mode that permits unrestricted tools. OpenClaw then uses its own configured policy. The fallback does not pass nonexistent `--sandbox` or `--yolo` options.
 
-Other providers have differing permission guarantees. A visible tool card alone does not prove pre-execution consent. See [native approval contracts](NATIVE_APPROVAL.md) for the transport-specific limits.
+Choose an access mode the adapter can enforce. The UI and provider preflight reject unsupported combinations rather than silently granting more authority.
+
+| Provider / transport | Ask / approval-based work | Plan / Read Only |
+| --- | --- | --- |
+| Claude Code, Codex | Native approval requests wait for Mysti's decision | Native restrictions plus host denial of mutations |
+| Hermes | Emitted ACP permission requests wait for Mysti | Non-read permission requests are denied; native request coverage still needs acceptance |
+| OpenCode remote HTTP/SSE | Native server permission requests wait for Mysti | Server rules and host checks deny non-read tools |
+| Gemini, Copilot, Cursor | Unsupported; choose a provider with native approvals | Native plan or deny-tool flags; not an OS sandbox guarantee |
+| Cline | Unsupported through this CLI connection | Legacy 1.x has a plan mapping; modern/unknown versions reject this mode |
+| Continue | Runs read-only because this transport cannot prompt for tool approval | `--readonly` |
+| OpenClaw, Qwen Code, Kimi Code, OpenCode local CLI | Unsupported; execution requires an explicitly unrestricted mode/access combination | Unsupported |
+| Ollama, LocalAI | Report tool proposals without executing them | No tools are executed by these adapters |
+| OpenRouter, MiniMax | Text completion; no tool execution | No tools are executed by these adapters |
+
+Unrestricted authority means **Edit Automatically + Full Access**, or another explicitly unrestricted combination accepted by the adapter. Selecting Full Access alone does not make an incompatible Ask mode work. A prompt such as “do not edit” is not a permission boundary. See [native approval contracts](NATIVE_APPROVAL.md) for source references, ownership and verification limits.
 
 ## Claude Code
 
-**The recommended provider** for deep reasoning and complex coding tasks.
+Claude Code uses a persistent CLI transport with native approvals and session continuity.
 
 ### Installation
 
@@ -67,21 +93,21 @@ Use the model dropdown for the current bundled/discovered catalog and any provid
 - **Thinking Mode**: Extended reasoning with configurable thinking levels
 - **Native Compaction**: Built-in `/compact` command for context management
 - **Session Resume**: Continue previous conversations with `--resume`
-- **MCP Permission Server**: Fine-grained permission control through VSCode UI
+- **Native Approvals**: Scoped permission requests wait for a decision in Mysti
 
 ### Settings
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `mysti.claudeCodePath` | `claude` | Path to Claude CLI executable |
-| `mysti.claudeModel` | `sonnet` | Default model |
-| `mysti.thinkingLevel` | `none` | Thinking level (none, low, medium, high) |
+| `mysti.claudeCodePath` | `"claude"` | Path to Claude CLI executable |
+| `mysti.claudeCodeModel` | `""` | Default model |
+| `mysti.defaultThinkingLevel` | `"none"` | Thinking level (none, low, medium, high) |
 
 ---
 
 ## OpenAI Codex
 
-Fast iteration cycles with OpenAI's latest models.
+OpenAI Codex through the CLI app-server transport, with native session continuity and approval requests.
 
 ### Installation
 
@@ -101,22 +127,23 @@ Use the model dropdown for the current bundled/discovered catalog and any provid
 
 ### Unique Features
 
-- **Profile Switching**: Switch between different OpenAI configurations
-- **Fast Iteration**: Optimized for quick code generation cycles
+- **Native sessions**: Resume the conversation's own app-server thread.
+- **Scoped approvals**: Command and file requests wait for the owning Mysti decision.
+- **Profile selection**: `mysti.codexProfile` requires profile support in the selected CLI/app-server. If initialization reports it unsupported, clear the setting to use the base configuration; Mysti does not silently ignore an explicit profile.
 
 ### Settings
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `mysti.codexPath` | `codex` | Path to Codex CLI executable |
-| `mysti.codexModel` | empty | Optional model override; otherwise use the selected model |
-| `mysti.codexProfile` | empty | Named local Codex profile |
+| `mysti.codexPath` | `"codex"` | Path to Codex CLI executable |
+| `mysti.codexModel` | `""` | Optional model override; otherwise use the selected model |
+| `mysti.codexProfile` | `""` | Named local Codex profile |
 
 ---
 
 ## Google Gemini
 
-Google's AI with fast response times and strong Google ecosystem integration.
+Gemini CLI with streamed text, tool activity and native session continuity.
 
 ### Installation
 
@@ -136,22 +163,22 @@ Use the model dropdown for the current bundled/discovered catalog and any provid
 
 ### Unique Features
 
-- **Fast Responses**: Generally the fastest response times
-- **Thinking Support**: Deep thinking mode available
-- **Google Integration**: Works well with Google Cloud and Firebase projects
+- **Streamed results**: Text, tool results and available usage are normalized into the chat.
+- **Native plan mode**: Plan/Read Only selects the CLI's plan flag. Ask-tier approvals are not supported by this transport.
+- **Model selection**: Select a model available to the configured account; the adapter does not expose reasoning-token budgets.
 
 ### Settings
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `mysti.geminiPath` | `gemini` | Path to Gemini CLI executable |
-| `mysti.geminiModel` | `gemini-3-deep-think` | Default model |
+| `mysti.geminiPath` | `"gemini"` | Path to Gemini CLI executable |
+| `mysti.geminiModel` | `""` | Default model |
 
 ---
 
 ## Cline
 
-Versatile CLI tool with plan/act workflow support.
+Cline CLI with structured task output. Supported controls depend on the detected CLI generation.
 
 ### Installation
 
@@ -169,22 +196,22 @@ Use the model dropdown for the current bundled/discovered catalog and any provid
 
 ### Unique Features
 
-- **Plan/Act Mode**: Separate planning and execution phases via `/plan-act` command
-- **Multi-Model**: Supports models from multiple providers
-- **Task-Oriented**: Designed for structured task completion
+- **Version-aware controls**: Legacy 1.x has a native Plan mapping. Modern or unknown versions reject Plan/Read Only; Ask-tier tool approval is unsupported.
+- **Model configuration**: Legacy model choice stays in the CLI; modern versions accept a custom model for the configured backend.
+- **Conversation context**: Mysti replays conversation history rather than claiming a native session resume.
 
 ### Settings
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `mysti.clinePath` | `cline` | Path to Cline CLI executable |
-| `mysti.clineModel` | `claude-3-5-sonnet` | Default model |
+| `mysti.clinePath` | `"cline"` | Path to Cline CLI executable |
+| `mysti.clineModel` | `""` | Default model |
 
 ---
 
 ## GitHub Copilot
 
-Access 14+ models from Anthropic, OpenAI, and Google through your GitHub subscription.
+Use GitHub Copilot CLI with a configured GitHub account and an entitled model.
 
 ### Installation
 
@@ -205,22 +232,22 @@ Use the model dropdown for the current bundled/discovered catalog and any provid
 
 ### Unique Features
 
-- **Multi-Model Access**: Use Claude, GPT, and Gemini through a single subscription
-- **GitHub Integration**: Leverages your existing GitHub Copilot subscription
-- **No Extra Cost**: Included with GitHub Copilot Pro/Pro+/Business plans
+- **Account model catalog**: Model availability, quotas and charges depend on the GitHub account and service.
+- **Read-only mapping**: Plan/Read Only denies native shell and write tools. Ask-tier approval is not supported.
+- **Version-aware output**: Modern CLI output includes tool events; older text-only output has less detail. Token counts are not inferred from billing units.
 
 ### Settings
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `mysti.copilotPath` | `copilot` | Path to Copilot CLI executable |
-| `mysti.copilotModel` | `claude-sonnet-4-5` | Default model |
+| `mysti.copilotPath` | `"copilot"` | Path to Copilot CLI executable |
+| `mysti.copilotModel` | `""` | Default model |
 
 ---
 
 ## Cursor
 
-Cursor's headless AI agent with smart auto-selection.
+Cursor's headless CLI adapter with model selection and tool activity.
 
 ### Installation
 
@@ -242,16 +269,16 @@ Use the model dropdown for the current bundled/discovered catalog and any provid
 
 ### Unique Features
 
-- **Auto Model Selection**: The "Auto" model intelligently picks the best model for each task
-- **Auto-Approve Mode**: When access level is set to full-access, enables `--force` flag for uninterrupted workflows
-- **Tool Use Detection**: Detects and displays tool usage (bash, file read/write, grep, etc.)
+- **Native model choice**: The Auto option delegates model choice to Cursor.
+- **Explicit authority**: `--force` is used only for an unrestricted mode/access combination. Ask-tier work is rejected; Plan/Read Only uses `--mode plan`.
+- **Tool activity**: Displays parsed CLI tool events. This adapter currently sends no previous conversation history, so repeat necessary context in a follow-up.
 
 ### Settings
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `mysti.cursorPath` | `agent` | Path to Cursor CLI executable |
-| `mysti.cursorModel` | `auto` | Default model |
+| `mysti.cursorPath` | `"agent"` | Path to Cursor CLI executable |
+| `mysti.cursorModel` | `""` | Default model |
 
 ---
 
@@ -314,10 +341,10 @@ Use the model dropdown for the current bundled/discovered catalog and any provid
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `mysti.openclawPath` | `openclaw` | Path to OpenClaw CLI executable |
-| `mysti.openclawModel` | `claude-opus-4-6` | Default model |
+| `mysti.openclawPath` | `"openclaw"` | Path to OpenClaw CLI executable |
+| `mysti.openclawModel` | `""` | Default model |
 | `mysti.openclawUseGateway` | `true` | Use WebSocket Gateway |
-| `mysti.openclawGatewayUrl` | `ws://127.0.0.1:18789` | Gateway URL |
+| `mysti.openclawGatewayUrl` | `"ws://127.0.0.1:18789"` | Gateway URL |
 
 ---
 
@@ -346,22 +373,22 @@ Use the model dropdown for the current bundled/discovered catalog and any provid
 ### Unique Features
 
 - **Multi-Backend**: Single CLI supporting Anthropic, OpenAI, Google, Groq, AWS Bedrock, Azure OpenAI, OpenRouter
-- **Agent Modes**: `build` agent for full access, `plan` agent for read-only analysis
+- **Transport choice**: Local CLI mode requires unrestricted authority and selects `build`; use the remote server transport for native approval and read-only requests
 - **Thinking Support**: Built-in thinking block streaming
-- **Session Resume**: Continue previous sessions via `--session <id>` or `--continue`
+- **Session Resume**: Local CLI turns use the panel's captured `--session <id>`; remote turns use isolated server sessions with replayed Mysti context
 
 ### Settings
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `mysti.opencodePath` | `opencode` | Path to OpenCode CLI executable |
-| `mysti.opencodeModel` | `` | Custom model (provider/model format) |
+| `mysti.opencodePath` | `"opencode"` | Path to OpenCode CLI executable |
+| `mysti.opencodeModel` | `""` | Custom model (provider/model format) |
 
 ---
 
 ## Qwen Code
 
-Alibaba's AI coding CLI agent with deep reasoning capabilities. Uses the same streaming protocol as Claude Code.
+Qwen Code CLI with streamed text, reasoning and tool activity. The adapter parses Qwen's own event shapes.
 
 ### Installation
 
@@ -376,7 +403,7 @@ qwen
 # Then type /auth in the interactive session
 ```
 
-Or set API keys: `QWEN_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`.
+The adapter recognizes `QWEN_API_KEY`, `DASHSCOPE_API_KEY`, and an `OPENAI_API_KEY` for Qwen's configured OpenAI-compatible route. An unrelated Anthropic credential does not authenticate Qwen.
 
 ### Supported Models
 
@@ -384,23 +411,23 @@ Use the model dropdown for the current bundled/discovered catalog and any provid
 
 ### Unique Features
 
-- **Claude-Compatible Protocol**: Uses the same stream-json NDJSON format as Claude Code
-- **Approval Modes**: plan, default, auto-edit, yolo — mapped from Mysti's access levels
+- **Structured stream**: Parses newline-delimited JSON text, reasoning and tool events
+- **Explicit unrestricted mode**: Ask, Plan and Read Only are rejected; allowed CLI turns use `--approval-mode yolo`
 - **Auth Error UI**: Guided authentication when not configured
-- **Session Resume**: Continue previous sessions with `--continue`
+- **Session Resume**: Resume the current panel's captured session using `--resume <id>`; a bare global `--continue` is not used
 
 ### Settings
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `mysti.qwenCodePath` | `qwen` | Path to Qwen Code CLI executable |
-| `mysti.qwenCodeModel` | `` | Custom model |
+| `mysti.qwenCodePath` | `"qwen"` | Path to Qwen Code CLI executable |
+| `mysti.qwenCodeModel` | `""` | Custom model |
 
 ---
 
 ## Ollama
 
-Local LLM inference — run AI models on your own machine with no cloud dependency.
+Connect to an Ollama HTTP server. The default endpoint is on the extension host's localhost; a configured remote endpoint sends prompts to that host.
 
 ### Installation
 
@@ -412,7 +439,7 @@ ollama pull llama3
 
 ### Authentication
 
-No authentication needed — runs entirely locally.
+The default loopback setup does not use an API key. Check the deployment's access controls before exposing or selecting a remote endpoint.
 
 ### Supported Models
 
@@ -420,17 +447,18 @@ Use the model dropdown for the current bundled/discovered catalog and any provid
 
 ### Unique Features
 
-- **Fully Local**: No internet connection required after model download
-- **Privacy**: Your code never leaves your machine
-- **No Subscription**: Free to use with any compatible model
-- **Fast Inference**: Hardware-accelerated on Apple Silicon, NVIDIA GPUs
+- **Local inference**: A local server and installed model can answer without a cloud model service.
+- **Explicit endpoint**: Prompts and selected context go to the configured server.
+- **Tool proposals**: Proposed tool calls are displayed; this adapter does not execute them.
+
+Other enabled providers, DeepMyst connections, model downloads and telemetry have separate network behavior. Local-model selection alone does not make the whole extension offline. See [Privacy and data](PRIVACY.md).
 
 ### Settings
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `mysti.ollamaPath` | `ollama` | Path to Ollama CLI executable |
-| `mysti.ollamaModel` | `` | Custom model |
+| `mysti.ollamaEndpoint` | `"http://localhost:11434"` | HTTP endpoint reached by the extension host |
+| `mysti.ollamaModel` | `""` | Custom model |
 
 ---
 
@@ -444,7 +472,7 @@ Follow the installation guide at [localai.io](https://localai.io).
 
 ### Authentication
 
-No authentication needed — runs entirely locally.
+For an endpoint that requires a key, configure `mysti.localaiApiKey` in **User** settings; the adapter sends it as a bearer credential. This is ordinary VS Code configuration, not SecretStorage, so do not put it in committed workspace settings. A server without authentication can leave it empty. A configured endpoint is not necessarily local; see [Privacy and data](PRIVACY.md).
 
 ### Supported Models
 
@@ -454,25 +482,74 @@ Use the model dropdown for the current bundled/discovered catalog and any provid
 
 - **Self-Hosted**: Run on your own infrastructure
 - **Full Control**: Configure models, resources, and access as needed
-- **On-Premise**: Meets compliance requirements for data residency
+- **Deployment choice**: Data goes to your configured endpoint; residency and compliance depend on your deployment and model configuration
 - **No Subscription**: Free and open source
 
 ### Settings
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `mysti.localaiPath` | `localai` | Path to LocalAI CLI executable |
-| `mysti.localaiModel` | `` | Custom model |
+| `mysti.localaiEndpoint` | `"http://localhost:8080"` | HTTP endpoint reached by the extension host |
+| `mysti.localaiModel` | `""` | Custom model |
+| `mysti.localaiApiKey` | `""` | Optional endpoint bearer key; ordinary User configuration |
 
 ---
 
-## Hermes, Kimi Code, Continue and OpenRouter
+## Hermes
 
-Install/configure the relevant CLI through Mysti's provider setup flow, then refresh detection. Configure a nonstandard executable with `mysti.hermesPath`, `mysti.kimiCodePath`, or `mysti.continuePath`. Each provider has a matching model override: `mysti.hermesModel`, `mysti.kimiCodeModel`, or `mysti.continueModel`.
+**Setup**
 
-Hermes and Kimi scope emitted ACP permission requests to the current process and turn. Kimi currently requires an explicit Full Access choice: native saved permissions can skip those requests, so Mysti cannot enforce Ask, Auto, or Plan through this connection. Unsupported selections preserve the draft and do not dispatch. Kimi confirms explicit model selections through the session API before sending a prompt; unavailable selections fail without falling back to another model. With no selection, the native account model is used.
+1. Select **Hermes** and use the setup card's installer for your OS. For an existing installation, set `mysti.hermesPath` only when its detected executable is wrong.
+2. Use **Authenticate**, which opens `hermes setup`. Configure a model backend and its account/key, or use the offered Nous Portal flow. A saved configuration is only a readiness signal; the backend validates access when used.
+3. Refresh detection. Leave `mysti.hermesModel` empty to use the native configured model, or select an available model explicitly.
 
-Continue uses restrictive native flags where an interactive host approval is unavailable. OpenRouter requires no CLI: configure `mysti.openrouter.apiKey`, select an available model, and optionally set `mysti.openrouterModel`.
+**Try it:** in a disposable workspace, choose Plan/Read Only and send `Explain when retries make an API more reliable. Do not use tools.` A completed attributed answer establishes text access for that account/model. If startup fails, complete `hermes setup` in the extension host environment and refresh again.
+
+**Limits:** Mysti uses the persistent ACP transport. Emitted permission requests are scoped to the process and turn; non-read requests are denied in read-only modes. Handling those requests does not establish that every native tool always requests permission. Reasoning is controlled by the native model/backend rather than a Mysti token-budget flag.
+
+Source: [Hermes adapter](../src/providers/hermes/HermesProvider.ts).
+
+## Kimi Code
+
+**Setup**
+
+1. Select **Kimi Code**, then use the OS-specific setup installer or configure an existing executable with `mysti.kimiCodePath`.
+2. Open `kimi` using **Authenticate** and enter `/login` in its interactive session. Complete the Kimi Code/Moonshot account flow. Mysti's setup action does not run a `kimi login` subcommand.
+3. Refresh detection. Leave `mysti.kimiCodeModel` empty for the native account model, or choose an available model. Explicit selections must be accepted by the ACP session before a prompt is sent.
+
+**Try it:** Kimi currently requires **Edit Automatically + Full Access**. Only make that choice deliberately in a disposable workspace; otherwise choose another provider. Send `Explain what a unit test checks. Do not use tools.` Expect a completed Kimi answer rather than an authentication or model-selection error. This prompt does not restrict the authority granted to the process.
+
+**Limits:** Ask, Auto with approval, Plan and Read Only are rejected before dispatch. Native saved permissions can bypass ACP callbacks, so the bridge for emitted requests is not sufficient to enforce these modes. Failed model selection does not fall back silently to another model.
+
+Source: [Kimi adapter](../src/providers/kimi/KimiCodeProvider.ts).
+
+## Continue
+
+**Setup**
+
+1. Select **Continue** and use its installer (`cn` is the executable). Set `mysti.continuePath` only for a nonstandard installation.
+2. Open `cn` with **Authenticate** and complete its interactive setup. Configure a model/backend and credentials in the native Continue configuration. The default home is `~/.continue`; `CONTINUE_GLOBAL_DIR` can override it.
+3. Refresh detection. Use the configured native model, or set a supported model/assistant identifier with `mysti.continueModel`.
+
+**Try it:** choose Plan/Read Only and send `Explain the difference between a unit test and an integration test. Do not use tools.` Expect a completed answer from Continue. If setup remains incomplete, inspect the native `config.yaml` model configuration without posting its secrets to an issue.
+
+**Limits:** Continue uses a headless final-text transport. Ask-tier requests also run with `--readonly`, so they cannot turn an approval card into a file write. Only explicitly unrestricted authority uses `--auto`. Token usage and reasoning controls depend on the native backend and are not inferred from displayed text.
+
+Source: [Continue adapter](../src/providers/continue/ContinueProvider.ts).
+
+## OpenRouter
+
+**Setup**
+
+1. Select **OpenRouter**. This HTTP adapter needs no CLI installation.
+2. Provide `OPENROUTER_API_KEY` to the extension host environment, or set `mysti.openrouter.apiKey` in **User** settings. The setting is ordinary VS Code configuration, not SecretStorage; do not commit a key in workspace settings. See [credential handling](PRIVACY.md).
+3. Select a model your account can use. `mysti.openrouterModel` is the provider-specific override; leave it empty to use the selected/default model. A saved key does not establish credit or model entitlement.
+
+**Try it:** send `Give one example of a useful code-review question.` Expect streamed text followed by a completed answer. An authentication, credit or availability error needs to be resolved with the configured account/model.
+
+**Limits:** This provider is chat-only and executes no tools. It is distinct from selecting the **Mysti coordinator**, which can use OpenRouter while applying its own tools and spend controls. Provider costs and free-model availability are evaluated by the service, not guaranteed by selecting a catalog entry.
+
+Source: [OpenRouter adapter](../src/providers/openrouter/OpenRouterProvider.ts).
 
 ## Switching Providers
 
@@ -502,32 +579,32 @@ For the complete feature inventory and measured validation status, see the [feat
 
 ## MiniMax
 
+**Setup**
+
 Select MiniMax and choose **Authenticate / Configure API key**. The host opens a
 password field and saves the key in VS Code SecretStorage. No CLI is installed.
 A configured key is checked by the API on the first request; a rejected key
 returns an authentication card. Keys are never sent to the chat webview.
 
-The adapter streams text, separate reasoning and reported token usage. It is a
+**Try it:** choose an available MiniMax model and send `Explain one benefit of a small pull request.` Expect a completed MiniMax answer and any usage reported by the API. A configured key is not a successful authentication test until this request succeeds.
+
+**Limits:** The adapter streams text, separate reasoning and reported token usage. It is a
 completion backend: it does not execute tools or edit files. The coordinator can
 assign it advisory work, while coding agents perform changes. Model selections
 and explicit routed models are honored; unsupported effort controls stay hidden.
 
-`MiniMax-M2.7` and `MiniMax-M2.7-highspeed` have 204,800-token context windows,
-per [MiniMax's API documentation](https://platform.minimax.io/docs/api-reference/text-openai-api).
+The bundled MiniMax catalog declares `MiniMax-M2.7` and `MiniMax-M2.7-highspeed`
+with 204,800-token context windows. Check the model/account response when using them;
+a bundled catalog is not a guarantee of current service availability.
 The machine-scoped `mysti.minimaxBaseUrl` accepts only MiniMax's international or
 China HTTPS API endpoint; redirects are refused. Stop, panel disposal and replaced
 turns cancel their own HTTP request. Transport and setup are fixture-tested;
 a paid MiniMax account was not available for an authenticated live smoke test.
 
-## Russian interface
+Source: [MiniMax adapter](../src/providers/minimax/MiniMaxProvider.ts).
+See [all settings](SETTINGS.md) for the current endpoint, model and timeout defaults.
 
-VS Code's Russian locale enables the contributed command/settings and runtime
-catalogs, including localized webview chrome. Conversation text, code and agent
-outputs retain their original language. Newer beta features without a catalog
-entry fall back to English. Translation resources ship in the VSIX; contributors
-can run `npm run verify:localization` to check keys and placeholders.
-
-### OpenCode in WSL, Docker or a remote server
+## OpenCode in WSL, Docker or a remote server
 
 Use **Mysti: Configure OpenCode Remote Server** from the Command Palette. Enter
 `http://localhost:4096` for a locally forwarded server, or an HTTPS endpoint for
@@ -566,3 +643,11 @@ completion across real WSL/Docker networks remains a release validation task.
 The live free-tier probe returned an upstream HTTP 403 restricting external-client
 use. A healthy OpenCode server and a discovered model do not guarantee model
 entitlement; connect an upstream provider/account permitted for remote clients.
+
+## Reference and maintenance
+
+Settings names and defaults in this guide come from [the extension manifest](../package.json).
+Provider transports and capabilities come from the [registered adapters](../src/providers/ProviderRegistry.ts),
+not from the availability of a third-party CLI feature. Use [SETTINGS.md](SETTINGS.md)
+for the complete current configuration reference and [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
+when detection, authentication or a request fails.

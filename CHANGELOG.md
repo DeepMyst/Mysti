@@ -2,15 +2,31 @@
 
 ## Unreleased
 
+### Fixed
+
+- Resolve Windows CLI locations from the trusted system lookup's first complete absolute match, then terminate only its owned helper. Preserve native search ordering and successful-exit checks for ordinary CLI probes, and retain Unicode paths split across output chunks.
+- Coalesce streamed-text scroll measurements into one animation frame while keeping Markdown updates immediate. Flush the final view after completion or cancellation, and discard queued scrolling when its conversation or turn is replaced.
+
 ### Documentation
 
+- Add visual task walkthroughs, troubleshooting, privacy and backup/recovery guides, with source-checked provider and approval references.
+- Add a documentation hub, agent entry points and a machine-readable discovery map; generate settings and command references from the manifest and check documentation freshness and local navigation in CI.
 - Rework the GitHub README with clearer installation choices, practical multi-agent workflows, broader feature coverage and provider/account FAQs.
 - Replace repository-file video links with native GitHub players across the README and feature gallery, with a lightweight inline workflow preview and a reproducible media-publishing guide.
 
-These documentation updates do not change the already qualified 2.0.1 Beta 2 VSIX.
+These unreleased changes are not included in the already qualified 2.0.1 Beta 2 VSIX.
 
 ### Maintenance
 
+- Separate unit, browser correctness and Canvas performance into consistent Vitest projects. Browser correctness uses a 30-second containment budget instead of unit defaults and short blanket action caps; preserve public actions, exact inputs, assertions, purpose-specific limits and zero retries. This is a test-policy correction, not a native font latency fix.
+- Give each Canvas performance fixture its own page/context, closing the previous owner and its timers. Measure the rendering interval after every paced move, including the final one, with the same 60 moves and performance thresholds.
+- Avoid parsing and re-encoding each acknowledged history snapshot in the disk-recovery fixture. Preserve every physical write, byte-for-byte storage output, restart read, assertion and deadline.
+- Wait for foreground chat DOM readiness before the real-editor fixture tests background discovery and exact-tab reselection; keep its shared readiness deadline and subsequent user journey.
+- Supply VS Code's platform font defaults in the shared chat browser fixture instead of inheriting Chromium's Times fallback; retain original actions, assertions and deadlines.
+- Disable power-loss durability flushing only while constructing disposable SQLite test data; retain real files, SQL operations and production read-only credential checks.
+- Avoid rereading the growing JSON history on every recovery-fixture update; retain each physical write, detached snapshots, restart reads and storage-failure assertions.
+- Add failure-only phase diagnostics for an intermittent Windows browser rendering-test timeout; retain all assertions and streamed chunk boundaries. The later browser correctness policy explicitly changes the default containment budget; native latency remains under investigation.
+- Pin Linux browser tests to Ubuntu 24.04 because the locked Playwright version cannot install on the newer `ubuntu-latest` image; retain all required checks and test assertions.
 - Await agent initialization and dispose owned resources in the model-attribution test fixture so background work cannot outlive test teardown.
 
 All notable changes to the Mysti extension are documented here.

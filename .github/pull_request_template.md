@@ -10,6 +10,7 @@ or skipped browser tests; fix failures rather than retrying until green.
 - [ ] `npm run typecheck` — clean (exit 0)
 - [ ] `npm test` — green, with Chromium installed for browser coverage
 - [ ] `npm run lint` — zero errors
+- [ ] `npm run check:docs` — generated references, discovery metadata and local navigation are current
 - [ ] `npm run compile:release` — both production bundles build
 - [ ] `npm run package && node scripts/check-package-shape.js <the .vsix>` —
       all assertions pass (for changes affecting the packaged extension)

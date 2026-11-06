@@ -91,7 +91,7 @@ describe('provider mode recovery preserves drafts and requires an explicit suppo
   beforeEach(async () => {
     if (CHROMIUM_UNAVAILABLE) return;
     clearMockConfig(); errors = []; page = await browser.newPage({ viewport: { width: 500, height: 950 } });
-    page.setDefaultTimeout(2500); page.on('pageerror', error => errors.push(error.message));
+    page.on('pageerror', error => errors.push(error.message));
   });
   afterEach(async () => { await page?.close(); if (errors) expect(errors).toEqual([]); clearMockConfig(); });
   afterAll(async () => { await browser?.close(); registry.dispose(); });

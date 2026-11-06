@@ -113,8 +113,12 @@ it('does not apply a detached runtime JSON state to auth.json fallback', async (
 it('never mixes retired runtime JSON state into current SQLite selection', async () => {
   configure(); json('auth-state.json', { order: { owned: ['expired'] } });
   const db = new DatabaseSync(path.join(dir(), 'openclaw-agent.sqlite'));
-  try { db.exec('CREATE TABLE auth_profile_store (store_key TEXT PRIMARY KEY, store_json TEXT)'); db.prepare('INSERT INTO auth_profile_store VALUES (?, ?)').run('primary', JSON.stringify({ profiles: { expired, available: credential } })); }
-  finally { db.close(); }
+  try {
+    // Reproducible fixture setup tests selection, not power-loss durability.
+    db.exec('PRAGMA synchronous=OFF');
+    db.exec('CREATE TABLE auth_profile_store (store_key TEXT PRIMARY KEY, store_json TEXT)');
+    db.prepare('INSERT INTO auth_profile_store VALUES (?, ?)').run('primary', JSON.stringify({ profiles: { expired, available: credential } }));
+  } finally { db.close(); }
   expect((await selected('2026.6.34').getAuthConfig()).isAuthenticated).toBe(true);
 });
 it('does not create missing state files during legacy readiness', async () => {

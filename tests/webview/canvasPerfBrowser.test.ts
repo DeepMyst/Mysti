@@ -139,6 +139,11 @@ function shellHtml(): string {
 }
 
 async function freshBoard(count: number): Promise<void> {
+  // setContent replaces the DOM but keeps the JS realm alive, including the
+  // previous app's liveness timer. A page owns its app just as a VS Code
+  // webview does; close that owner before measuring a replacement board.
+  await page?.close();
+  page = await browser!.newPage({ viewport: { width: 1400, height: 900 } });
   await page!.setContent(shellHtml(), { waitUntil: 'load' });
   await page!.addScriptTag({ content: bundle });
   await page!.evaluate(b => {
@@ -193,8 +198,6 @@ beforeAll(async () => {
   const { chromium } = await import('playwright');
   bundle = await buildBundle();
   browser = await chromium.launch();
-  page = await browser.newPage();
-  await page.setViewportSize({ width: 1400, height: 900 });
 }, 180_000);
 afterAll(async () => { await browser?.close(); });
 
@@ -249,13 +252,18 @@ async function measurePacedPan(zoom: number, ticks: number): Promise<{ p50: numb
     const frames: number[] = [];
     await new Promise<void>(resolve => {
       let i = 0;
-      let last = performance.now();
+      let last: number | undefined;
       const tick = (t: number) => {
-        frames.push(t - last); last = t;
+        // Each interval belongs to the move sent on the previous frame. The
+        // first callback starts the gesture clock; the callback after the last
+        // move samples its rendering before we release the pointer.
+        if (last !== undefined) { frames.push(t - last); }
+        if (i >= ticks) { resolve(); return; }
+        last = t;
         window.dispatchEvent(new PointerEvent('pointermove', {
           ...opts, clientX: 700 + (i % 50) * 6, clientY: 450 + (i % 30) * 5,
         }));
-        if (++i >= ticks) { resolve(); return; }
+        i++;
         requestAnimationFrame(tick);
       };
       requestAnimationFrame(tick);

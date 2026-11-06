@@ -1,155 +1,307 @@
 {
   "schemaVersion": 1,
   "release": "2.0.1 Beta 2",
-  "uploadedAt": "2026-11-05T12:51:11.601401+00:00",
-  "uploadPullRequest": "https://github.com/DeepMyst/Mysti/pull/80",
-  "format": "H.264 MP4",
+  "uploadedAt": "2026-11-06T06:04:25.816725+00:00",
+  "uploadPullRequest": "https://github.com/DeepMyst/Mysti/pull/81",
+  "format": "H.264 MP4 with AAC audio, loudness-normalized to -16 LUFS; clips 1920 × 1080, tour 1280 × 720",
   "usage": "Place the canonical URL alone in its own Markdown paragraph for a GitHub native player. Do not use repository blob URLs or expiring signed URLs.",
-  "disclosure": "These are labelled sample-data interface demonstrations, not native-provider acceptance evidence.",
+  "disclosure": "Narrated films of the shipped webviews driven with the release recorder's labelled sample data. They are interface demonstrations, not native-provider acceptance evidence.",
   "videos": [
     {
       "name": "mysti-feature-tour",
       "title": "Complete feature tour",
-      "url": "https://github.com/user-attachments/assets/edb4beb3-08e1-4790-be3a-6550b2afd227",
-      "source": "docs/releases/2.0.1-beta.2/media/mysti-feature-tour.mp4",
-      "bytes": 3055849,
-      "sha256": "6e1ad53ab128b03e6531727b2c1af8fda2d33796a5796d886403c55dcb157f2e",
-      "durationSeconds": 198.84
+      "url": "https://github.com/user-attachments/assets/33aca1be-8fc2-4e0f-957a-153952289a85",
+      "source": "Remotion composition Tour",
+      "bytes": 9684305,
+      "sha256": "fac332da109225986cc87ae7950332186af42bd8e5ce679cb59b471f16a57f07",
+      "durationSeconds": 197.9
     },
     {
       "name": "getting-started",
       "title": "Connect an agent and choose a mode",
-      "url": "https://github.com/user-attachments/assets/bb6b7569-6d92-45d8-9c0a-b94aac68ec25",
-      "source": "docs/releases/2.0.1-beta.2/media/getting-started.mp4",
-      "bytes": 210718,
-      "sha256": "9adffcf3ba9cd73c0cb2c5488da53f3f95787d69b700e2a97a007907f9bcd60c",
-      "durationSeconds": 11.32
+      "url": "https://github.com/user-attachments/assets/8f6a3c4c-31ce-44dd-bdc9-c1d375bd5b3f",
+      "source": "Remotion composition getting-started",
+      "bytes": 2686908,
+      "sha256": "75da8c12e136427f288f7ac66279ab817fc2c40e64fae884750d3303e8c60c3c",
+      "durationSeconds": 14.3
     },
     {
       "name": "provider-switching",
       "title": "Switch providers without losing your draft",
-      "url": "https://github.com/user-attachments/assets/52244e69-68b3-43f8-811d-ef341e23947a",
-      "source": "docs/releases/2.0.1-beta.2/media/provider-switching.mp4",
-      "bytes": 329257,
-      "sha256": "257eb7d86e563c90e641028eb90da4b7e941932295cbb7212f4cf448813983e9",
-      "durationSeconds": 21.36
+      "url": "https://github.com/user-attachments/assets/b3b7177b-56d7-4d26-9db3-4739e0ec5323",
+      "source": "Remotion composition provider-switching",
+      "bytes": 3256215,
+      "sha256": "09d003c35e128f132df25e076d69dde039285d65755bc43996d40ef1f83f239b",
+      "durationSeconds": 13.0
     },
     {
       "name": "context-and-trust",
       "title": "Give the agent the right context",
-      "url": "https://github.com/user-attachments/assets/d12f8617-0aac-45c1-98f4-68079b50f443",
-      "source": "docs/releases/2.0.1-beta.2/media/context-and-trust.mp4",
-      "bytes": 194053,
-      "sha256": "0f194c92d590ebfbef3b4a76291b16c591b1a8a9188ddf998a15141529057823",
-      "durationSeconds": 11.88
+      "url": "https://github.com/user-attachments/assets/9d3b76ed-f89e-4151-86ba-8d3d761d36e0",
+      "source": "Remotion composition context-and-trust",
+      "bytes": 2759788,
+      "sha256": "444cfa03a91a91e3d574816fdb11ee4c70f790e8188fc6e6fbbf5eee643b8e14",
+      "durationSeconds": 13.7
     },
     {
       "name": "composer-controls",
       "title": "Choose model, reasoning effort and Ultracode",
-      "url": "https://github.com/user-attachments/assets/6e9daa9c-55a0-405f-a8d0-3df27d54257e",
-      "source": "docs/releases/2.0.1-beta.2/media/composer-controls.mp4",
-      "bytes": 123612,
-      "sha256": "380a07639a16b4d3aa86d5e0001f9740424758505a7f1f0804bc38c68f9ab481",
-      "durationSeconds": 7.24
+      "url": "https://github.com/user-attachments/assets/fbf0d531-68af-4ffc-aec3-ed0b0aab00af",
+      "source": "Remotion composition composer-controls",
+      "bytes": 2624004,
+      "sha256": "87d70b39e1821fc656f9fcff735698fdd4c3a20a8a02ad6e7708d5751ada82b1",
+      "durationSeconds": 13.7
     },
     {
       "name": "agent-workflow",
       "title": "Design, then review with another agent",
-      "url": "https://github.com/user-attachments/assets/c453b15b-39a0-41c3-98b8-7ad8709a6785",
-      "source": "docs/releases/2.0.1-beta.2/media/agent-workflow.mp4",
-      "bytes": 258553,
-      "sha256": "58cab74f46067802643541f95b4d9c2b05267688f9881904d583b9240988aa33",
-      "durationSeconds": 16.92
+      "url": "https://github.com/user-attachments/assets/adab78a1-6c58-427e-aa8d-d2f362eae15a",
+      "source": "Remotion composition agent-workflow",
+      "bytes": 2693469,
+      "sha256": "8755058469dc491912943ea976539fc66c7f6170869d732f47a5a3ba4788e98f",
+      "durationSeconds": 13.7
     },
     {
       "name": "agent-opinions",
       "title": "Compare independent agent opinions",
-      "url": "https://github.com/user-attachments/assets/be0e0534-901a-49cc-a049-d155505aeaed",
-      "source": "docs/releases/2.0.1-beta.2/media/agent-opinions.mp4",
-      "bytes": 143350,
-      "sha256": "4c956a32cd36159c38057933af20d96fbe8906ed934501b8f4bbd45eeee0f73e",
-      "durationSeconds": 10.48
+      "url": "https://github.com/user-attachments/assets/d67b1b61-4e59-43e6-9dc0-d0f40f2b168a",
+      "source": "Remotion composition agent-opinions",
+      "bytes": 2801771,
+      "sha256": "31a672234b83b21866146dc6d622335fb2ca0077eaebb354d401eff83e58d988",
+      "durationSeconds": 13.7
     },
     {
       "name": "second-opinion",
       "title": "Ask another agent for a second opinion",
-      "url": "https://github.com/user-attachments/assets/57ba8dd3-5f84-48a9-aa5e-b7278057df3a",
-      "source": "docs/releases/2.0.1-beta.2/media/second-opinion.mp4",
-      "bytes": 80298,
-      "sha256": "2f8dcc105f06deabbc4174a65ca92f73a3a55764fc649bbdeb49c36e717c5b2e",
-      "durationSeconds": 5.72
+      "url": "https://github.com/user-attachments/assets/ff18f170-8482-44d2-8dee-ef0e02c7d891",
+      "source": "Remotion composition second-opinion",
+      "bytes": 3357056,
+      "sha256": "4b7d45aae9eded175c46fa9e0fcdb16f1edb3750026b22bc01d3aba8a1750514",
+      "durationSeconds": 15.2
     },
     {
       "name": "brainstorm",
       "title": "Bring two perspectives into one answer",
-      "url": "https://github.com/user-attachments/assets/d43b6f0e-276a-4214-9303-f95824585fe4",
-      "source": "docs/releases/2.0.1-beta.2/media/brainstorm.mp4",
-      "bytes": 259873,
-      "sha256": "673cad468cd96f28d7f99cfa5b2263a9cf5a036bba9d351b0d5fb95cf802231d",
-      "durationSeconds": 11.96
+      "url": "https://github.com/user-attachments/assets/f42e2a0a-27e4-440b-8287-b9cfb0037997",
+      "source": "Remotion composition brainstorm",
+      "bytes": 3593149,
+      "sha256": "f12c6148c1bb3696e9fa1b6dded6eae3d9f72b4923766c1055e0eede79d3d76d",
+      "durationSeconds": 13.3
     },
     {
       "name": "stop-and-recovery",
       "title": "Stop a response and start the next turn",
-      "url": "https://github.com/user-attachments/assets/a0eb2824-d9af-4f5e-9f27-854fa823b555",
-      "source": "docs/releases/2.0.1-beta.2/media/stop-and-recovery.mp4",
-      "bytes": 110034,
-      "sha256": "5673b5b88a656d52b19b5ecc98e4c3afb3400b915ab24584513616acd1b22c9a",
-      "durationSeconds": 10.68
+      "url": "https://github.com/user-attachments/assets/e7eb31f8-e086-473b-bdf3-dccd605a5090",
+      "source": "Remotion composition stop-and-recovery",
+      "bytes": 2408023,
+      "sha256": "7c9b46fb036d26fee81eacffd2496e8880fb7b9ad71ca5f3479986a441e498eb",
+      "durationSeconds": 12.7
     },
     {
       "name": "history-and-rewind",
       "title": "Revisit a conversation or branch an idea",
-      "url": "https://github.com/user-attachments/assets/daa6adf2-c763-4c8b-9bca-b6d38b9acf5b",
-      "source": "docs/releases/2.0.1-beta.2/media/history-and-rewind.mp4",
-      "bytes": 250092,
-      "sha256": "c0cce59a23bb08f556ff0e5870d133d7f4d31bb6875a0dd802e36606d601a12a",
-      "durationSeconds": 21.12
+      "url": "https://github.com/user-attachments/assets/d69c6c69-2f96-4440-935e-f0f4660d5b8a",
+      "source": "Remotion composition history-and-rewind",
+      "bytes": 2644188,
+      "sha256": "82c089ea7e1561a20d667349aafe0380d537f41f551b1d7ef398ee4e80192685",
+      "durationSeconds": 14.3
     },
     {
       "name": "settings-and-help",
       "title": "Find settings, personas and built-in help",
-      "url": "https://github.com/user-attachments/assets/8bda6b7b-1a3a-468b-9bef-ba6870e2ee93",
-      "source": "docs/releases/2.0.1-beta.2/media/settings-and-help.mp4",
-      "bytes": 379888,
-      "sha256": "1b13e1e43cefc329d5db096fe7631972fc6b400a02b46215db47327a92fdb3ba",
-      "durationSeconds": 24.92
+      "url": "https://github.com/user-attachments/assets/9dae342a-c4b8-4ecd-bff1-11785731aa3b",
+      "source": "Remotion composition settings-and-help",
+      "bytes": 3484033,
+      "sha256": "16bc113fe29fef16bd89198941eb4ea7c3915f7c9d77e2c78f42edb35985834d",
+      "durationSeconds": 14.9
     },
     {
       "name": "canvas-design",
       "title": "Explore a design across themes and devices",
-      "url": "https://github.com/user-attachments/assets/475aa1dd-4024-40dd-87f4-6def1a75778f",
-      "source": "docs/releases/2.0.1-beta.2/media/canvas-design.mp4",
-      "bytes": 241239,
-      "sha256": "95c917f4c7a080a33d73d440201817f74d880a6983ddc7fc07352de2ac132f43",
-      "durationSeconds": 15.32
+      "url": "https://github.com/user-attachments/assets/24cb574f-98d3-4bcf-9d18-f2be7a18e21f",
+      "source": "Remotion composition canvas-design",
+      "bytes": 3457106,
+      "sha256": "4dfdbd426e1b1105e8f9445a60e792b155af70b5010c370240cb804583f2adff",
+      "durationSeconds": 14.0
     },
     {
       "name": "visual-test",
       "title": "Inspect a visual test report",
-      "url": "https://github.com/user-attachments/assets/c1c6aefa-fe50-4d76-aa56-243e2a010a1e",
-      "source": "docs/releases/2.0.1-beta.2/media/visual-test.mp4",
-      "bytes": 151373,
-      "sha256": "90f69c3d20f401f13cd63e9c04a17a445f92363f8273d54aed397028f3629bb5",
-      "durationSeconds": 14.8
+      "url": "https://github.com/user-attachments/assets/11042a18-0c80-445d-97a6-488ff0209dd6",
+      "source": "Remotion composition visual-test",
+      "bytes": 2456876,
+      "sha256": "494f94bc6d2e3cc4515a20074cbd2626871118ad8bb949844f7a7029047c662f",
+      "durationSeconds": 14.7
     },
     {
       "name": "connected-tools",
       "title": "Browse connected tools",
-      "url": "https://github.com/user-attachments/assets/12e3f14e-6279-449d-9670-a1a7b5b89468",
-      "source": "docs/releases/2.0.1-beta.2/media/connected-tools.mp4",
-      "bytes": 129602,
-      "sha256": "1dc304afcc925bc7adfed3965a4f4291ca6ed9b892bec5901442bebb211f97af",
-      "durationSeconds": 7.32
+      "url": "https://github.com/user-attachments/assets/9ff0f423-93f3-4f50-a831-308787a74dfc",
+      "source": "Remotion composition connected-tools",
+      "bytes": 3297925,
+      "sha256": "af63aa3a4c4d37b6c24a5cc2f00bfea6f9a0bc8b9f0edf295f627af36101ee7f",
+      "durationSeconds": 12.7
     },
     {
       "name": "proactive-inbox",
       "title": "Review relevant evidence before starting",
-      "url": "https://github.com/user-attachments/assets/cc4cc4c4-beef-4d8c-a9fe-0ba0cc607184",
-      "source": "docs/releases/2.0.1-beta.2/media/proactive-inbox.mp4",
-      "bytes": 202686,
-      "sha256": "bfaede8fac2e1c11b8064578de4010c03f1a31a6115b5be987f9159c417ecbc7",
-      "durationSeconds": 7.8
+      "url": "https://github.com/user-attachments/assets/b40882ab-f4d4-4c37-8ea7-e26ac93314ed",
+      "source": "Remotion composition proactive-inbox",
+      "bytes": 2947709,
+      "sha256": "e34b2bbc9f2f88cf7a00753e98cf3aff76eb80825d2f7fe35c944fad60009843",
+      "durationSeconds": 12.3
     }
-  ]
+  ],
+  "recorderCaptures": {
+    "note": "The original silent recorder captures. Their files and capture hashes remain in docs/releases/2.0.1-beta.2/media; these URLs stay valid.",
+    "uploadedAt": "2026-11-05T12:51:11.601401+00:00",
+    "uploadPullRequest": "https://github.com/DeepMyst/Mysti/pull/80",
+    "format": "H.264 MP4",
+    "videos": [
+      {
+        "name": "mysti-feature-tour",
+        "title": "Complete feature tour",
+        "url": "https://github.com/user-attachments/assets/edb4beb3-08e1-4790-be3a-6550b2afd227",
+        "source": "docs/releases/2.0.1-beta.2/media/mysti-feature-tour.mp4",
+        "bytes": 3055849,
+        "sha256": "6e1ad53ab128b03e6531727b2c1af8fda2d33796a5796d886403c55dcb157f2e",
+        "durationSeconds": 198.84
+      },
+      {
+        "name": "getting-started",
+        "title": "Connect an agent and choose a mode",
+        "url": "https://github.com/user-attachments/assets/bb6b7569-6d92-45d8-9c0a-b94aac68ec25",
+        "source": "docs/releases/2.0.1-beta.2/media/getting-started.mp4",
+        "bytes": 210718,
+        "sha256": "9adffcf3ba9cd73c0cb2c5488da53f3f95787d69b700e2a97a007907f9bcd60c",
+        "durationSeconds": 11.32
+      },
+      {
+        "name": "provider-switching",
+        "title": "Switch providers without losing your draft",
+        "url": "https://github.com/user-attachments/assets/52244e69-68b3-43f8-811d-ef341e23947a",
+        "source": "docs/releases/2.0.1-beta.2/media/provider-switching.mp4",
+        "bytes": 329257,
+        "sha256": "257eb7d86e563c90e641028eb90da4b7e941932295cbb7212f4cf448813983e9",
+        "durationSeconds": 21.36
+      },
+      {
+        "name": "context-and-trust",
+        "title": "Give the agent the right context",
+        "url": "https://github.com/user-attachments/assets/d12f8617-0aac-45c1-98f4-68079b50f443",
+        "source": "docs/releases/2.0.1-beta.2/media/context-and-trust.mp4",
+        "bytes": 194053,
+        "sha256": "0f194c92d590ebfbef3b4a76291b16c591b1a8a9188ddf998a15141529057823",
+        "durationSeconds": 11.88
+      },
+      {
+        "name": "composer-controls",
+        "title": "Choose model, reasoning effort and Ultracode",
+        "url": "https://github.com/user-attachments/assets/6e9daa9c-55a0-405f-a8d0-3df27d54257e",
+        "source": "docs/releases/2.0.1-beta.2/media/composer-controls.mp4",
+        "bytes": 123612,
+        "sha256": "380a07639a16b4d3aa86d5e0001f9740424758505a7f1f0804bc38c68f9ab481",
+        "durationSeconds": 7.24
+      },
+      {
+        "name": "agent-workflow",
+        "title": "Design, then review with another agent",
+        "url": "https://github.com/user-attachments/assets/c453b15b-39a0-41c3-98b8-7ad8709a6785",
+        "source": "docs/releases/2.0.1-beta.2/media/agent-workflow.mp4",
+        "bytes": 258553,
+        "sha256": "58cab74f46067802643541f95b4d9c2b05267688f9881904d583b9240988aa33",
+        "durationSeconds": 16.92
+      },
+      {
+        "name": "agent-opinions",
+        "title": "Compare independent agent opinions",
+        "url": "https://github.com/user-attachments/assets/be0e0534-901a-49cc-a049-d155505aeaed",
+        "source": "docs/releases/2.0.1-beta.2/media/agent-opinions.mp4",
+        "bytes": 143350,
+        "sha256": "4c956a32cd36159c38057933af20d96fbe8906ed934501b8f4bbd45eeee0f73e",
+        "durationSeconds": 10.48
+      },
+      {
+        "name": "second-opinion",
+        "title": "Ask another agent for a second opinion",
+        "url": "https://github.com/user-attachments/assets/57ba8dd3-5f84-48a9-aa5e-b7278057df3a",
+        "source": "docs/releases/2.0.1-beta.2/media/second-opinion.mp4",
+        "bytes": 80298,
+        "sha256": "2f8dcc105f06deabbc4174a65ca92f73a3a55764fc649bbdeb49c36e717c5b2e",
+        "durationSeconds": 5.72
+      },
+      {
+        "name": "brainstorm",
+        "title": "Bring two perspectives into one answer",
+        "url": "https://github.com/user-attachments/assets/d43b6f0e-276a-4214-9303-f95824585fe4",
+        "source": "docs/releases/2.0.1-beta.2/media/brainstorm.mp4",
+        "bytes": 259873,
+        "sha256": "673cad468cd96f28d7f99cfa5b2263a9cf5a036bba9d351b0d5fb95cf802231d",
+        "durationSeconds": 11.96
+      },
+      {
+        "name": "stop-and-recovery",
+        "title": "Stop a response and start the next turn",
+        "url": "https://github.com/user-attachments/assets/a0eb2824-d9af-4f5e-9f27-854fa823b555",
+        "source": "docs/releases/2.0.1-beta.2/media/stop-and-recovery.mp4",
+        "bytes": 110034,
+        "sha256": "5673b5b88a656d52b19b5ecc98e4c3afb3400b915ab24584513616acd1b22c9a",
+        "durationSeconds": 10.68
+      },
+      {
+        "name": "history-and-rewind",
+        "title": "Revisit a conversation or branch an idea",
+        "url": "https://github.com/user-attachments/assets/daa6adf2-c763-4c8b-9bca-b6d38b9acf5b",
+        "source": "docs/releases/2.0.1-beta.2/media/history-and-rewind.mp4",
+        "bytes": 250092,
+        "sha256": "c0cce59a23bb08f556ff0e5870d133d7f4d31bb6875a0dd802e36606d601a12a",
+        "durationSeconds": 21.12
+      },
+      {
+        "name": "settings-and-help",
+        "title": "Find settings, personas and built-in help",
+        "url": "https://github.com/user-attachments/assets/8bda6b7b-1a3a-468b-9bef-ba6870e2ee93",
+        "source": "docs/releases/2.0.1-beta.2/media/settings-and-help.mp4",
+        "bytes": 379888,
+        "sha256": "1b13e1e43cefc329d5db096fe7631972fc6b400a02b46215db47327a92fdb3ba",
+        "durationSeconds": 24.92
+      },
+      {
+        "name": "canvas-design",
+        "title": "Explore a design across themes and devices",
+        "url": "https://github.com/user-attachments/assets/475aa1dd-4024-40dd-87f4-6def1a75778f",
+        "source": "docs/releases/2.0.1-beta.2/media/canvas-design.mp4",
+        "bytes": 241239,
+        "sha256": "95c917f4c7a080a33d73d440201817f74d880a6983ddc7fc07352de2ac132f43",
+        "durationSeconds": 15.32
+      },
+      {
+        "name": "visual-test",
+        "title": "Inspect a visual test report",
+        "url": "https://github.com/user-attachments/assets/c1c6aefa-fe50-4d76-aa56-243e2a010a1e",
+        "source": "docs/releases/2.0.1-beta.2/media/visual-test.mp4",
+        "bytes": 151373,
+        "sha256": "90f69c3d20f401f13cd63e9c04a17a445f92363f8273d54aed397028f3629bb5",
+        "durationSeconds": 14.8
+      },
+      {
+        "name": "connected-tools",
+        "title": "Browse connected tools",
+        "url": "https://github.com/user-attachments/assets/12e3f14e-6279-449d-9670-a1a7b5b89468",
+        "source": "docs/releases/2.0.1-beta.2/media/connected-tools.mp4",
+        "bytes": 129602,
+        "sha256": "1dc304afcc925bc7adfed3965a4f4291ca6ed9b892bec5901442bebb211f97af",
+        "durationSeconds": 7.32
+      },
+      {
+        "name": "proactive-inbox",
+        "title": "Review relevant evidence before starting",
+        "url": "https://github.com/user-attachments/assets/cc4cc4c4-beef-4d8c-a9fe-0ba0cc607184",
+        "source": "docs/releases/2.0.1-beta.2/media/proactive-inbox.mp4",
+        "bytes": 202686,
+        "sha256": "bfaede8fac2e1c11b8064578de4010c03f1a31a6115b5be987f9159c417ecbc7",
+        "durationSeconds": 7.8
+      }
+    ]
+  }
 }

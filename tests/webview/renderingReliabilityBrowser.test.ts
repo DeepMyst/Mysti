@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTestFailed } from 'vitest';
 import { chromium, type Browser, type Page } from 'playwright';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -102,23 +102,56 @@ describe('PC-05 rendering and copy fidelity in the shipped browser', () => {
   it.skipIf(CHROMIUM_UNAVAILABLE)('preserves split UTF-16, Markdown tokens, tables and fenced code through terminal rendering', async () => {
     const code = 'const label = "مرحبا 👩🏽‍💻 e\u0301 <retry> & ready";\n\treturn label;';
     const content = '## Retry 👩🏽‍💻\n\n**Unicode e\u0301 and العربية**\n\n| Attempt | Delay |\n| --- | --- |\n| 1 | 73 |\n\n```javascript\n' + code + '\n```';
+    // The outer test deadline alone does not identify a stalled browser call.
+    // Record synthetic phase names without changing calls, assertions or waits.
+    const startedAt = performance.now();
+    const phases: Array<{ operation: string; startedMs: number; completedMs?: number }> = [];
+    let pending: typeof phases[number] | undefined;
+    const markPhase = (operation: string | null) => {
+      const elapsedMs = performance.now() - startedAt;
+      if (pending) pending.completedMs = elapsedMs;
+      pending = operation === null ? undefined : { operation, startedMs: elapsedMs };
+      if (pending) phases.push(pending);
+    };
+    onTestFailed(() => {
+      const elapsedMs = performance.now() - startedAt;
+      console.error('[PC-05 UTF-16 failure phases]', JSON.stringify({
+        pendingOperation: pending?.operation ?? null,
+        elapsedAtFailureHookMs: elapsedMs,
+        phases: phases.map(phase => ({ ...phase,
+          durationAtFailureHookMs: (phase.completedMs ?? elapsedMs) - phase.startedMs,
+        })),
+      }));
+    });
+    markPhase('dispatch responseStarted');
     await receive('responseStarted', { provider: 'openai-codex', model: 'test-model' });
     // Intentionally split surrogate pairs and fence delimiters at every code
     // unit boundary. These are controlled host chunks, not live CLI evidence.
+    markPhase('dispatch every UTF-16 code-unit chunk');
     await page.evaluate(value => {
       for (let index = 0; index < value.length; index++) window.dispatchEvent(new MessageEvent('message', {
         data: { type: 'responseChunk', payload: { type: 'text', content: value.slice(index, index + 1) } },
       }));
     }, content);
+    markPhase('dispatch responseComplete');
     await receive('responseComplete', { message: message('unicode', content) });
+    markPhase('read and assert heading');
     expect(await page.locator('[data-id="unicode"] h2').innerText()).toBe('Retry 👩🏽‍💻');
+    markPhase('read and assert table cells');
     expect(await page.locator('[data-id="unicode"] table tbody td').allTextContents()).toEqual(['1', '73']);
+    markPhase('read and assert fenced code');
     expect(await page.locator('[data-id="unicode"] pre code').textContent()).toBe(code);
+    markPhase('click public Copy code button');
     await page.locator('[data-id="unicode"] .message-code-copy').click();
+    markPhase('read and assert clipboard request');
     expect((await posted()).filter(event => event.type === 'copyToClipboard').at(-1)?.payload).toEqual({ text: code, conversationId: 'original', requestId: expect.any(String) });
+    markPhase('read and assert no replacement characters');
     expect(await page.locator('#messages').textContent()).not.toContain('\ufffd');
+    markPhase('read and assert assistant count');
     expect(await page.locator('.message.assistant').count()).toBe(1);
+    markPhase('read and assert Stop visibility');
     expect(await page.locator('#stop-btn').isVisible()).toBe(false);
+    markPhase(null);
   });
 
   for (const [language, code] of [

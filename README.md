@@ -39,11 +39,11 @@ A coding task often needs more than one kind of thinking: understand the code, p
 
 ## See it work
 
-**Watch the 3-minute, 19-second tour:** setup, provider choice, agent handoffs, Brainstorm, access controls, history, Canvas and connected tools.
+**Watch the 3-minute, 18-second narrated tour:** follow Maya through a week with her agents: setup, provider choice, agent handoffs, Brainstorm, access controls, history, Canvas and connected tools.
 
-https://github.com/user-attachments/assets/edb4beb3-08e1-4790-be3a-6550b2afd227
+https://github.com/user-attachments/assets/33aca1be-8fc2-4e0f-957a-153952289a85
 
-[Explore all 15 feature demos →](docs/DEMO_GALLERY.md) · [Tour chapters](docs/releases/2.0.1-beta.2/media/CHAPTERS.md) · [Download the video kit](https://github.com/DeepMyst/Mysti/releases/download/v2.0.1-beta.2/mysti-2.0.1-beta.2-feature-demos.zip)
+[Explore all 15 feature demos →](docs/DEMO_GALLERY.md) · [Tour chapters](docs/DEMO_GALLERY.md#tour-chapters) · [Download the original recordings](https://github.com/DeepMyst/Mysti/releases/download/v2.0.1-beta.2/mysti-2.0.1-beta.2-feature-demos.zip)
 
 *The tour uses clearly labelled sample data in the shipped interface. Provider accounts and live-service behavior are documented separately.*
 
@@ -242,6 +242,8 @@ Mysti 2.0.1 remains beta. The release includes automated source, browser, runtim
 
 ## Documentation
 
+**[Documentation home](docs/README.md)** · [Visual walkthroughs](docs/walkthroughs/README.md) · [Troubleshooting](docs/TROUBLESHOOTING.md) · [Backup and recovery](docs/BACKUP-AND-RECOVERY.md) · [Privacy](docs/PRIVACY.md)
+
 | Start building | Go deeper |
 | --- | --- |
 | [Getting started](docs/GETTING-STARTED.md) — installation, first task and troubleshooting | [Feature guide](docs/FEATURES.md) — chat, context, controls and settings |
@@ -249,6 +251,8 @@ Mysti 2.0.1 remains beta. The release includes automated source, browser, runtim
 | [Agent assignments](docs/MENTIONS.md) — tags, roles, parallel opinions and handoffs | [Proactive](docs/PROACTIVE.md) — watches, evidence and coverage |
 | [Brainstorm](docs/BRAINSTORM.md) — discussion strategies and synthesis | [Architecture](docs/ARCHITECTURE.md) — host, webview, routing and providers |
 | [Demo gallery](docs/DEMO_GALLERY.md) — 15 focused feature walkthroughs | [Production readiness](docs/PRODUCTION_READINESS.md) — status and release checklist |
+
+**Reference:** [Settings](docs/SETTINGS.md) · [Commands and shortcuts](docs/COMMANDS.md). **For agents:** [AGENTS.md](AGENTS.md) · [llms.txt](llms.txt) · [Machine-readable documentation map](docs/navigation.json).
 
 **Translations:** [العربية](README.ar.md) · [中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md) · [Português](README.pt-BR.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · [Türkçe](README.tr.md) · [Русский](README.ru.md). Community translations may describe an earlier release; this README is the current Beta 2 reference.
 

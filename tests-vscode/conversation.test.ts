@@ -43,49 +43,69 @@ describe('Mysti conversation editor bridge', function () {
     } finally { tabListener?.dispose(); clearTimeout(tabTimeout); }
     const chatGroup = vscode.window.tabGroups.all.find(group => group.tabs.includes(chatTab));
     assert.ok(chatGroup, 'The new chat tab must belong to an editor group');
+    let frameDiagnostics: unknown[] = [];
+    // A tab-open event does not acknowledge the webview's first load. Bootstrap
+    // the known chat visibly before exercising retained background discovery.
+    // Both phases share the original readiness budget.
+    const deadline = Date.now() + 30_000;
+    const discoverChatFrame = async (): Promise<Frame | undefined> => {
+      while (Date.now() < deadline) {
+        frameDiagnostics = [];
+        for (const context of browser.contexts()) {
+          for (const page of context.pages()) {
+            for (const candidate of page.frames()) {
+              if (previousFrames.has(candidate)) { continue; }
+              try {
+                frameDiagnostics.push(await candidate.evaluate(() => {
+                  const win = globalThis as any;
+                  const document = win.document;
+                  const input = document.querySelector('#message-input');
+                  const rect = input?.getBoundingClientRect();
+                  return {
+                    url: win.location.href, readyState: document.readyState, hidden: document.hidden,
+                    input: input && { display: win.getComputedStyle(input).display, visibility: win.getComputedStyle(input).visibility, width: rect?.width, height: rect?.height },
+                    overlay: document.querySelector('#init-loading-overlay')?.className,
+                    wizard: document.querySelector('#setup-wizard')?.className,
+                    body: document.body?.className,
+                  };
+                }));
+                // Visibility is an actionability check, not panel identity. A
+                // retained background webview is fully initialized but hidden.
+                if (await candidate.locator('#message-input').count() &&
+                    (await candidate.locator('#init-loading-overlay').getAttribute('class'))?.split(/\s+/).includes('hidden')) {
+                  await page.bringToFront();
+                  return candidate;
+                }
+              } catch { /* webview is mounting */ }
+            }
+          }
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      return undefined;
+    };
+    const diagnostics = () => JSON.stringify({
+      frames: frameDiagnostics,
+      tabs: vscode.window.tabGroups.all.map(group => ({ active: group.isActive, tabs: group.tabs.map(tab => ({ label: tab.label, active: tab.isActive })) })),
+    });
+    if (vscode.window.tabGroups.activeTabGroup !== chatGroup) {
+      const ordinal = ['First', 'Second', 'Third', 'Fourth', 'Fifth', 'Sixth', 'Seventh', 'Eighth'][chatGroup.viewColumn - 1];
+      assert.ok(ordinal, 'The known chat group must have a numbered focus command');
+      await vscode.commands.executeCommand(`workbench.action.focus${ordinal}EditorGroup`);
+    }
+    const bootstrapIndex = chatGroup.tabs.indexOf(chatTab);
+    assert.ok(bootstrapIndex >= 0 && bootstrapIndex < 9, 'The new chat tab must remain in its editor group');
+    await vscode.commands.executeCommand(`workbench.action.openEditorAtIndex${bootstrapIndex + 1}`);
+    assert.strictEqual(chatGroup.activeTab, chatTab, 'Initialize the intended chat before hiding it');
+    assert.ok(await discoverChatFrame(), 'Mysti chat must finish its visible first initialization in the real editor. ' + diagnostics());
+
     // Editor activity can return focus to a document after a webview opens.
     // Exercise that state explicitly rather than relying on the preceding
-    // dictation test's focus/timing. Discover this chat before revealing it.
+    // dictation test's focus/timing. Rediscover this chat before revealing it.
     const source = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(vscode.workspace.workspaceFolders![0].uri, 'README.md'));
     await vscode.window.showTextDocument(source, { viewColumn: chatGroup.viewColumn, preserveFocus: false });
     assert.strictEqual(chatTab.isActive, false, 'The fixture must leave the new chat in the background');
-    let frame: Frame | undefined;
-    let frameDiagnostics: unknown[] = [];
-    const deadline = Date.now() + 30_000;
-    while (!frame && Date.now() < deadline) {
-      frameDiagnostics = [];
-      for (const context of browser.contexts()) {
-        for (const page of context.pages()) {
-          for (const candidate of page.frames()) {
-            if (previousFrames.has(candidate)) { continue; }
-            try {
-              frameDiagnostics.push(await candidate.evaluate(() => {
-                const win = globalThis as any;
-                const document = win.document;
-                const input = document.querySelector('#message-input');
-                const rect = input?.getBoundingClientRect();
-                return {
-                  url: win.location.href, readyState: document.readyState, hidden: document.hidden,
-                  input: input && { display: win.getComputedStyle(input).display, visibility: win.getComputedStyle(input).visibility, width: rect?.width, height: rect?.height },
-                  overlay: document.querySelector('#init-loading-overlay')?.className,
-                  wizard: document.querySelector('#setup-wizard')?.className,
-                  body: document.body?.className,
-                };
-              }));
-              // Visibility is an actionability check, not panel identity. A
-              // retained background webview is fully initialized but hidden.
-              if (await candidate.locator('#message-input').count() &&
-                  (await candidate.locator('#init-loading-overlay').getAttribute('class'))?.split(/\s+/).includes('hidden')) {
-                frame = candidate;
-                await page.bringToFront();
-                break;
-              }
-            } catch { /* webview is mounting */ }
-          }
-        }
-      }
-      if (!frame) { await new Promise(resolve => setTimeout(resolve, 100)); }
-    }
+    const frame = await discoverChatFrame();
     assert.ok(frame, 'Mysti chat must finish initialization in the real editor. ' + JSON.stringify({
       frames: frameDiagnostics,
       tabs: vscode.window.tabGroups.all.map(group => ({ active: group.isActive, tabs: group.tabs.map(tab => ({ label: tab.label, active: tab.isActive })) })),

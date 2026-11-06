@@ -1,0 +1,290 @@
+{
+  "schemaVersion": 1,
+  "productVersion": "2.0.1",
+  "sources": [
+    "package.json",
+    "package.nls.json"
+  ],
+  "sourceSha256": "cb81ab0bcf9b84e13c682c77d75944312ceaf85f6f3466fc4ba7b73792d7d5fa",
+  "commands": [
+    {
+      "command": "mysti.deskPair",
+      "title": "Desk: Pair with a teammate",
+      "category": "Mysti",
+      "keybindings": [],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.deskRoster",
+      "title": "Desk: Show teammates",
+      "category": "Mysti",
+      "keybindings": [],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.getStarted",
+      "title": "Get Started",
+      "category": "Mysti",
+      "keybindings": [],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.openChat",
+      "title": "Open Chat",
+      "shortTitle": "Chat",
+      "category": "Mysti",
+      "keybindings": [
+        {
+          "command": "mysti.openChat",
+          "key": "ctrl+shift+m",
+          "mac": "cmd+shift+m"
+        }
+      ],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.boostSummary",
+      "title": "Boost: Session Summary",
+      "category": "Mysti",
+      "keybindings": [],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.newConversation",
+      "title": "New Conversation",
+      "shortTitle": "New",
+      "category": "Mysti",
+      "keybindings": [],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.addToContext",
+      "title": "Add to Context",
+      "shortTitle": "Add Context",
+      "category": "Mysti",
+      "keybindings": [],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.clearContext",
+      "title": "Clear Context",
+      "category": "Mysti",
+      "keybindings": [],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.createPersona",
+      "title": "Create New Persona",
+      "category": "Mysti",
+      "keybindings": [],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.createSkill",
+      "title": "Create New Skill",
+      "category": "Mysti",
+      "keybindings": [],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.createRole",
+      "title": "Create New Collaboration Role",
+      "category": "Mysti",
+      "keybindings": [],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.importSkills",
+      "title": "Import Skills from GitHub",
+      "category": "Mysti",
+      "keybindings": [],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.reloadAgents",
+      "title": "Reload Agents (Personas, Skills & Roles)",
+      "category": "Mysti",
+      "keybindings": [],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.setCoordinatorModel",
+      "title": "Set Mysti Agent Coordinator Model",
+      "category": "Mysti",
+      "keybindings": [],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.viewMystiMemory",
+      "title": "View & Prune Mysti Memory",
+      "category": "Mysti",
+      "keybindings": [],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.openInNewTab",
+      "title": "Open in Editor Tab",
+      "shortTitle": "New Tab",
+      "category": "Mysti",
+      "icon": {
+        "light": "resources/Mysti-Logo.png",
+        "dark": "resources/Mysti-Logo.png"
+      },
+      "keybindings": [
+        {
+          "command": "mysti.openInNewTab",
+          "key": "ctrl+shift+n",
+          "mac": "cmd+shift+n"
+        }
+      ],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.revokeCapabilities",
+      "title": "Mysti: Quarantine All User Agent Artifacts (kill switch)",
+      "category": "Mysti",
+      "keybindings": [],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.reviewSkillProposals",
+      "title": "Mysti: Review Agent Proposals",
+      "category": "Mysti",
+      "keybindings": [],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.skillReport",
+      "title": "Mysti: Agent Catalog Report (retrieval go/no-go)",
+      "category": "Mysti",
+      "keybindings": [],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.updateClis",
+      "title": "Update CLI Backends",
+      "category": "Mysti",
+      "icon": "$(cloud-download)",
+      "keybindings": [],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.debugSetup",
+      "title": "Debug: Test Setup Flow",
+      "category": "Mysti",
+      "keybindings": [],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.debugSetupFailure",
+      "title": "Debug: Test Setup Failure",
+      "category": "Mysti",
+      "keybindings": [],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.toggleAutonomous",
+      "title": "Toggle Autonomous Mode",
+      "category": "Mysti",
+      "keybindings": [
+        {
+          "command": "mysti.toggleAutonomous",
+          "key": "ctrl+shift+a",
+          "mac": "cmd+shift+a"
+        }
+      ],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.codeLensAction",
+      "title": "CodeLens Action",
+      "category": "Mysti",
+      "keybindings": [],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.openVisualTestDashboard",
+      "title": "Open Visual Test Dashboard",
+      "category": "Mysti",
+      "keybindings": [],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.openCanvas",
+      "title": "Open Canvas",
+      "category": "Mysti",
+      "keybindings": [
+        {
+          "command": "mysti.openCanvas",
+          "key": "ctrl+shift+d",
+          "mac": "cmd+shift+d"
+        }
+      ],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.openConnections",
+      "title": "Open DeepMyst Connections",
+      "category": "Mysti",
+      "icon": "$(plug)",
+      "keybindings": [],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.managePlugins",
+      "title": "Manage Plugins",
+      "category": "Mysti",
+      "icon": "$(extensions)",
+      "keybindings": [],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.deepmyst.signIn",
+      "title": "Sign in to DeepMyst",
+      "category": "Mysti",
+      "keybindings": [],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.deepmyst.signOut",
+      "title": "Sign out of DeepMyst",
+      "category": "Mysti",
+      "keybindings": [],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.canvasDiagnostics",
+      "title": "Mysti: Canvas Diagnostics",
+      "category": "Mysti",
+      "keybindings": [],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.canvasAddScaffold",
+      "title": "Mysti: Add Canvas Page",
+      "category": "Mysti",
+      "keybindings": [],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.openProactive",
+      "title": "Open Proactive Inbox",
+      "category": "Mysti",
+      "icon": "$(bell)",
+      "keybindings": [],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.configureOpenCodeRemote",
+      "title": "Mysti: Configure OpenCode Remote Server",
+      "keybindings": [],
+      "commandPalette": []
+    },
+    {
+      "command": "mysti.testOpenCodeConnection",
+      "title": "Mysti: Test OpenCode Server Connection",
+      "keybindings": [],
+      "commandPalette": []
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-11-05T14:52:09.364Z",
+  "productVersion": "2.0.1",
+  "scene": "Current Visual Test configuration form, before Start",
+  "scope": "Shipped HTML/CSS/JS with synthetic localhost inputs, mocked VS Code bridge and visible sample label. No observation, model call, repair, network request or acceptance verdict was executed.",
+  "command": "node docs/media/walkthroughs/capture-visual-test.cjs",
+  "node": "v22.23.3",
+  "playwright": "1.58.2",
+  "chromium": "145.0.7632.6",
+  "viewport": {
+    "width": 1120,
+    "height": 840
+  },
+  "normalTLSVerification": true,
+  "captureEnvironment": "Isolated page composition, with webview CSP omitted only in the harness and all network requests aborted.",
+  "sourceHashes": {
+    "media/vt-dashboard/index.html": "1ac52b5bff7825f3f48178533e13212ecdb4a5c5aa3d43a26716c6b2c72e67fc",
+    "media/vt-dashboard/vt-dashboard.css": "2d1bc0ac09c9e4561a84feb3748641237977077df38022119848ec5a5bccecda",
+    "media/vt-dashboard/vt-dashboard.js": "6c708b59de76d5fa22ae9768648be8953e0d67624e689721c2034504eb2d1f31",
+    "scripts/record-release-demos.cjs": "68ca3bf724a74ef32e83418f1f56cbdf348f3e659db369f4d98d247b1e65f58d",
+    "docs/media/walkthroughs/capture-visual-test.cjs": "c8f713ed51330fe5bdec1311a2be949c293760d94c0563b3f8ab2c467250f233"
+  },
+  "artifact": {
+    "path": "docs/media/walkthroughs/visual-test-config.png",
+    "bytes": 55008,
+    "sha256": "f114285c7445422295f598cea4bc1c7bfcf560129c36317b3d49802b888feb1c"
+  },
+  "checks": {
+    "currentFormVisible": true,
+    "idle": true,
+    "actionsOff": true,
+    "oneRecordedStartRequest": true,
+    "pageErrors": []
+  }
+}

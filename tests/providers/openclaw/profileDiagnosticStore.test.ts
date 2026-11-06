@@ -10,8 +10,12 @@ const snapshot = (root: string): Record<string, string> => Object.fromEntries(fs
   .map(p => String(p)).filter(p => fs.statSync(path.join(root, p)).isFile()).map(p => [p, fs.readFileSync(path.join(root, p)).toString('base64')]));
 const writeStore = (dir: string, profile: unknown) => {
   const db = new DatabaseSync(path.join(dir, 'openclaw-agent.sqlite'));
-  try { db.exec('CREATE TABLE auth_profile_store (store_key TEXT PRIMARY KEY, store_json TEXT NOT NULL)'); db.prepare('INSERT INTO auth_profile_store VALUES (?, ?)').run('primary', JSON.stringify({ profiles: { shared: profile } })); }
-  finally { db.close(); }
+  try {
+    // Reproducible fixture setup tests diagnostic reads, not power-loss durability.
+    db.exec('PRAGMA synchronous=OFF');
+    db.exec('CREATE TABLE auth_profile_store (store_key TEXT PRIMARY KEY, store_json TEXT NOT NULL)');
+    db.prepare('INSERT INTO auth_profile_store VALUES (?, ?)').run('primary', JSON.stringify({ profiles: { shared: profile } }));
+  } finally { db.close(); }
 };
 
 it('protects main and agent credentials across both store formats, including shadowed and retired values, without writes', async () => {

@@ -5077,6 +5077,7 @@
             handleRewindComplete(message.payload);
             break;
           case 'responseStarted':
+            discardPendingTextScroll();
             settlePlanCards();
             subAgentCards.stop();
             stopCollaborations();
@@ -5181,6 +5182,7 @@
             }
             // Plan 28 Phase 2: the turn landed, so send whatever was lined up
             // behind it. `requestCancelled` deliberately does NOT do this.
+            flushPendingTextScroll();
             drainQueue();
             // Plan 28 Phase 4: a turn is exactly when files change, so refresh
             // the Changes model now. Without this the header count only ever
@@ -5249,6 +5251,7 @@
                 showSecondOpinionMenu(document.getElementById('agent-select-btn') || inputEl, handoff.question, handoff.provider);
               }
             }
+            flushPendingTextScroll();
             break;
           // Sub-agent response events (from @-mentions)
           case 'collaborationStarted':
@@ -5524,6 +5527,8 @@
             handleAskUserQuestionMessage(message.payload);
             break;
           case 'error':
+            // The error card scrolls after the final partial answer is rendered.
+            discardPendingTextScroll();
             clearPendingSlashCommand();
             hideLoading();
             if (message.payload && typeof message.payload === 'object') {
@@ -5534,6 +5539,7 @@
             }
             break;
           case 'authError':
+            discardPendingTextScroll();
             clearPendingSlashCommand();
             hideLoading();
             // Authentication ends this turn unsuccessfully. Keep any useful
@@ -10319,6 +10325,7 @@
       }
 
       function initializeState(payload) {
+        discardPendingTextScroll();
         dismissInitLoading();
         // Perf: the mysti.debug.performanceLogging flag rides the
         // initialState payload (starts/stops heap sampling + chunk timing).
@@ -11999,6 +12006,58 @@
       // who is answering THIS turn, which is not always the panel's selection
       // (an @-mention routes elsewhere) and not always the picker's model.
       var currentTurnAttribution = null;
+      var textScrollGeneration = 0;
+      var pendingTextScroll = null;
+
+      function discardPendingTextScroll() {
+        textScrollGeneration++;
+        if (pendingTextScroll) {
+          cancelAnimationFrame(pendingTextScroll.frame);
+          pendingTextScroll = null;
+        }
+      }
+
+      function ownsTextScroll(pending) {
+        return pending.generation === textScrollGeneration &&
+          pending.panelId === state.panelId &&
+          pending.conversationId === (state.conversation && state.conversation.id) &&
+          pending.element.isConnected && pending.element.parentElement === messagesEl;
+      }
+
+      function flushPendingTextScroll() {
+        var pending = pendingTextScroll;
+        if (!pending) { return; }
+        cancelAnimationFrame(pending.frame);
+        pendingTextScroll = null;
+        // Terminal handlers call this after authoritative Markdown, footer and
+        // status updates. The owned bubble may already have lost .streaming.
+        if (ownsTextScroll(pending)) { messagesEl.scrollTop = messagesEl.scrollHeight; }
+      }
+
+      function queueTextScroll(streamingEl) {
+        if (pendingTextScroll && pendingTextScroll.element === streamingEl && ownsTextScroll(pendingTextScroll)) { return; }
+        discardPendingTextScroll();
+        var pending = {
+          element: streamingEl,
+          panelId: state.panelId,
+          conversationId: state.conversation && state.conversation.id,
+          generation: textScrollGeneration,
+          frame: null
+        };
+        pendingTextScroll = pending;
+        pending.frame = requestAnimationFrame(function() {
+          if (pendingTextScroll !== pending) { return; }
+          pendingTextScroll = null;
+          if (ownsTextScroll(pending) && pending.element.classList.contains('streaming')) {
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+          }
+        });
+      }
+
+      window.addEventListener('pagehide', function(event) {
+        if (!event.persisted) { discardPendingTextScroll(); }
+      });
+
       var pendingToolData = new Map(); // toolId -> { name, input } for edit report cards
       var currentTodos = []; // Track current todo list for sticky progress
       var previousTodoContents = new Set(); // Track previous todo content for completion detection
@@ -12259,7 +12318,10 @@
 
         segmentEl.innerHTML = formatContent(content);
         segmentEl._markdownSource = content;
-        messagesEl.scrollTop = messagesEl.scrollHeight;
+        // Keep each chunk's Markdown immediately available, but measure the
+        // growing transcript only once before paint instead of forcing layout
+        // for every chunk delivered in the same frame.
+        queueTextScroll(streamingEl);
       }
 
       // Legacy function for backward compatibility
@@ -15024,6 +15086,7 @@
       }
 
       function clearMessages() {
+        discardPendingTextScroll();
         clearConversationTransfers();
         pendingStallHandoff = null;
         var opinionMenu = document.getElementById('second-opinion-menu');

@@ -45,7 +45,7 @@ describe('PC-11 public conversation transfers and honest copy feedback', () => {
   beforeEach(async () => {
     if (CHROMIUM_UNAVAILABLE) { return; }
     errors = []; page = await browser.newPage({ viewport: { width: 600, height: 900 } });
-    page.setDefaultTimeout(2000); page.on('pageerror', error => errors.push(error.message));
+    page.on('pageerror', error => errors.push(error.message));
     await page.setContent(composeChatHtml());
     await receive('initialState', { ...INITIAL_STATE, panelId: 'transfer-owner', conversation: original });
   });

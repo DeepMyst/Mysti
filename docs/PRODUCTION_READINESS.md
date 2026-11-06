@@ -1,6 +1,6 @@
 # Mysti: production readiness and release checklist
 
-Updated **5 November 2026** (Asia/Amman). Release line: **2.0.1 Beta 2**.
+Updated **6 November 2026** (Asia/Amman). Release line: **2.0.1 Beta 2**.
 
 Mysti has substantial automated regression coverage and several verified native
 developer journeys. **It remains a beta.** The evidence does not yet establish
@@ -64,6 +64,134 @@ runners without it. Replace that dependency with a shareable representative
 fixture before treating this diagnostic as a portable release gate. Other
 portable browser checks require Chromium and fail when it is unavailable.
 
+### Unreleased changes and unresolved reliability investigations
+
+The latest test-harness correction separates **functional correctness** from
+**performance acceptance**. Unit and performance projects keep their five-second
+defaults; browser correctness gets a 30-second test budget and Playwright's
+30-second action default. This intentionally replaces the inherited unit budget
+and six suites' blanket 2–5-second action caps. Exact Unicode inputs, public
+actions, content/identity assertions, purpose-specific time limits and performance
+thresholds remain. No retry, font warmup, browser upgrade or product-font change
+is involved. The previous timeout failures remain recorded; separate passing
+diagnostics measured native input latency. This policy neither explains those
+failures nor fixes that latency, and does not define a 30-second UX target.
+
+The Canvas benchmark also now closes each previous page/context before creating
+its next board. The old same-page replacement retained multiple app timers.
+Its paced collector now measures all 60 moves' following rendering intervals,
+including the last, instead of including a pre-move interval and omitting the
+last move. The move coordinates, scene workload and performance thresholds are
+unchanged. These are independently demonstrated fixture defects; the earlier
+macOS frame-time spike has not been attributed conclusively to either one.
+The [PR](https://github.com/DeepMyst/Mysti/pull/81) records exact-head qualification
+for these corrections; historical candidate results below are not new passes.
+
+The published **2.0.1 Beta 2 VSIX** remains the build documented in the
+[release validation report](releases/2.0.1-beta.2/VALIDATION.md). The documentation
+candidate contains an **unreleased** streaming-scroll correction: text and
+Markdown still render immediately, scroll measurements are combined within an
+animation frame, terminal events flush pending scrolling after final DOM updates,
+and replacement turns or conversations invalidate pending work. This correction
+is not in the published VSIX and does not establish the Windows timeout's cause.
+
+On **6 November 2026**, candidate `9f899341` finished with **22 jobs passed,
+one failed and two skipped**. [Required PR CI](https://github.com/DeepMyst/Mysti/actions/runs/42103394751)
+failed the Windows split-UTF-16 rendering case at its unchanged five-second
+deadline; its package jobs were consequently skipped. All
+[four source-editor jobs](https://github.com/DeepMyst/Mysti/actions/runs/42103394863)
+and all 11 jobs in the
+[independent push workflow](https://github.com/DeepMyst/Mysti/actions/runs/42103386679)
+passed, including packaged-editor tests. Those passes do not replace the failed
+required check: that candidate is **not release-qualified**. Check the
+[documentation PR](https://github.com/DeepMyst/Mysti/pull/81) for subsequent
+commit-specific results; every proposed release still needs its own complete gates.
+
+The later `3310b03` candidate finished with 17 jobs passed, three failed and four
+dependent skips. Linux history recovery, Windows CLI lookup and Windows Unicode
+composer input exceeded their original deadlines; all four editor integrations
+passed. The next corrections remove redundant JSON traversal from the recovery
+fixture while retaining identical disk writes, and let trusted Windows CLI
+discovery return its first complete absolute match without waiting for remaining
+PATH enumeration. Generic CLI probes still require successful exit, and the
+lookup stops only its own helper.
+
+Candidate `2ab34ce` verifies both corrections on hosted runners: the original
+Linux history case passes in 856 ms and 1,169 ms, and all 18 new first-match
+regressions pass in both Windows jobs. Real Windows lookup returns its first
+match in approximately 148–170 ms and observes its own helper close in
+158–177 ms. The fixture comparison preserves all 324 physical writes with
+identical bytes, including 323 updates totaling 178,861,594 bytes, and all three
+recovery reads. Original assertions and deadlines remain unchanged.
+
+That historical candidate is **not release-qualified**. Its
+[independent push workflow](https://github.com/DeepMyst/Mysti/actions/runs/42121256729)
+fails two Unicode composer fills at their original three-second action limit;
+dependent package/editor jobs are skipped. The same two cases pass in the
+[PR workflow](https://github.com/DeepMyst/Mysti/actions/runs/42121267627) at the
+identical commit. All 15 required PR contexts pass, including package shape and
+both packaged editors. Across the three workflows, 22 eligible jobs pass, one
+fails and two are skipped. Those passes do not erase the failed run. All four
+[source-editor integrations](https://github.com/DeepMyst/Mysti/actions/runs/42121267653)
+pass after one recorded setup-only retry: the initial Linux stable attempt
+failed to connect to VS Code's version-list service before download or tests.
+The other three successful jobs were carried forward without rerunning.
+
+The [original-source native-input diagnostic](https://github.com/DeepMyst/Mysti/actions/runs/42120102812)
+passes without reproducing the timeout. Its slow fill spends approximately
+839 ms in native layout before the application input-event markers, including
+792 ms in font fallback. The measured application `scrollHeight` reads total
+0.8 ms. This locates the delay in that passing observation; it does not prove
+the earlier timeout's cause. The composer uses the normal VS Code host font
+stack, and no matching supported upstream fix has been verified.
+
+A [single minimal Windows comparison](https://github.com/DeepMyst/Mysti/actions/runs/42125225464)
+then passed all six input-only cases at the original three-second action limit:
+the two original Unicode payloads and an ASCII control, each in a plain textarea
+and the shipped composer. The first plain Unicode fill took **1,288 ms without
+Mysti application code**. This is an end-to-end fill measurement; the minimal
+run did not measure native font/layout work or reproduce the timeout. Each case owns a
+fresh browser; shared OS font caches and the omitted full CI workload prevent
+causal timing comparisons between the cases. Standalone HTML, exact payloads,
+versions and results are retained in the workflow artifact.
+
+The next step is to capture a failing native input boundary and use the minimal
+probe to verify a browser or application correction before changing dependencies
+or timing policy. Keep the original input path, payloads, assertions and failed
+records. Do not release these changes until the exact candidate and artifact
+complete their required checks; the published Beta 2 VSIX does not include them.
+
+The qualification workflow results above apply to source
+`2ab34ce8088675d2c113c9a80d037285327a47b7`; the original-source diagnostic
+separately used `3310b03`. A later documentation-only status commit records this
+evidence; it does not establish a new qualification result.
+
+The `9f899341` rendering-failure trace completed chunk dispatch in 145 ms, then remained pending
+during the completion-event evaluation; it does not establish whether the
+application handler had entered. The
+[full-context Windows diagnostic](https://github.com/DeepMyst/Mysti/actions/runs/42109781185)
+passed its browser phase (961 cases, one platform skip) and captured a complete
+native trace without reproducing the rendering timeout. Its unit phase failed a
+separate five-second CLI path-resolution test, so the diagnostic correctly
+finished as a failure. It is investigation evidence, not release qualification;
+the rendering timeout's cause remains unassigned. Earlier failures and
+same-commit passes remain linked in the documentation PR. The earlier
+[Unicode diagnostic](https://github.com/DeepMyst/Mysti/actions/runs/42091942355)
+informed a correction to the fixture's missing VS Code font defaults but did not
+reproduce or explain the timeout. Assertions, chunk boundaries and deadlines
+remain unchanged; no font warmup or application-test-failure rerun was introduced.
+
+Two other observations remain open: a
+[macOS Canvas run](https://github.com/DeepMyst/Mysti/actions/runs/42082967578)
+exceeded its pan-performance limit, and a
+[macOS editor run](https://github.com/DeepMyst/Mysti/actions/runs/42100707759)
+failed chat initialization. The editor fixture now checks readiness with the
+intended tab visible within its original 30-second budget; all four editor
+variants at `9f899341` passed. The earlier failures' causes remain unassigned,
+and overlay disappearance alone does not prove the host handshake completed.
+The release maintainer owns these investigations; retain their evidence and
+require complete checks for each proposed release artifact.
+
 ### Provider acceptance still needed
 
 | Provider | Current evidence or constraint | Required next evidence |
@@ -85,6 +213,14 @@ is a prerequisite to resolve, not a reason to loosen an assertion or silently
 switch to a different provider's result.
 
 ## Remaining work toward a stable release
+
+User-facing procedures now live in [visual walkthroughs](walkthroughs/README.md),
+[troubleshooting](TROUBLESHOOTING.md), [backup and recovery](BACKUP-AND-RECOVERY.md)
+and [privacy](PRIVACY.md). These describe current implementation boundaries;
+they do not close the native acceptance cases below. In particular, the current
+CodeLens telemetry event includes a function name. Review whether that code
+identifier is necessary, minimize or remove it as appropriate, and verify the
+telemetry opt-out and disclosure before making a no-code-data collection claim.
 
 The release maintainer owns triage and assigns a named owner to each selected
 item. The case IDs below join this handoff to the detailed test plan.
@@ -142,6 +278,9 @@ artifact identity together so another maintainer or agent can continue the work.
 
 Use the Node version in `.nvmrc`. Run a clean install in the release checkout.
 Require Chromium rather than silently accepting browser-test skips.
+If the manifest, English localization or `docs/navigation.json` changed, run
+`npm run docs:generate` after installation and review the generated diff before
+continuing with the checks.
 
 ```sh
 npm ci
@@ -149,6 +288,7 @@ npm exec --no -- playwright install chromium
 npm run typecheck
 npm run lint
 npm run check:vendor
+npm run check:docs
 node scripts/validation/feature-plan.cjs
 npm run test:release:unit
 npm run test:release:browser
@@ -158,7 +298,7 @@ npm audit --omit=dev
 ```
 
 - [ ] Record command, exit status, pass/fail/skip counts and retained log. Run the three release phases sequentially; browser/performance checks must not compete with editor/media workloads.
-- [ ] The release runner sets `MYSTI_REQUIRE_CHROMIUM=1` and bounds workers (two for unit/integration, one for browser/performance). Linux runners also need Playwright system dependencies (`--with-deps`). No retries or longer assertion deadlines are added.
+- [ ] The release runner sets `MYSTI_REQUIRE_CHROMIUM=1` and bounds workers (two for unit/integration, one for browser/performance). Linux runners also need Playwright system dependencies (`--with-deps`). Verify project ownership, documented containment budgets and zero retries; preserve explicit behavioral/performance limits and record any intentional policy change.
 - [ ] Run focused regressions for changed behavior. Do not replace a failing assertion with retries or a larger timeout merely to obtain green results.
 - [ ] Review runtime audit findings and tracked development exceptions. Verify vendored provenance independently of npm audit.
 - [ ] Run the minimum-runtime fixture and real-editor integration required by [MAINTENANCE](MAINTENANCE.md). The fixture executes under Node 18.17.1 after building under development Node; do not run the old-runtime assertion under the build Node and call it equivalent.

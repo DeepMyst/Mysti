@@ -17,6 +17,7 @@ credentials. Browser suites use the installed Playwright version and Chromium:
 
 ```sh
 npx playwright install chromium
+npm run check:docs
 npm run typecheck
 npm run lint
 npm run test:release:unit
@@ -28,9 +29,20 @@ npm run compile:release
 
 The three release phases run sequentially: unit/integration suites use two
 workers; named browser suites use one; Canvas frame-performance checks run last
-in isolation. This avoids the action/setup starvation observed when browser and
-native-process suites competed in the broad run. Assertions and deadlines stay
-unchanged; the runner adds no retries. Additional Vitest reporter arguments can
+in isolation. The same three Vitest projects classify direct file runs, so a
+browser journey does not inherit the unit-test watchdog. Unit and performance
+defaults remain five seconds; browser correctness uses a 30-second test budget
+and Playwright's 30-second default action limit. Explicit per-test limits and
+performance assertions retain their own values. These are hang-detection limits,
+not a promise that a 30-second UI response is acceptable. The policy intentionally
+replaces the former five-second browser default and six suites' blanket 2–5-second
+action caps; it does not make native font loading faster. See the
+[Playwright Test timeout model](https://playwright.dev/docs/test-timeouts) and
+[locked library timeout implementation](https://github.com/microsoft/playwright/blob/v1.58.2/packages/playwright-core/src/client/timeoutSettings.ts#L58).
+These suites use the Playwright library under Vitest, not Playwright Test's
+separate action-timeout configuration.
+
+The runner adds no retries. Additional Vitest reporter arguments can
 be passed after `--`, for example `--reporter=json --outputFile=release-unit.json`.
 
 Release phases require browser availability, so a missing browser fails rather
@@ -43,6 +55,14 @@ browser/performance phases.
 building. `compile` and `watch` regenerate it for development. Regenerate and
 review the manifest only when intentionally changing bundled core agents; do
 not use write mode to make an unexplained integrity failure disappear.
+
+## Documentation maintenance
+
+Run `npm run check:docs` after editing guides, commands, settings or provider references. It checks the documentation index, links and generated reference consistency; it does not establish that a native provider/account journey works. Use the Node version in `.nvmrc`.
+
+Keep [the documentation index](README.md) and the repository's agent entry points aligned with the current source. Add a practical walkthrough when exposing a major workflow: include prerequisites, numbered actions, expected results, a real screenshot/video with text alternatives, limitations and recovery. Reuse the canonical [video manifest](media/github-videos.json) instead of uploading duplicate clips or linking to MP4 file pages.
+
+When changing configuration, run `npm run docs:generate` to regenerate the [settings reference](SETTINGS.md), then review provider setup tables and sample configurations. When changing permissions, update [approval contracts](NATIVE_APPROVAL.md) and distinguish implemented flags/bridges from native acceptance. When changing storage or network behavior, update [backup/recovery](BACKUP-AND-RECOVERY.md) and [privacy](PRIVACY.md). Preserve historical release results as evidence for their recorded artifact.
 
 ## Required checks
 
@@ -65,6 +85,42 @@ speed separately before making a performance claim.
 Warnings remain useful debt signals. Do not suppress lint errors, make a failing
 job advisory, or add retries to get a green result. Fix the cause or document an
 explicitly bounded follow-up with evidence.
+
+The Linux Playwright test job uses `ubuntu-24.04`: locked Playwright 1.58.2
+rejects dependency installation on Ubuntu 26.04, which `ubuntu-latest` selected
+on 5 November 2026. The matrix label stays `ubuntu-latest` to preserve the required
+check name. Revisit the runner pin with a qualified Playwright upgrade; do not
+change assertions or skip browser tests to accommodate a runner-image update.
+
+The split-UTF-16 case in `renderingReliabilityBrowser.test.ts` records stage
+timings and its pending operation only when it fails. A Windows PR run hit the
+five-second test deadline while the identical independent push case passed;
+the original log did not identify the stalled operation. Preserve both results
+and inspect these diagnostics before changing the fixture or application.
+The additional logging does not resolve or waive the intermittent timing issue.
+
+The shared chat browser fixture supplies the six font custom properties that
+[VS Code injects into webviews](https://github.com/microsoft/vscode/blob/1.86.0/src/vs/workbench/contrib/webview/browser/themeing.ts),
+using the minimum supported editor's default platform fonts. Earlier fixtures
+omitted them and inherited Chromium's Times font. Keep this host setup in
+`tests/webview/chatPageHtml.ts`; do not substitute a font warmup, alter user input
+or move measured actions into setup to accommodate a timeout. This corrects
+fixture fidelity, not the unassigned cause of the earlier Windows timing failures.
+
+Streamed text updates its Markdown immediately, while transcript scroll
+measurement is coalesced into an owned animation frame. Completion and
+cancellation flush after the final DOM changes; replacement turns and
+conversations invalidate pending work. Keep the separate explicit
+`scrollToBottom()` helper synchronous. The streaming-scroll browser regressions
+check native read counts, final position and stale-callback isolation instead of
+using a wall-clock speed threshold.
+
+Disposable OpenClaw test-data writers use `PRAGMA synchronous=OFF` for
+[reproducible database construction](https://www.sqlite.org/pragma.html#pragma_synchronous).
+They still create real SQLite files with the existing SQL operations and
+connection lifetimes. These fixtures exercise credential selection, redaction
+and read-only behavior; they do not simulate power loss. Production database
+connections and test assertions retain their existing behavior.
 
 ### Live developer conversations
 
@@ -293,7 +349,7 @@ transport behavior, persistence and UI state simultaneously.
 
 ### Mysti 2.0 BETA distribution
 
-The 2.0.0 candidate uses `npm run package:pre-release`, including the CI artifact tested by the packaged-editor jobs. Keep the numeric package version and lockfile synchronized; the pre-release marker lives in VSIX metadata, not a semver suffix. The README badge reports the published Marketplace version, which may differ from a candidate checkout.
+The beta line uses `npm run package:pre-release`, including the CI artifact tested by the packaged-editor jobs. Keep the numeric package version and lockfile synchronized; the pre-release marker lives in VSIX metadata, not a semver suffix. The README Marketplace badge is an Install link; inspect the actual listing for its published version. Record GitHub, Marketplace and Open VSX publication separately.
 
 Inspect PNG/GIF/video assets and relative links before publication. Assets under `docs/` stay out of the VSIX but must exist at the repository URLs used by its README. Preserve sample-data labels on deterministic captures; record live-provider validation separately. Do not promote a package to stable by merely removing the word BETA: require a reviewed newer version and a deliberate channel change.
 

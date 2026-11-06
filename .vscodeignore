@@ -19,6 +19,8 @@ webpack.config.js
 .env
 .env.*
 CLAUDE.md
+AGENTS.md
+llms.txt
 docs/**
 .mcp.json
 clipboard/**
