@@ -113,7 +113,7 @@ filesystem backup. See [settings](../SETTINGS.md) for
 
 ## Watch the menu
 
-**21 seconds · history, branching and the rewind choices**
+**14 seconds · history, branching and the rewind choices**
 
 https://github.com/user-attachments/assets/d69c6c69-2f96-4440-935e-f0f4660d5b8a
 

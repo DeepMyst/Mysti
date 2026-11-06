@@ -104,7 +104,7 @@ not mean those formats are available through this button.
 
 ## Watch the controls
 
-**15 seconds · theme, format and Export**
+**14 seconds · theme, format and Export**
 
 https://github.com/user-attachments/assets/24cb574f-98d3-4bcf-9d18-f2be7a18e21f
 

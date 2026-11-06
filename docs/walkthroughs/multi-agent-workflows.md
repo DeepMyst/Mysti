@@ -108,7 +108,7 @@ request also assigns work to it.
 
 ## Watch the handoff
 
-**17 seconds · one agent designs, the next reviews**
+**14 seconds · one agent designs, the next reviews**
 
 https://github.com/user-attachments/assets/adab78a1-6c58-427e-aa8d-d2f362eae15a
 
