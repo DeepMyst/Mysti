@@ -1,9 +1,12 @@
 # Changelog
 
-## Unreleased
+## [2.0.2] — 2026-11-07 · Beta 3 (pre-release)
+
+A patch to Beta 2. It remains a beta; [production readiness](docs/PRODUCTION_READINESS.md) records acceptance gaps.
 
 ### Fixed
 
+- Keep the waiting indicator while Claude thinks. Current Claude models stream redacted (empty) thinking, and the chat replaced the indicator with an empty reply bubble until the first word arrived — up to ~25 s at maximum effort — so answers looked like they never came.
 - Resolve Windows CLI locations from the trusted system lookup's first complete absolute match, then terminate only its owned helper. Preserve native search ordering and successful-exit checks for ordinary CLI probes, and retain Unicode paths split across output chunks.
 - Coalesce streamed-text scroll measurements into one animation frame while keeping Markdown updates immediate. Flush the final view after completion or cancellation, and discard queued scrolling when its conversation or turn is replaced.
 
@@ -13,8 +16,6 @@
 - Add a documentation hub, agent entry points and a machine-readable discovery map; generate settings and command references from the manifest and check documentation freshness and local navigation in CI.
 - Rework the GitHub README with clearer installation choices, practical multi-agent workflows, broader feature coverage and provider/account FAQs.
 - Replace repository-file video links with native GitHub players across the README and feature gallery, with a lightweight inline workflow preview and a reproducible media-publishing guide.
-
-These unreleased changes are not included in the already qualified 2.0.1 Beta 2 VSIX.
 
 ### Maintenance
 

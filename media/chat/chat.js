@@ -12294,6 +12294,10 @@
       }
 
       function appendThinkingBlock(thinking) {
+        // Claude streams redacted thinking as empty deltas for the whole
+        // thinking phase; creating the bubble here would swap the waiting
+        // dots for an empty message until the first real token.
+        if (!thinking) return;
         var streamingEl = getOrCreateStreamingMessage();
         var messageBody = streamingEl.querySelector('.message-body');
         if (thinking && messageBody) {

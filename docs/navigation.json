@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "product": "Mysti",
-  "productVersion": "2.0.1",
+  "productVersion": "2.0.2",
   "channel": "beta",
   "entryPoint": "docs/README.md",
   "sourceOfTruth": {
@@ -509,6 +509,22 @@
       ],
       "kind": "policy",
       "status": "current"
+    },
+    {
+      "id": "beta3-notes",
+      "path": "docs/releases/2.0.2-beta.3/RELEASE-NOTES.md",
+      "title": "Beta 3 release notes",
+      "summary": "Changes and install notes for the Beta 3 patch.",
+      "audiences": [
+        "user",
+        "maintainer"
+      ],
+      "topics": [
+        "release notes",
+        "beta3"
+      ],
+      "kind": "release",
+      "status": "release-specific"
     },
     {
       "id": "beta2-notes",
