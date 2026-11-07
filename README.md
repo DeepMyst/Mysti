@@ -6,6 +6,25 @@
   <a href="#documentation">Documentation</a>
 </p>
 
+<table>
+<tr>
+<td width="50%">
+
+PROMO_URL
+
+</td>
+<td width="50%">
+
+LAUNCH_URL
+
+</td>
+</tr>
+<tr>
+<td align="center"><b>Blind spots</b> · 59 s<br><sub>What two agents see that one misses</sub></td>
+<td align="center"><b>Unanimous</b> · 44 s<br><sub>Ask once, let them argue it out</sub></td>
+</tr>
+</table>
+
 ![Mysti — your agents, working together inside VS Code](docs/releases/2.0.1-beta.2/media/hero.png)
 
 # Mysti

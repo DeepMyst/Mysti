@@ -41,8 +41,10 @@ URLs. Read back the PR body after upload; a partially failed batch can already
 contain successful attachments, so do not blindly upload every file again.
 
 Copy each canonical URL onto its own line, with blank lines around it, in the
-README or gallery. Keep it outside tables, inline sentences and code blocks.
-A standalone URL renders as a native GitHub player. Do not use a repository
+README or gallery. Keep it outside Markdown tables, inline sentences and code
+blocks. A standalone URL renders as a native GitHub player. The one tested
+exception is the README's side-by-side promos: each URL sits on its own line,
+with blank lines around it, inside an HTML `<td>`, and still renders as a player. Do not use a repository
 `blob`/`raw` URL, Markdown image syntax pointing at an MP4, or a hand-written
 video/iframe element as a substitute.
 
