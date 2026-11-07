@@ -303,5 +303,31 @@
         "durationSeconds": 7.8
       }
     ]
+  },
+  "promos": {
+    "note": "Promotional films shown side by side at the top of the README. Scripted sample scenarios, not release evidence. The Remotion kit that renders them (docs/design/intro-video) is not committed yet.",
+    "uploadedAt": "2026-11-07",
+    "uploadPullRequest": 82,
+    "format": "H.264 + AAC MP4, 720×1280, 30 fps",
+    "videos": [
+      {
+        "name": "mysti-promo-blind-spots-9x16",
+        "title": "Blind spots",
+        "url": "https://github.com/user-attachments/assets/114f70b4-d52a-4d9b-9b42-c18acdc974e4",
+        "source": "Remotion composition PromoVertical (720×1280 web encode of the master)",
+        "bytes": 6852160,
+        "sha256": "815d1c77525daa5951068fa8f22ec92a8900cfc82f5ecb22f0ce4f45718582d1",
+        "durationSeconds": 58.7
+      },
+      {
+        "name": "mysti-launch-unanimous-9x16",
+        "title": "Unanimous",
+        "url": "https://github.com/user-attachments/assets/b1a6b569-2be6-4ba9-8e37-e3dcdf9de626",
+        "source": "Remotion composition Launch (720×1280 web encode of the master)",
+        "bytes": 4235550,
+        "sha256": "e39de4c523288e202fa342407610d13d398ce4729255cb218d1ecc956bff4963",
+        "durationSeconds": 43.6
+      }
+    ]
   }
 }

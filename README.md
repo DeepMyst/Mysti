@@ -10,12 +10,12 @@
 <tr>
 <td width="50%">
 
-PROMO_URL
+https://github.com/user-attachments/assets/114f70b4-d52a-4d9b-9b42-c18acdc974e4
 
 </td>
 <td width="50%">
 
-LAUNCH_URL
+https://github.com/user-attachments/assets/b1a6b569-2be6-4ba9-8e37-e3dcdf9de626
 
 </td>
 </tr>
