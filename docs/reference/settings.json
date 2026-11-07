@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "productVersion": "2.0.1",
+  "productVersion": "2.0.2",
   "sources": [
     "package.json",
     "package.nls.json"
   ],
-  "sourceSha256": "cb81ab0bcf9b84e13c682c77d75944312ceaf85f6f3466fc4ba7b73792d7d5fa",
+  "sourceSha256": "9ccec5eb40c07dc54f64ef7a0f240818fd623088a4b46fc447e186583182e26d",
   "settings": {
     "mysti.defaultProvider": {
       "type": "string",
