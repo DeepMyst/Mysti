@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Show Claude's progress while it thinks. Current Claude models keep their reasoning private, so a long thinking phase (around 90 seconds for a short message at maximum effort in Plan mode) showed only the waiting dots. The chat now shows a live "Thinking… ~N tokens" estimate from Claude Code until the answer starts.
+
 ## [2.0.2] — 2026-11-07 · Beta 3 (pre-release)
 
 A patch to Beta 2. It remains a beta; [production readiness](docs/PRODUCTION_READINESS.md) records acceptance gaps.

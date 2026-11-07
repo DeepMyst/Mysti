@@ -1243,5 +1243,6 @@
   "🔍 Run Diagnostics": "🔍 Запустить диагностику",
   "🤖 AI will answer if no response": "🤖 ИИ ответит, если вы не ответите",
   "🤖 AI will select an approach if no response": "🤖 ИИ выберет подход, если вы не ответите",
-  "Run AI provider CLIs through the platform shell when required for CLI wrappers. On Windows, Mysti uses an explicit cmd.exe launcher instead of Node shell=true argument spawning.": "Запускать CLI ИИ-провайдеров через системную оболочку, когда это требуется для CLI-обёрток. В Windows Mysti использует явный запуск через cmd.exe вместо передачи аргументов Node с shell=true."
+  "Run AI provider CLIs through the platform shell when required for CLI wrappers. On Windows, Mysti uses an explicit cmd.exe launcher instead of Node shell=true argument spawning.": "Запускать CLI ИИ-провайдеров через системную оболочку, когда это требуется для CLI-обёрток. В Windows Mysti использует явный запуск через cmd.exe вместо передачи аргументов Node с shell=true.",
+  "Thinking… ~{0} tokens": "Размышление… ~{0} токенов"
 }

@@ -959,6 +959,11 @@ export class ClaudeCodeProvider extends BaseCliProvider {
 
       // Handle system events (session init, etc.)
       if (data.type === 'system') {
+        // Current models redact thinking (empty deltas); the CLI's running
+        // estimate is the only visible sign of a long thinking phase.
+        if (data.subtype === 'thinking_tokens' && typeof data.estimated_tokens === 'number') {
+          return { type: 'progress', content: vscode.l10n.t('Thinking… ~{0} tokens', Math.round(data.estimated_tokens).toLocaleString('en-US')) };
+        }
         if (data.subtype === 'init') {
           // The CLI tells us exactly which `/commands` this session has —
           // built-ins, bundled skills (`/design` and friends, which live inside

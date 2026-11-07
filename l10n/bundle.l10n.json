@@ -1068,6 +1068,7 @@
   "Thinking level": "Thinking level",
   "Thinking level changed to: {0}": "Thinking level changed to: {0}",
   "Thinking level: {0}": "Thinking level: {0}",
+  "Thinking… ~{0} tokens": "Thinking… ~{0} tokens",
   "Thinks like an attacker to keep systems safe and compliant": "Thinks like an attacker to keep systems safe and compliant",
   "This CLI requires interactive setup. Run the command below in your terminal.": "This CLI requires interactive setup. Run the command below in your terminal.",
   "This project has a Mysti configuration. Open Mysti to get started?": "This project has a Mysti configuration. Open Mysti to get started?",
