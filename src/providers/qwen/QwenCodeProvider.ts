@@ -113,6 +113,7 @@ export class QwenCodeProvider extends BaseCliProvider {
     thinkingStyle: 'complete-blocks',
     thinkingLevelEffective: false,
     planMode: 'none',
+    nativeModes: { approvals: true }, // only full access runs (--approval-mode yolo); other tiers are refused
     // F8 caveat: `--continue` resumes the globally-latest session (cross-panel
     // bleed) — value stays 'cli-resume' until Plan 00 Batch 1.3 fixes it.
     sessionKind: 'cli-resume',

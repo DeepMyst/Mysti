@@ -7,6 +7,9 @@ import { isRecord } from '../../utils/valueGuards';
 import { toolKind } from '../../utils/toolNames';
 import { version as extensionVersion } from '../../../package.json';
 
+/** Answers keyed as the question card keys them: header (or Q1…) or question text. */
+export type CodexQuestionAnswers = Record<string, string | string[]>;
+
 export interface CodexAppServerState {
   settings: Settings;
   cwd: string;
@@ -33,6 +36,8 @@ export interface CodexAppServerState {
   protocolFailed?: boolean;
   usage?: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number };
   contextWindow?: number;
+  /** Held request_user_input requests by card toolCallId; null = skipped. */
+  questions?: Map<string, (answers: CodexQuestionAnswers | null) => void>;
 }
 
 const json = (value: unknown) => JSON.stringify(value) + '\n';
@@ -66,12 +71,35 @@ function turn(state: CodexAppServerState, prompt: string): string {
   state.items.clear(); state.streamed.clear(); state.usage = undefined;
   state.assistantTextItem = undefined;
   state.pendingNotifications = []; state.pendingNotificationBytes = 0; state.pendingChunks = [];
+  const planning = state.settings.mode === 'quick-plan' || state.settings.mode === 'detailed-plan';
   return request(state, 'turn/start', {
     threadId: state.threadId, input: [{ type: 'text', text: prompt, text_elements: [] }], effort: state.effort,
+    // Codex's own Plan mode (its prompt, <proposed_plan>, request_user_input).
+    // The mode is sticky on the thread, so other turns reset it to Default.
+    // null instructions = Codex's built-in ones; the sandbox stays policy()'s.
+    ...(state.model ? { collaborationMode: { mode: planning ? 'plan' : 'default',
+      settings: { model: state.model, reasoning_effort: state.effort ?? null, developer_instructions: null } } } : {}),
   });
 }
 
-const scopedMethods = new Set(['turn/started', 'turn/completed', 'item/agentMessage/delta',
+/** Codex wants { [questionId]: { answers: string[] } }. */
+function codexAnswers(questions: Record<string, unknown>[], answers: CodexQuestionAnswers): Record<string, { answers: string[] }> {
+  return Object.fromEntries(questions.flatMap((question, index) => {
+    const value = answers[questionHeader(question)] ?? answers[`Q${index + 1}`] ?? answers[String(question.question)];
+    return value === undefined || !nonblank(question.id) ? [] : [[question.id, { answers: Array.isArray(value) ? value : [value] }]];
+  }));
+}
+const questionHeader = (question: Record<string, unknown>) => String(question.header || question.id || 'Question');
+const questionCallId = (state: CodexAppServerState, requestId: unknown) => `codex-question-${state.threadId}-${state.turnId}-${requestId}`;
+
+/** Deliver the user's answer (null = skipped). False when no held request owns this question. */
+export function answerCodexQuestion(state: CodexAppServerState | undefined, toolCallId: string, answers: CodexQuestionAnswers | null): boolean {
+  const settle = state?.questions?.get(toolCallId);
+  settle?.(answers);
+  return !!settle;
+}
+
+const scopedMethods = new Set(['turn/started', 'turn/completed', 'item/agentMessage/delta', 'item/plan/delta',
   'item/reasoning/summaryTextDelta', 'item/reasoning/textDelta', 'thread/tokenUsage/updated',
   'item/started', 'item/completed', 'error', 'item/commandExecution/requestApproval',
   'item/fileChange/requestApproval', 'item/tool/requestUserInput']);
@@ -131,7 +159,9 @@ function invalidRpcResult(method: string, data: Record<string, unknown>): boolea
 export function codexAppServerInput(state: CodexAppServerState, prompt: string): string {
   if (state.initialized && state.threadId) { return turn(state, prompt); }
   state.pendingPrompt = prompt;
-  return request(state, 'initialize', { clientInfo: { name: 'mysti', title: 'Mysti', version: extensionVersion } });
+  return request(state, 'initialize', { clientInfo: { name: 'mysti', title: 'Mysti', version: extensionVersion },
+    // Plan collaboration mode and request_user_input are experimental API.
+    capabilities: { experimentalApi: true, requestAttestation: false } });
 }
 
 export function isCodexAppServerBoundary(data: Record<string, unknown>, state?: CodexAppServerState): boolean {
@@ -192,6 +222,9 @@ export function handleCodexAppServer(
     } else if (pending === 'thread/start' || pending === 'thread/resume') {
       const thread = isRecord(result.thread) ? result.thread : {};
       state.threadId = thread.id as string; state.initialized = true;
+      // Collaboration mode settings need the model the thread actually runs.
+      if (!state.model && nonblank(result.model)) { state.model = result.model; }
+      if (!state.effort && nonblank(result.reasoningEffort)) { state.effort = result.reasoningEffort; }
       const prompt = state.pendingPrompt; state.pendingPrompt = undefined;
       if (prompt !== undefined) { send(turn(state, prompt)); }
       return { type: 'session_active', sessionId: state.threadId };
@@ -250,14 +283,25 @@ export function handleCodexAppServer(
     } else if (method === 'mcpServer/elicitation/request') {
       respond({ action: 'decline', content: null });
     } else if (method === 'item/tool/requestUserInput') {
-      respond({ answers: {} });
-      if (!matchesTurn(data, state)) { return null; }
+      const asked = (Array.isArray(params.questions) ? params.questions : []).filter(isRecord);
+      const toolCallId = questionCallId(state, id);
+      // Mysti has no secret input: never show a secret question as a plain card
+      // (nor keep or replay its answer). Codex continues without an answer.
+      const owned = matchesTurn(data, state) && !asked.some(question => question.isSecret === true);
+      // Codex's own contract: hold the request until the card answers, so the
+      // turn continues with the user's answers. Skipped/cancelled = no answers.
+      const settle = owned ? approvals?.hold<CodexQuestionAnswers | null>(id, (answers, target) => {
+        state.questions?.delete(toolCallId);
+        respond({ answers: answers === 'cancelled' || answers === null ? {} : codexAnswers(asked, answers) }, target);
+      }) : undefined;
+      if (settle) { (state.questions ||= new Map()).set(toolCallId, settle); } else { respond({ answers: {} }); }
+      if (!owned) { return null; }
       return { type: 'ask_user_question', askUserQuestion: {
-        toolCallId: `codex-question-${state.threadId}-${state.turnId}-${id}`,
-        questions: (Array.isArray(params.questions) ? params.questions : []).filter(isRecord).map(question => ({
-          header: String(question.header || question.id || 'Question'), question: String(question.question || ''), multiSelect: false,
-          options: (Array.isArray(question.options) ? question.options : []).filter(isRecord).map(option => ({
-            label: String(option.label || ''), description: String(option.description || ''),
+        toolCallId,
+        questions: asked.map(question => ({
+          header: questionHeader(question), question: String(question.question || ''), multiSelect: false,
+          options: (Array.isArray(question.options) ? question.options : []).filter(isRecord).filter(option => nonblank(option.label)).map(option => ({
+            label: String(option.label), description: String(option.description || ''),
           })),
         })),
       } };
@@ -267,13 +311,20 @@ export function handleCodexAppServer(
     return null;
   }
   if (scopedMethods.has(method) && !matchesTurn(data, state)) { return null; }
+  if (method === 'serverRequest/resolved' && params.threadId === state.threadId) {
+    // Codex resolved a held question itself (non-blocking or interrupted):
+    // release it so a later card answer becomes a follow-up, not a lost reply.
+    // The server ignores the now-stale empty response.
+    state.questions?.get(questionCallId(state, params.requestId))?.(null);
+    return null;
+  }
   if (method === 'turn/started' && isRecord(params.turn) && typeof params.turn.id === 'string') {
     state.turnId = params.turn.id; return null;
   }
-  if (method === 'item/agentMessage/delta' || method === 'item/reasoning/summaryTextDelta' || method === 'item/reasoning/textDelta') {
+  if (method === 'item/agentMessage/delta' || method === 'item/plan/delta' || method === 'item/reasoning/summaryTextDelta' || method === 'item/reasoning/textDelta') {
     if (typeof params.itemId === 'string') { state.streamed.add(params.itemId); }
     if (typeof params.delta !== 'string') { return null; }
-    return method === 'item/agentMessage/delta'
+    return method === 'item/agentMessage/delta' || method === 'item/plan/delta'
       ? assistantText(state, params.itemId, params.delta) : { type: 'thinking', content: params.delta };
   }
   if (method === 'thread/tokenUsage/updated' && isRecord(params.tokenUsage)) {

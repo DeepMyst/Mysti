@@ -37,7 +37,7 @@ import { clampEffort } from '../../utils/effort';
 import type { EffortLevel } from '../../types';
 import { killProcessTree, isProcessLive } from '../../utils/processKill';
 import { PROCESS_KILL_GRACE_PERIOD_MS } from '../../constants';
-import { codexAppServerInput, handleCodexAppServer, isCodexAppServerBoundary, type CodexAppServerState } from './CodexAppServerProtocol';
+import { answerCodexQuestion, codexAppServerInput, handleCodexAppServer, isCodexAppServerBoundary, type CodexAppServerState, type CodexQuestionAnswers } from './CodexAppServerProtocol';
 
 /** Codex `model_reasoning_effort` supports low→xhigh (no `max`; clamp down). */
 const CODEX_EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh'];
@@ -148,6 +148,7 @@ export class CodexProvider extends BaseCliProvider {
     effortLevels: CODEX_EFFORT_LEVELS, // model_reasoning_effort (low→xhigh)
     effortDefault: 'medium',
     planMode: 'detected',
+    nativeModes: { plan: true, readOnly: true, approvals: true }, // Codex Plan collaboration mode; read-only sandbox for plan/read-only; native approval requests or full access
     sessionKind: 'cli-resume',
     nativeInstructionFile: 'AGENTS.md',  // loaded by the CLI itself; Mysti does not resend it
     emitsToolResults: true,
@@ -259,6 +260,16 @@ export class CodexProvider extends BaseCliProvider {
     } catch {
       return undefined;
     }
+  }
+
+  /** Answer a request_user_input this panel's turn is holding (null = skipped). */
+  public answerNativeQuestion(panelId: string, toolCallId: string, answers: CodexQuestionAnswers | null): boolean {
+    return answerCodexQuestion((this._panelSessions.get(panelId) as CodexSessionState | undefined)?.appServer, toolCallId, answers);
+  }
+
+  /** No consumer claimed the question (Brainstorm, background): send Codex no answers so the turn continues. */
+  protected override releaseNativeQuestion(session: PanelSessionState, toolCallId: string): void {
+    answerCodexQuestion((session as CodexSessionState).appServer, toolCallId, null);
   }
 
   getStoredUsage(panelId?: string): { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number } | null {

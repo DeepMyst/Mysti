@@ -6191,6 +6191,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               }
               chunk.askUserQuestion = { ...chunk.askUserQuestion, questions };
             }
+            // This chat shows the card and answers natively (see answerNativeQuestion).
+            this._providerManager.getProviderInstance(effectiveSettings.provider)
+              ?.claimNativeQuestion?.(panelId, chunk.askUserQuestion.toolCallId);
             // Autonomous mode: try to auto-answer the question
             if (this._autonomousManager.isActive() && chunk.askUserQuestion) {
               const autoResult = this._autonomousManager.generateAutoAnswer(chunk.askUserQuestion);

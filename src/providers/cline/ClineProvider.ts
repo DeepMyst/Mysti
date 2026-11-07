@@ -163,6 +163,8 @@ export class ClineProvider extends BaseCliProvider {
 			thinkingStyle: 'complete-blocks',  // say:"reasoning" blocks arrive whole
 			thinkingLevelEffective: false,     // reasoning is emitted, but this adapter sends no level/budget control
 			planMode: legacy ? 'detected' : 'none',
+			// Modern Cline runs only in full access (--auto-approve); other tiers are refused.
+			...(legacy ? {} : { nativeModes: { approvals: true } }),
 			sessionKind: 'prompt-history',     // no actual resume — history replayed into the prompt
 			emitsToolResults: true,
 			emitsUsage: true,

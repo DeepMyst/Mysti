@@ -49,8 +49,8 @@ describe('Codex app-server protocol boundaries and policy', () => {
     const h = harness(); h.handle({ id: 1, method: 'item/permissions/requestApproval' });
     expect(h.written).toEqual([{ id: 1, result: { permissions: {}, scope: 'turn' } }]);
   });
-  it('preserves question text/options for the existing follow-up UI', () => {
-    const h = harness(); const chunk = h.handle({ id: 2, method: 'item/tool/requestUserInput', params: { threadId: 'thread', turnId: 'turn', questions: [{ id: 'color', header: 'Color', question: 'Which color?', options: [{ label: 'Blue', description: 'Cool' }] }] } });
+  it('without a turn-owned request scope, answers at once and keeps the follow-up UI', () => {
+    const h = harness(); const chunk = handleCodexAppServer({ id: 2, method: 'item/tool/requestUserInput', params: { threadId: 'thread', turnId: 'turn', questions: [{ id: 'color', header: 'Color', question: 'Which color?', options: [{ label: 'Blue', description: 'Cool' }] }] } }, h.state, h.proc, undefined);
     expect(chunk).toMatchObject({ type: 'ask_user_question', askUserQuestion: { questions: [{ question: 'Which color?', options: [{ label: 'Blue' }] }] } });
     expect(h.written[0]).toEqual({ id: 2, result: { answers: {} } });
   });

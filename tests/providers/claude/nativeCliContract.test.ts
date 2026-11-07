@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { TestableClaudeProvider, TestableCodexProvider } from '../../helpers/providerFactory';
+import { TestableClaudeProvider, TestableHermesProvider } from '../../helpers/providerFactory';
 import type { Settings } from '../../../src/types';
 
 const providers: Array<{ dispose(): void }> = [];
@@ -23,8 +23,8 @@ describe('Claude receives the user message, not Mysti policy text', () => {
   });
 
   it('keeps prompt-level policy for providers without native plan enforcement', async () => {
-    const codex = new TestableCodexProvider(); providers.push(codex);
-    const text = await prompt(codex, { provider: 'openai-codex', mode: 'quick-plan', accessLevel: 'read-only' });
+    const hermes = new TestableHermesProvider(); providers.push(hermes);
+    const text = await prompt(hermes, { provider: 'hermes', mode: 'quick-plan', accessLevel: 'read-only' });
     expect(text).toContain('[Planning Mode]'); expect(text).toContain('[Read Only]');
   });
 

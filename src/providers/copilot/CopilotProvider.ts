@@ -161,7 +161,7 @@ export class CopilotProvider extends BaseCliProvider {
   readonly capabilities: ProviderCapabilities = {
     supportsAskPermission: false,
     supportsStreaming: true,
-    supportsThinking: false,
+    supportsThinking: true,  // 1.0 JSONL: assistant.reasoning_delta / assistant.reasoning
     // Flag/reality alignment (Plan 02 Phase 1): the Copilot CLI emits plain
     // text — no tool events ever fire, so no tool cards / permission gating.
     // True since Copilot CLI 1.0, whose `--output-format json` carries
@@ -173,12 +173,13 @@ export class CopilotProvider extends BaseCliProvider {
     supportsAutoInstall: true,
     supportsPromptEnhancement: false,
     // Plan 02 Phase 1 capability matrix
-    thinkingStyle: 'none',
+    thinkingStyle: 'streamed',
     thinkingLevelEffective: false,
     effortLevels: COPILOT_EFFORT_LEVELS,  // --effort (low→xhigh)
     effortLevelsByModel: { auto: [] },
     effortDefault: 'medium',
     planMode: 'detected',
+    nativeModes: { readOnly: true, approvals: true }, // --deny-tool shell/write for plan/read-only; ask tiers refused, full access → --allow-all-tools
     sessionKind: 'prompt-history',  // Each CLI request receives Mysti's conversation history; local IDs are not native sessions.
     emitsToolResults: true,         // 1.0 JSONL: tool.execution_complete carries the result
     // Copilot reports no honest token count on EITHER path: 1.0's JSONL carries
@@ -713,18 +714,24 @@ export class CopilotProvider extends BaseCliProvider {
 
       // With native streaming disabled, only assistant.message carries text.
       // Otherwise it repeats the already-rendered deltas for that message.
+      // Reasoning follows the same contract keyed by reasoningId; the full
+      // assistant.reasoning arrives after the answer.
       case 'assistant.message_delta':
-      case 'assistant.message': {
-        const isDelta = type === 'assistant.message_delta';
+      case 'assistant.message':
+      case 'assistant.reasoning_delta':
+      case 'assistant.reasoning': {
+        const isDelta = type.endsWith('_delta');
+        const reasoning = type.startsWith('assistant.reasoning');
         const content = isDelta ? payload.deltaContent : payload.content;
+        const id = reasoning ? payload.reasoningId : payload.messageId;
         if (typeof content !== 'string' || !content) { return null; }
-        if (typeof payload.messageId === 'string') {
+        if (typeof id === 'string') {
           const agentId = [data.agentId, payload.agentId]
             .find(id => typeof id === 'string' && id.length > 0);
           const scope = agentId ? ['agent', agentId]
             : typeof payload.parentToolCallId === 'string' && payload.parentToolCallId
               ? ['parent-tool', payload.parentToolCallId] : ['root'];
-          const key = JSON.stringify([...scope, payload.messageId]);
+          const key = JSON.stringify([...scope, reasoning ? 'reasoning' : 'message', id]);
           let rendered = this._renderedMessages.get(session);
           if (!rendered) { rendered = new Map(); this._renderedMessages.set(session, rendered); }
           // Like the native renderer, ignore late deltas after a full-message
@@ -732,7 +739,7 @@ export class CopilotProvider extends BaseCliProvider {
           if (rendered.get(key) === 'full' || (!isDelta && rendered.has(key))) { return null; }
           rendered.set(key, isDelta ? 'streamed' : 'full');
         }
-        return { type: 'text', content };
+        return { type: reasoning ? 'thinking' : 'text', content };
       }
 
       case 'tool.execution_start': {

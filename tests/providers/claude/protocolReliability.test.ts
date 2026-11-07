@@ -60,7 +60,8 @@ function harness() {
     return Object.assign(new EventEmitter(), { stdin, stdout, stderr, pid: 87000 + children.length,
       exitCode: null, signalCode: null, killed: false, kill: vi.fn() });
   });
-  const start = async (content: string, initialize = true, stopOnError = false) => {
+  // Plays the main chat: it claims the questions it will show and answer.
+  const start = async (content: string, initialize = true, stopOnError = false, claimQuestions = true) => {
     const previous = children.at(-1);
     const before = previous?.frames.length ?? 0;
     const chunks: StreamChunk[] = [];
@@ -69,6 +70,7 @@ function harness() {
       try {
         for await (const chunk of provider.sendMessage(content, [], settings, null, undefined, 'panel')) {
           chunks.push(chunk);
+          if (claimQuestions && chunk.type === 'ask_user_question') { provider.claimNativeQuestion('panel', chunk.askUserQuestion!.toolCallId); }
           if (stopOnError && chunk.type === 'error') { break; }
         }
       } finally { settled = true; }
@@ -217,6 +219,19 @@ describe('Claude persistent protocol reliability', () => {
     expect(h.provider.answerNativeQuestion('panel', 'question-tool', null)).toBe(true);
     await vi.waitFor(() => expect(responses()).toHaveLength(1), { interval: 1 });
     expect(responses()[0].response.response).toEqual({ behavior: 'deny', message: expect.stringMatching(/skipped/i) });
+    turn.child.emit(result()); await turn.completion;
+  });
+
+  it('hands an unclaimed question back to Claude instead of holding the turn (Brainstorm, background runs)', async () => {
+    const h = harness(); const turn = await h.start('Ask me how to round', true, false, false);
+    turn.child.emit(...questionFrames({ questions: [QUESTION] }));
+    await vi.waitFor(() => expect(turn.chunks.some(chunk => chunk.type === 'ask_user_question')).toBe(true), { interval: 1 });
+    turn.child.emit({ type: 'control_request', request_id: 'native-question', request: {
+      subtype: 'can_use_tool', tool_name: 'AskUserQuestion', tool_use_id: 'question-tool', input: { questions: [QUESTION] } } });
+    const responses = () => turn.child.frames.filter(frame => frame.type === 'control_response' && frame.response?.request_id === 'native-question');
+    await vi.waitFor(() => expect(responses()).toHaveLength(1), { interval: 1 });
+    expect(responses()[0].response.response).toEqual({ behavior: 'deny', message: expect.stringMatching(/scoped follow-up/) });
+    expect(h.provider.answerNativeQuestion('panel', 'question-tool', { Rounding: 'Round' })).toBe(false);
     turn.child.emit(result()); await turn.completion;
   });
 

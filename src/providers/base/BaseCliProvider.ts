@@ -218,6 +218,8 @@ export abstract class BaseCliProvider implements ICliProvider {
   /** Native deltas must not lose early unseen peers to the ordinary last-ten history cap. */
   private readonly _nativeHistoryDeltas = new WeakSet<Conversation>();
   private readonly _persistentTrackers = new WeakMap<ChildProcess, ProcessTracker>();
+  /** Native questions the stream consumer took ownership of (it will answer them). */
+  private readonly _claimedQuestions = new WeakMap<PanelSessionState, Set<string>>();
   private _nativeApprovalHost?: NativeApprovalHost;
   /** Secrets stay private and expire with their issuing process, never in session snapshots. */
   private readonly _processErrorRedactors = new WeakMap<ChildProcess, (text: string) => string>();
@@ -1724,6 +1726,11 @@ export abstract class BaseCliProvider implements ICliProvider {
             if (chunk.type === 'error' || chunk.type === 'auth_error') { request.failed = true; }
             usedPersistent = true;
             yield chunk;
+            // A consumer that moved past a native question without claiming it
+            // (Brainstorm, background runs) will never answer it: let the
+            // provider fall back instead of holding the turn until Stop.
+            const asked = chunk.type === 'ask_user_question' ? chunk.askUserQuestion?.toolCallId : undefined;
+            if (asked && !this._claimedQuestions.get(session)?.delete(asked)) { this.releaseNativeQuestion(session, asked); }
           }
         } catch (err) {
           request.failed = true;
@@ -1765,6 +1772,18 @@ export abstract class BaseCliProvider implements ICliProvider {
       if (this._requests.get(session) === request) { this._requests.delete(session); }
     }
   }
+
+  /** The consumer of this panel's stream will show and answer this native question. */
+  public claimNativeQuestion(panelId: string, toolCallId: string): void {
+    const session = this._panelSessions.get(panelId);
+    if (!session) { return; }
+    const claimed = this._claimedQuestions.get(session) ?? new Set<string>();
+    claimed.add(toolCallId);
+    this._claimedQuestions.set(session, claimed);
+  }
+
+  /** Fall back for a native question nobody will answer (default: nothing is held). */
+  protected releaseNativeQuestion(_session: PanelSessionState, _toolCallId: string): void { /* no native questions */ }
 
   /**
    * Glob-safety helper (Plan 01 R1). When spawning with shell:true on a POSIX
@@ -2576,21 +2595,20 @@ export abstract class BaseCliProvider implements ICliProvider {
    * Native flags and permission handlers remain the enforcement boundary.
    */
   private _addPromptPolicy(prompt: string, settings: Settings): string {
-    // A native-plan CLI (Claude Code) enforces every mode itself: plan and
-    // read-only via --permission-mode plan, edits via native approval
-    // requests. Restating policy in the prompt only makes the model
-    // deliberate over it (measured: ~5x the thinking for "hi" at max effort).
-    if (this.capabilities.planMode === 'native') { return prompt; }
+    // Only restate what the CLI cannot enforce itself (capabilities.nativeModes):
+    // duplicated policy makes the model deliberate over it — measured ~5x the
+    // thinking for "hi" on Claude at max effort.
+    const native = this.capabilities.nativeModes ?? {};
     const planning = settings.mode === 'quick-plan' || settings.mode === 'detailed-plan';
-    if (settings.mode === 'quick-plan') {
-      prompt += '\n\n[Planning Mode] Create ONE concise implementation plan. Focus on the most practical approach without exploring multiple alternatives. Be brief and actionable.';
-    } else if (settings.mode === 'detailed-plan') {
-      prompt = this.addModeInstructions(prompt, 'plan');
+    if (planning && !native.plan) {
+      prompt = settings.mode === 'quick-plan'
+        ? prompt + '\n\n[Planning Mode] Create ONE concise implementation plan. Focus on the most practical approach without exploring multiple alternatives. Be brief and actionable.'
+        : this.addModeInstructions(prompt, 'plan');
     }
     if (settings.accessLevel === 'read-only' || planning) {
-      return prompt + '\n\n[Read Only] You may inspect and explain the available context. Do not modify files or perform other state-changing actions. If an edit is requested, explain that the current mode blocks it. The user must change Mysti’s permission setting before a new request can apply edits; a chat approval does not change this mode.';
+      return native.readOnly ? prompt : prompt + '\n\n[Read Only] You may inspect and explain the available context. Do not modify files or perform other state-changing actions. If an edit is requested, explain that the current mode blocks it. The user must change Mysti’s permission setting before a new request can apply edits; a chat approval does not change this mode.';
     }
-    return settings.mode && settings.mode !== 'default' ? this.addModeInstructions(prompt, settings.mode) : prompt;
+    return settings.mode && settings.mode !== 'default' && !native.approvals ? this.addModeInstructions(prompt, settings.mode) : prompt;
   }
 
   protected addModeInstructions(prompt: string, mode: string): string {

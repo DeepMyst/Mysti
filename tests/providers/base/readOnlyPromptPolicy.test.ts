@@ -22,7 +22,8 @@ function settings(mode: Settings['mode'], accessLevel: Settings['accessLevel']):
 }
 
 describe.each(['sync', 'async'] as const)('%s prompt permission guidance', method => {
-  describe.each([['Copilot', CopilotPrompt]] as const)('%s', (_name, Provider) => {
+  // Hermes declares no natively enforced modes, so Mysti still states them in text.
+  describe.each([['Hermes', HermesPrompt]] as const)('%s', (_name, Provider) => {
     it.each(['default', 'ask-before-edit', 'edit-automatically'] as const)('Read Only overrides conflicting %s editing guidance', async mode => {
       const provider = new Provider(); providers.push(provider);
       const prompt = await provider[method](settings(mode, 'read-only'));
@@ -35,7 +36,7 @@ describe.each(['sync', 'async'] as const)('%s prompt permission guidance', metho
     });
   });
   it.each(['quick-plan', 'detailed-plan'] as const)('preserves %s planning guidance while making its write restriction explicit', async mode => {
-    const provider = new CopilotPrompt(); providers.push(provider);
+    const provider = new HermesPrompt(); providers.push(provider);
     const prompt = await provider[method](settings(mode, 'full-access'));
     expect(prompt).toContain(mode === 'quick-plan' ? 'ONE concise implementation plan' : 'Create a detailed plan');
     expect(prompt).toContain('Do not modify files');
@@ -47,7 +48,7 @@ describe.each(['sync', 'async'] as const)('%s prompt permission guidance', metho
     expect(prompt).not.toContain('Read Only');
   });
   it('retains explicitly automatic editing outside Read Only', async () => {
-    const provider = new CopilotPrompt(); providers.push(provider);
+    const provider = new HermesPrompt(); providers.push(provider);
     const prompt = await provider[method](settings('edit-automatically', 'full-access'));
     expect(prompt).toContain('You may edit files directly');
     expect(prompt).not.toContain('Read Only');
@@ -59,6 +60,18 @@ describe.each(['sync', 'async'] as const)('%s prompt permission guidance', metho
       const provider = new ClaudePrompt(); providers.push(provider);
       expect(await provider[method](settings(mode, access))).toBe('Review this file.');
     });
+  // Copilot blocks writes natively (--deny-tool shell/write) but has no plan mode
+  // on Mysti's transport: only the planning instruction remains.
+  it.each(['quick-plan', 'detailed-plan'] as const)('gives Copilot %s planning guidance without restating the native read-only block', async mode => {
+    const provider = new CopilotPrompt(); providers.push(provider);
+    const prompt = await provider[method](settings(mode, 'full-access'));
+    expect(prompt).toContain(mode === 'quick-plan' ? 'ONE concise implementation plan' : 'Create a detailed plan');
+    expect(prompt).not.toContain('Read Only');
+  });
+  it('sends Copilot full-access edits without restating its native auto-approval', async () => {
+    const provider = new CopilotPrompt(); providers.push(provider);
+    expect(await provider[method](settings('edit-automatically', 'full-access'))).toBe('Review this file.');
+  });
   it('keeps native slash-command payloads unchanged', async () => {
     const provider = new ClaudePrompt(); providers.push(provider);
     expect(await provider[method](settings('ask-before-edit', 'read-only'), '/compact')).toBe('/compact');

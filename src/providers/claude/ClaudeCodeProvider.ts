@@ -49,7 +49,7 @@ import { normalizeAskUserQuestions } from '../../utils/askUserQuestions';
 import { isRecord } from '../../utils/valueGuards';
 import { killProcessTree, isProcessLive } from '../../utils/processKill';
 import { PROCESS_KILL_GRACE_PERIOD_MS } from '../../constants';
-import { answerClaudeQuestion, expectClaudeQuestion, handleClaudeControl, initializeClaudeControl, isClaudeControlFailure, type ClaudeControlState, type ClaudeQuestionAnswers } from './ClaudeControlProtocol';
+import { answerClaudeQuestion, expectClaudeQuestion, releaseClaudeQuestion, handleClaudeControl, initializeClaudeControl, isClaudeControlFailure, type ClaudeControlState, type ClaudeQuestionAnswers } from './ClaudeControlProtocol';
 
 /**
  * Extended per-panel session state for Claude Code provider.
@@ -275,6 +275,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     effortDefault: 'high',
     supportsUltracode: true,
     planMode: 'native',            // sole emitter of exit_plan_mode
+    nativeModes: { plan: true, readOnly: true, approvals: true }, // --permission-mode plan + native can_use_tool approvals
     sessionKind: 'cli-resume',     // --resume with CLI-issued session IDs
     nativeInstructionFile: 'CLAUDE.md',  // loaded by the CLI itself; Mysti does not resend it
     emitsToolResults: true,
@@ -449,6 +450,10 @@ export class ClaudeCodeProvider extends BaseCliProvider {
   public answerNativeQuestion(panelId: string, toolUseId: string, answers: ClaudeQuestionAnswers | null): boolean {
     const session = this._panelSessions.get(panelId) as ClaudeSessionState | undefined;
     return answerClaudeQuestion(session?.control, toolUseId, answers);
+  }
+
+  protected override releaseNativeQuestion(session: PanelSessionState, toolUseId: string): void {
+    releaseClaudeQuestion((session as ClaudeSessionState).control, toolUseId);
   }
 
   /** True once the CLI has reported — the caller then trusts it over the catalog. */

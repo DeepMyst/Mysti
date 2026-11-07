@@ -14,9 +14,10 @@ export interface ClaudeControlState {
   initialized: boolean;
   pendingPrompt?: string;
   /** Native AskUserQuestion requests by tool_use_id: held for the card, or answered early. */
-  questions?: Map<string, { settle?: (answers: ClaudeQuestionAnswers | null) => void; early?: ClaudeQuestionAnswers | null }>;
+  questions?: Map<string, { settle?: (answers: ClaudeQuestionAnswers | null | 'handoff') => void; early?: ClaudeQuestionAnswers | null }>;
 }
 
+const QUESTION_HANDOFF = 'Mysti is presenting a pending question to the user. Their answer will arrive in a scoped follow-up message. End this turn and wait for that answer; do not infer an answer or describe this handoff as a refusal or cancellation.';
 const SKIPPED_QUESTION = 'The user skipped this question. Continue without this information or make a reasonable, stated assumption.';
 
 /** Claude Code expects answers keyed by the question text; multi-select joins with ", ". */
@@ -32,6 +33,13 @@ function nativeAnswers(questions: unknown[], answers: ClaudeQuestionAnswers): Re
 /** Expect a native answer for a question Claude just asked (its can_use_tool follows). */
 export function expectClaudeQuestion(state: ClaudeControlState | undefined, toolUseId: string): void {
   if (state?.initialized) { (state.questions ??= new Map()).set(toolUseId, {}); }
+}
+
+/** Nobody claimed the question: answer a held request with the follow-up handoff, or let it fall back. */
+export function releaseClaudeQuestion(state: ClaudeControlState | undefined, toolUseId: string): void {
+  const entry = state?.questions?.get(toolUseId);
+  state?.questions?.delete(toolUseId);
+  entry?.settle?.('handoff');
 }
 
 /** Deliver the user's answer (null = skipped). False when no native request owns this question. */
@@ -118,9 +126,11 @@ export function handleClaudeControl(
     const asked = name === 'AskUserQuestion' && Array.isArray(input.questions) ? input.questions : undefined;
     const entry = asked && toolUseId ? state?.questions?.get(toolUseId) : undefined;
     if (entry && requests) {
-      const settle = requests.hold<ClaudeQuestionAnswers | null>(data.request_id, (answers, target) => {
+      const settle = requests.hold<ClaudeQuestionAnswers | null | 'handoff'>(data.request_id, (answers, target) => {
         state!.questions!.delete(toolUseId);
-        if (answers === 'cancelled' || answers === null) {
+        if (answers === 'handoff') {
+          reply({ behavior: 'deny', message: QUESTION_HANDOFF }, target);
+        } else if (answers === 'cancelled' || answers === null) {
           reply({ behavior: 'deny', message: answers === null ? SKIPPED_QUESTION : 'The question was cancelled before the user answered.' }, target);
         } else {
           reply({ behavior: 'allow', updatedInput: { ...input, answers: nativeAnswers(asked!, answers) } }, target);
@@ -136,7 +146,7 @@ export function handleClaudeControl(
     // plan-mode change implicitly or leave a second generic permission card.
     if (name === 'AskUserQuestion' || name === 'ExitPlanMode') {
       reply({ behavior: 'deny', message: name === 'AskUserQuestion'
-        ? 'Mysti is presenting a pending question to the user. Their answer will arrive in a scoped follow-up message. End this turn and wait for that answer; do not infer an answer or describe this handoff as a refusal or cancellation.'
+        ? QUESTION_HANDOFF
         : 'Mysti is presenting a pending plan for user review. Their decision and any execution instructions will arrive in a scoped follow-up message. Keep the current permission mode, end this turn, and wait; do not execute the plan or describe this handoff as a rejection.' });
       return null;
     }

@@ -142,7 +142,7 @@ for (const name of Object.keys(classes) as Name[]) {
       const history = { id: 'history', messages: [{ id: 'prior', role: 'user', content: 'PRIOR_HISTORY', timestamp: Date.now() }] } as Conversation;
       const chunks = await drain(h.send(undefined, 'MANUAL_REQUEST', [manual], history));
       expect(spawn).toHaveBeenCalledOnce(); expect(h.wire()).toContain('MANUAL_REQUEST'); expect(h.wire()).toContain(MANUAL); expect(h.wire()).not.toContain(AUTO);
-      if (name === 'cursor') expect(h.wire()).not.toContain('PRIOR_HISTORY'); else expect(h.wire()).toContain('PRIOR_HISTORY');
+      expect(h.wire()).toContain('PRIOR_HISTORY');
       const args = vi.mocked(spawn).mock.calls[0][1] as string[];
       expect(args).not.toContain('--allow-all-tools'); expect(args).not.toContain('--yolo');
       expect(chunks.filter(c => c.type === 'done')).toHaveLength(1); expect(chunks.some(c => c.type === 'error')).toBe(false);

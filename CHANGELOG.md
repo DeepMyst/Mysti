@@ -8,6 +8,12 @@
 - Answer Claude's questions in the same turn. When Claude asks a question, Mysti now holds Claude Code's native request until you answer the card and passes your choices back, so Claude continues immediately instead of failing the question tool and starting a follow-up turn. A skipped question is declined explicitly.
 - Stop replaying a resumed session's own previous exchange as "conversation history". Messages from other agents are still replayed; anything ambiguous, such as two panels interleaving, keeps the previous conservative replay.
 - Use Claude Code's effort setting as Claude's only reasoning control. The thinking level no longer also sets a separate `MAX_THINKING_TOKENS` budget, and the selector is marked advisory for Claude.
+- Run every CLI agent the way its own CLI does. Each provider now declares which Mysti modes its CLI enforces itself (plan mode, read-only blocking, edit approvals), and Mysti only adds prompt instructions for what the CLI cannot enforce: Codex (read-only sandbox, native approvals, Plan mode), Copilot (tool denial), Cursor and Gemini (native plan mode; their Read Only reminder stays because their headless plan modes can be exited), and the full-access-only agents Qwen, OpenCode, Kimi, Cline and OpenClaw.
+- Use Codex's own Plan mode for Mysti's plan modes, and answer Codex's questions with the user's real choices in the same turn. Previously Codex received empty answers. Secret questions are never shown as plain cards.
+- Stop Kimi from silently answering its own questions with the first option. Kimi's questions now appear as cards (all questions, including multi-select) and the user's choice is sent back in the same turn; unanswerable or dismissed questions are declined, never auto-answered.
+- Show Copilot's and Cursor's reasoning, which both CLIs stream but Mysti ignored.
+- Give Cursor its conversation history. Every Cursor message used to start a fresh chat with no earlier context.
+- Never leave a turn waiting on a question nobody will answer. The chat claims the questions it shows; when another consumer, such as Brainstorm or a background run, moves past one, the provider falls back to its previous handling.
 - Show Claude's progress while it thinks. Current Claude models keep their reasoning private, so a long thinking phase (around 90 seconds for a short message at maximum effort in Plan mode) showed only the waiting dots. The chat now shows a live "Thinking… ~N tokens" estimate from Claude Code until the answer starts.
 
 ## [2.0.2] — 2026-11-07 · Beta 3 (pre-release)

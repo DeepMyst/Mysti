@@ -166,7 +166,7 @@ describe('buildProviderManifest', () => {
     expect(copilot.sessionKind).toBe('prompt-history');
 
     const cursor = byId.get('cursor')!.capabilities;
-    expect(cursor.sessionKind).toBe('none');
+    expect(cursor.sessionKind).toBe('prompt-history');
 
     const openclaw = byId.get('openclaw')!.capabilities;
     expect(openclaw.emitsUsage).toBe(true);

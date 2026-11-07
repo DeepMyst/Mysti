@@ -145,6 +145,7 @@ export class GeminiProvider extends BaseCliProvider {
     thinkingStyle: 'none',
     thinkingLevelEffective: false,
     planMode: 'detected',
+    nativeModes: { plan: true, approvals: true }, // --approval-mode plan plans natively; Read Only text kept: headless exit_plan_mode → YOLO
     sessionKind: 'cli-resume',
     nativeInstructionFile: 'GEMINI.md',  // loaded by the CLI itself; Mysti does not resend it
     emitsToolResults: true,
