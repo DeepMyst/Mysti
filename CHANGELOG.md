@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- Let Claude Code run the way it does on its own. Mysti no longer appends its Plan/Read-only/edit-mode instructions to Claude prompts, because Claude Code already enforces those modes itself. Restating them made Claude reason about the instructions; at maximum effort a plain "hi" used about five times the thinking.
+- Answer Claude's questions in the same turn. When Claude asks a question, Mysti now holds Claude Code's native request until you answer the card and passes your choices back, so Claude continues immediately instead of failing the question tool and starting a follow-up turn. A skipped question is declined explicitly.
+- Stop replaying a resumed session's own previous exchange as "conversation history". Messages from other agents are still replayed; anything ambiguous, such as two panels interleaving, keeps the previous conservative replay.
+- Use Claude Code's effort setting as Claude's only reasoning control. The thinking level no longer also sets a separate `MAX_THINKING_TOKENS` budget, and the selector is marked advisory for Claude.
 - Show Claude's progress while it thinks. Current Claude models keep their reasoning private, so a long thinking phase (around 90 seconds for a short message at maximum effort in Plan mode) showed only the waiting dots. The chat now shows a live "Thinking… ~N tokens" estimate from Claude Code until the answer starts.
 
 ## [2.0.2] — 2026-11-07 · Beta 3 (pre-release)

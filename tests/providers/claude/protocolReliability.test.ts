@@ -174,7 +174,60 @@ describe('Claude persistent protocol reliability', () => {
     }
   });
 
-  it.each(['AskUserQuestion', 'ExitPlanMode'])('describes %s as a pending Mysti handoff instead of a user refusal', async name => {
+  const QUESTION = { question: 'Floor or round?', header: 'Rounding', options: [{ label: 'Floor' }, { label: 'Round' }] };
+  const askNatively = async (h: ReturnType<typeof harness>, answerEarly?: Record<string, string> | null) => {
+    const turn = await h.start('Ask me how to round');
+    turn.child.emit(...questionFrames({ questions: [QUESTION] }));
+    await vi.waitFor(() => expect(turn.chunks.some(chunk => chunk.type === 'ask_user_question')).toBe(true), { interval: 1 });
+    if (answerEarly !== undefined) { expect(h.provider.answerNativeQuestion('panel', 'question-tool', answerEarly)).toBe(true); }
+    turn.child.emit({ type: 'control_request', request_id: 'native-question', request: {
+      subtype: 'can_use_tool', tool_name: 'AskUserQuestion', tool_use_id: 'question-tool', input: { questions: [QUESTION] } } });
+    const responses = () => turn.child.frames.filter(frame => frame.type === 'control_response' && frame.response?.request_id === 'native-question');
+    return { turn, responses };
+  };
+
+  // Claude Code's SDK contract: the host answers AskUserQuestion in its
+  // permission reply and Claude continues the SAME turn with the answers.
+  it('holds a native question for the user and answers it in the same turn', async () => {
+    const h = harness(); const approval = vi.fn(async () => true);
+    h.provider.setNativeApprovalHost({ handlerForPanel: () => approval });
+    const { turn, responses } = await askNatively(h);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(responses()).toEqual([]); expect(turn.settled()).toBe(false);
+    expect(h.provider.answerNativeQuestion('panel', 'question-tool', { Rounding: 'Round' })).toBe(true);
+    await vi.waitFor(() => expect(responses()).toHaveLength(1), { interval: 1 });
+    expect(responses()[0].response.response).toEqual({ behavior: 'allow', updatedInput: { questions: [QUESTION], answers: { 'Floor or round?': 'Round' } } });
+    turn.child.emit(text('Rounding to nearest.'), result()); await turn.completion;
+    expect(turn.chunks).toContainEqual({ type: 'text', content: 'Rounding to nearest.' });
+    expect(turn.child.frames.filter(frame => frame.type === 'user')).toHaveLength(1);
+    expect(approval).not.toHaveBeenCalled();
+  });
+
+  it('delivers an answer given before Claude asks permission (autonomous auto-answer)', async () => {
+    const h = harness();
+    const { turn, responses } = await askNatively(h, { Rounding: ['Floor', 'Round'] } as any);
+    await vi.waitFor(() => expect(responses()).toHaveLength(1), { interval: 1 });
+    expect(responses()[0].response.response.updatedInput.answers).toEqual({ 'Floor or round?': 'Floor, Round' });
+    turn.child.emit(result()); await turn.completion;
+  });
+
+  it('declines a skipped native question without inventing an answer', async () => {
+    const h = harness();
+    const { turn, responses } = await askNatively(h);
+    expect(h.provider.answerNativeQuestion('panel', 'question-tool', null)).toBe(true);
+    await vi.waitFor(() => expect(responses()).toHaveLength(1), { interval: 1 });
+    expect(responses()[0].response.response).toEqual({ behavior: 'deny', message: expect.stringMatching(/skipped/i) });
+    turn.child.emit(result()); await turn.completion;
+  });
+
+  it('does not claim an unknown question, so the host can fall back to a follow-up', async () => {
+    const h = harness(); const turn = await h.start('No question here');
+    expect(h.provider.answerNativeQuestion('panel', 'never-asked', { Rounding: 'Round' })).toBe(false);
+    turn.child.emit(result()); await turn.completion;
+    expect(h.provider.answerNativeQuestion('panel', 'never-asked', { Rounding: 'Round' })).toBe(false);
+  });
+
+  it.each(['ExitPlanMode'])('describes %s as a pending Mysti handoff instead of a user refusal', async name => {
     const h = harness(); const approval = vi.fn(async () => true);
     h.provider.setNativeApprovalHost({ handlerForPanel: () => approval });
     const turn = await h.start('Wait for the user to answer or review before proceeding');

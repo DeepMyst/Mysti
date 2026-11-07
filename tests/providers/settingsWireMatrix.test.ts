@@ -25,7 +25,8 @@ describe('PC-04 complete declared effort/thinking wire matrix', () => {
         const args = provider.buildPersistentCliArgs(settings, (provider as any)._getSession('panel'))!;
         expect(args[args.indexOf('--effort') + 1]).toBe(level);
         expect(JSON.parse(fs.readFileSync(args[args.indexOf('--settings') + 1], 'utf8'))).toEqual({ ultracode });
-        expect((provider as any).getThinkingTokens(settings.thinkingLevel)).toBe(16000);
+        // Effort is Claude Code's only reasoning control; the thinking level adds no budget.
+        expect((provider as any).getThinkingTokens(settings.thinkingLevel)).toBeUndefined();
       }
     });
 

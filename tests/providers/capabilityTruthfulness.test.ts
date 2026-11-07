@@ -26,7 +26,8 @@ describe('PC-12 real adapter capability truthfulness', () => {
     for (const entry of cli) {
       expect(entry.capabilities.supportsStreaming).toBe(true);
       expect(entry.capabilities.supportsSteering).not.toBe(true);
-      expect(entry.capabilities.thinkingLevelEffective).toBe(entry.id === 'claude-code');
+      // Every adapter governs reasoning natively (effort/model); none enforces a Mysti token budget.
+      expect(entry.capabilities.thinkingLevelEffective).toBe(false);
       if (!entry.capabilities.emitsUsage) expect(entry.capabilities.usageConvention).toBe('none');
     }
     setMockConfig('opencodeEndpoint', 'http://127.0.0.1:43123');

@@ -64,6 +64,8 @@ interface NativeHistoryReceipt {
   sessionId: string;
   conversationId: string;
   messages: Map<string, string>;
+  /** Message IDs present when the last completed turn was sent (its own question excluded). */
+  after: ReadonlySet<string>;
 }
 
 function nativeMessageFingerprint(message: Conversation['messages'][number]): string {
@@ -1069,9 +1071,11 @@ export abstract class BaseCliProvider implements ICliProvider {
    * A native session owns only the messages successfully submitted to THAT
    * session, not every peer turn in the Mysti conversation. Provider labels
    * cannot prove ownership: another panel can use the same provider and chat.
-   * Unknown IDs are replayed as context. This conservatively repeats the most
-   * recent own pair once (persisted by the host after completion), instead of
-   * guessing which assistant response belongs to this native session.
+   * Unknown IDs are replayed as context. The session's own completed exchange
+   * (persisted by the host after completion) is recognised only in its exact
+   * shape: the first message added since that turn's snapshot is a user
+   * message and the very next one is this provider's answer. Anything
+   * interleaved (another panel, a peer) keeps the conservative replay.
    */
   protected _conversationForPrompt(
     session: PanelSessionState,
@@ -1081,6 +1085,13 @@ export abstract class BaseCliProvider implements ICliProvider {
     const receipt = this._nativeHistory.get(session);
     const known = receipt?.sessionId === session.sessionId && receipt.conversationId === conversation.id
       ? receipt.messages : undefined;
+    if (known) {
+      const start = conversation.messages.findIndex(message => !receipt!.after.has(message.id));
+      const [question, answer] = start < 0 ? [] : conversation.messages.slice(start, start + 2);
+      if (question?.role === 'user' && answer?.role === 'assistant' && answer.provider === this.id) {
+        for (const own of [question, answer]) { known.set(own.id, nativeMessageFingerprint(own)); }
+      }
+    }
     const messages = conversation.messages.filter(message => known?.get(message.id) !== nativeMessageFingerprint(message));
     if (!messages.length) { return null; }
     const delta = { ...conversation, messages };
@@ -1108,7 +1119,7 @@ export abstract class BaseCliProvider implements ICliProvider {
     const known = previous?.sessionId === session.sessionId && previous.conversationId === candidate.conversationId
       ? [...previous.messages].filter(([id]) => currentIds.has(id)) : [];
     this._nativeHistory.set(session, { sessionId: session.sessionId, conversationId: candidate.conversationId,
-      messages: new Map([...known, ...candidate.messages]) });
+      messages: new Map([...known, ...candidate.messages]), after: currentIds });
   }
 
   /**
@@ -2565,6 +2576,11 @@ export abstract class BaseCliProvider implements ICliProvider {
    * Native flags and permission handlers remain the enforcement boundary.
    */
   private _addPromptPolicy(prompt: string, settings: Settings): string {
+    // A native-plan CLI (Claude Code) enforces every mode itself: plan and
+    // read-only via --permission-mode plan, edits via native approval
+    // requests. Restating policy in the prompt only makes the model
+    // deliberate over it (measured: ~5x the thinking for "hi" at max effort).
+    if (this.capabilities.planMode === 'native') { return prompt; }
     const planning = settings.mode === 'quick-plan' || settings.mode === 'detailed-plan';
     if (settings.mode === 'quick-plan') {
       prompt += '\n\n[Planning Mode] Create ONE concise implementation plan. Focus on the most practical approach without exploring multiple alternatives. Be brief and actionable.';

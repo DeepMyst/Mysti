@@ -620,6 +620,13 @@ export interface ICliProvider {
    */
   hasReportedNativeCommands?(panelId?: string): boolean;
 
+  /**
+   * Answer a native question the panel's running turn is holding (null =
+   * skipped), so the agent continues the same turn. False when no native
+   * request owns it and the host should continue in a follow-up turn.
+   */
+  answerNativeQuestion?(panelId: string, toolCallId: string, answers: Record<string, string | string[]> | null): boolean;
+
   // Persistent process management
   preSpawnPersistentProcess?(panelId: string, settings: Settings): Promise<void>;
   disposePersistentProcess?(panelId?: string): void;

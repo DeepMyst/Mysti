@@ -83,6 +83,29 @@ export class NativeApprovalRequests {
     } catch { finish('deny'); }
   }
 
+  /**
+   * Park a native request whose answer comes from elsewhere (a question card)
+   * rather than the approval handler. Like an approval it pauses the
+   * inactivity clock and is cancelled with its turn or process. Returns the
+   * settle function, or undefined when the request cannot be held.
+   */
+  hold<T>(nativeRequestId: string | number, respond: (value: T | 'cancelled', process: ChildProcess) => void): ((value: T) => void) | undefined {
+    const key = `${typeof nativeRequestId}:${nativeRequestId}`;
+    if (this._disposed || this._owner.signal.aborted || !this._owner.isCurrent() || this._pending.has(key)) { return undefined; }
+    let settled = false;
+    const finish = (value: T | 'cancelled') => {
+      if (settled) { return; }
+      settled = true;
+      this._pending.delete(key);
+      this._notify();
+      if (value !== 'cancelled' && !this._owner.isCurrent()) { value = 'cancelled'; }
+      try { respond(value, this._owner.process); } catch { /* process closed while writing */ }
+    };
+    this._pending.set(key, () => finish('cancelled'));
+    this._notify();
+    return finish;
+  }
+
   dispose(): void {
     if (this._disposed) { return; }
     this._disposed = true;

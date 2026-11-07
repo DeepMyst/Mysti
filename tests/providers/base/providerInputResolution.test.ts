@@ -138,7 +138,8 @@ describe('trusted request input at the base CLI delivery boundary', () => {
     expect(withoutFrameMarker(render('QUESTION', [manual]))).toBe(withoutFrameMarker(legacy));
     expect(legacy.match(/\/owned\/example.txt/g)).toHaveLength(1);
     expect(legacy).toContain('MANUAL_BYTES'); expect(legacy).not.toContain('CLI_SYSTEM_ALREADY_SENT');
-    expect(legacy).toContain('[Planning Mode]');
+    // Claude enforces plan mode natively; Mysti adds no mode text to its prompt.
+    expect(legacy).not.toContain('[Planning Mode]');
   });
 
   it('preserves no-resolver slash commands and their Claude attachment references without loading agent instructions', async () => {

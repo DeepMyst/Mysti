@@ -131,7 +131,7 @@ describe('buildProviderManifest', () => {
   it('matches the verified capability matrix (spot checks)', () => {
     const claude = byId.get('claude-code')!.capabilities;
     expect(claude.thinkingStyle).toBe('streamed');
-    expect(claude.thinkingLevelEffective).toBe(true);
+    expect(claude.thinkingLevelEffective).toBe(false); // --effort is Claude Code's reasoning control
     expect(claude.planMode).toBe('native');
     expect(claude.sessionKind).toBe('cli-resume');
 

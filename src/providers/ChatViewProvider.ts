@@ -3736,7 +3736,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       answers: skipped
         ? { '0': 'User declined to answer this question. Please continue without this information or make a reasonable assumption.' }
         : answers as Record<string, string | string[]>,
-    }, panelId, question);
+    }, panelId, question, skipped);
   }
 
   private _showPendingQuestion(panelId: string, question: AskUserQuestionData): void {
@@ -3774,7 +3774,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async _handleAskUserQuestionResponse(
     payload: { toolCallId: string; answers: Record<string, string | string[]> },
     panelId: string,
-    originalQuestion?: AskUserQuestionData
+    originalQuestion?: AskUserQuestionData,
+    skipped = false,
   ): Promise<void> {
     // Autonomous answers also supersede any earlier pending question.
     this._clearPendingQuestion(panelId);
@@ -3797,6 +3798,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
       });
     }
+
+    // A native question is still held by the running turn: answer it there so
+    // the agent continues the same turn (Claude Code's own question flow).
+    const native = originalQuestion?.source !== 'detected'
+      && this._providerManager?.getProviderInstance(this._getPanelProvider(panelId))
+        ?.answerNativeQuestion?.(panelId, payload.toolCallId, skipped ? null : payload.answers);
+    if (native) { return; }
 
     // Format answers into a readable message for Claude
     const parts = ['Here are my answers:\n'];

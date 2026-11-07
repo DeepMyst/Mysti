@@ -6,10 +6,40 @@ import { toolKind } from '../../utils/toolNames';
 import { nativeToolDecision } from '../base/NativeApprovalPolicy';
 import type { NativeApprovalRequests } from '../base/NativeApprovalRequests';
 
+/** Answers keyed as the question card keys them: header (or Q1…), question text or index. */
+export type ClaudeQuestionAnswers = Record<string, string | string[]>;
+
 export interface ClaudeControlState {
   settings: Pick<Settings, 'mode' | 'accessLevel'>;
   initialized: boolean;
   pendingPrompt?: string;
+  /** Native AskUserQuestion requests by tool_use_id: held for the card, or answered early. */
+  questions?: Map<string, { settle?: (answers: ClaudeQuestionAnswers | null) => void; early?: ClaudeQuestionAnswers | null }>;
+}
+
+const SKIPPED_QUESTION = 'The user skipped this question. Continue without this information or make a reasonable, stated assumption.';
+
+/** Claude Code expects answers keyed by the question text; multi-select joins with ", ". */
+function nativeAnswers(questions: unknown[], answers: ClaudeQuestionAnswers): Record<string, string> {
+  return Object.fromEntries(questions.flatMap((item, index) => {
+    const question = isRecord(item) && typeof item.question === 'string' ? item.question : undefined;
+    const header = isRecord(item) && typeof item.header === 'string' && item.header ? item.header : `Q${index + 1}`;
+    const value = question === undefined ? undefined : answers[header] ?? answers[question] ?? answers[String(index)];
+    return value === undefined ? [] : [[question!, Array.isArray(value) ? value.join(', ') : value]];
+  }));
+}
+
+/** Expect a native answer for a question Claude just asked (its can_use_tool follows). */
+export function expectClaudeQuestion(state: ClaudeControlState | undefined, toolUseId: string): void {
+  if (state?.initialized) { (state.questions ??= new Map()).set(toolUseId, {}); }
+}
+
+/** Deliver the user's answer (null = skipped). False when no native request owns this question. */
+export function answerClaudeQuestion(state: ClaudeControlState | undefined, toolUseId: string, answers: ClaudeQuestionAnswers | null): boolean {
+  const entry = state?.questions?.get(toolUseId);
+  if (!entry) { return false; }
+  if (entry.settle) { entry.settle(answers); } else { entry.early = answers; }
+  return true;
 }
 
 const INITIALIZE_ID = 'mysti-initialize';
@@ -81,9 +111,29 @@ export function handleClaudeControl(
     const respond = (allowed: boolean, target = proc) => reply(allowed
       ? { behavior: 'allow', updatedInput: input }
       : { behavior: 'deny', message: 'Mysti denied or cancelled this operation.' }, target);
-    // Mysti renders these native tools as question/plan cards from the stream.
-    // Their answers start a scoped follow-up turn; never leave a second generic
-    // permission card pending or authorize a plan-mode change implicitly.
+    // Claude Code's SDK contract for questions: hold this request while the
+    // user answers the card, then allow with updatedInput.answers so Claude
+    // continues the SAME turn. The inactivity clock pauses while it is held.
+    const toolUseId = typeof request.tool_use_id === 'string' ? request.tool_use_id : '';
+    const asked = name === 'AskUserQuestion' && Array.isArray(input.questions) ? input.questions : undefined;
+    const entry = asked && toolUseId ? state?.questions?.get(toolUseId) : undefined;
+    if (entry && requests) {
+      const settle = requests.hold<ClaudeQuestionAnswers | null>(data.request_id, (answers, target) => {
+        state!.questions!.delete(toolUseId);
+        if (answers === 'cancelled' || answers === null) {
+          reply({ behavior: 'deny', message: answers === null ? SKIPPED_QUESTION : 'The question was cancelled before the user answered.' }, target);
+        } else {
+          reply({ behavior: 'allow', updatedInput: { ...input, answers: nativeAnswers(asked!, answers) } }, target);
+        }
+      });
+      if (settle) {
+        if ('early' in entry) { settle(entry.early ?? null); } else { entry.settle = settle; }
+        return null;
+      }
+    }
+    // Fallback (no card owner): render the card from the stream and continue
+    // in a scoped follow-up turn. Plans keep this handoff: never authorize a
+    // plan-mode change implicitly or leave a second generic permission card.
     if (name === 'AskUserQuestion' || name === 'ExitPlanMode') {
       reply({ behavior: 'deny', message: name === 'AskUserQuestion'
         ? 'Mysti is presenting a pending question to the user. Their answer will arrive in a scoped follow-up message. End this turn and wait for that answer; do not infer an answer or describe this handoff as a refusal or cancellation.'
