@@ -6,6 +6,25 @@
   <a href="#documentation">Documentation</a>
 </p>
 
+<table>
+<tr>
+<td width="50%">
+
+https://github.com/user-attachments/assets/114f70b4-d52a-4d9b-9b42-c18acdc974e4
+
+</td>
+<td width="50%">
+
+https://github.com/user-attachments/assets/b1a6b569-2be6-4ba9-8e37-e3dcdf9de626
+
+</td>
+</tr>
+<tr>
+<td align="center"><b>Blind spots</b> · 59 s<br><sub>What two agents see that one misses</sub></td>
+<td align="center"><b>Unanimous</b> · 44 s<br><sub>Ask once, let them argue it out</sub></td>
+</tr>
+</table>
+
 ![Mysti — your agents, working together inside VS Code](docs/releases/2.0.1-beta.2/media/hero.png)
 
 # Mysti
