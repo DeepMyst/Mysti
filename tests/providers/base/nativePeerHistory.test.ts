@@ -92,9 +92,8 @@ describe('native resumed conversations receive intervening peer history', () => 
     expect(h.children.at(-1)!.args).toContain('--resume');
     expect(h.children.at(-1)!.sessionId).toBe(h.children[0].sessionId);
     expect(resumed.prompt).toContain('Peer answer CODEX_ONLY'); expect(resumed.prompt).toContain('Peer answer COPILOT_ONLY');
-    // The host persists this pair after native completion. Until explicitly
-    // received in a later prompt, conservative one-time replay is intentional.
-    expect(resumed.prompt).toContain('OWN_FIRST_ANSWER');
+    // The resumed native session already holds its own completed exchange.
+    expect(resumed.prompt).not.toContain('OWN_FIRST_ANSWER'); expect(resumed.prompt).not.toContain('OWN_FIRST_QUESTION');
     expect(resumed.prompt.match(/CLAUDE_RETURN/g)).toHaveLength(1);
     append(history, 'CLAUDE_RETURN', 'user'); append(history, 'OWN_RETURN_ANSWER', 'assistant', 'claude-code');
     const consecutive = await h.send(history, 'CONSECUTIVE_OWN_TURN');
@@ -105,9 +104,9 @@ describe('native resumed conversations receive intervening peer history', () => 
     expect(secondReturn.prompt).toContain('SECOND_PEER_ONLY'); expect(secondReturn.prompt).not.toContain('COPILOT_ONLY');
   });
 
-  it('suppresses acknowledged history while conservatively replaying the latest unacknowledged own pair', async () => {
+  it('does not replay the session\'s own completed exchange to the session that produced it', async () => {
     const h = harness(), history = await h.establish();
-    expect((await h.send(history, 'FOLLOWUP_ONLY')).prompt).toContain('OWN_FIRST_ANSWER');
+    expect((await h.send(history, 'FOLLOWUP_ONLY')).prompt).toBe(await h.withoutHistory('FOLLOWUP_ONLY'));
     expect((await h.send(history, 'NO_NEW_HISTORY')).prompt).toBe(await h.withoutHistory('NO_NEW_HISTORY'));
   });
 
@@ -125,7 +124,7 @@ describe('native resumed conversations receive intervening peer history', () => 
     h.provider.cancelCurrentRequest(history.id); await stopped;
     append(history, 'CANCELLED_REQUIREMENT', 'user'); peer(history, 'PEER_AFTER_STOP');
     const recovered = await h.send(history, 'NEW_RECOVERY_REQUEST');
-    expect(recovered.prompt).toContain('OWN_FIRST_ANSWER');
+    expect(recovered.prompt).not.toContain('OWN_FIRST_ANSWER');
     expect(recovered.prompt).toContain('User: CANCELLED_REQUIREMENT'); expect(recovered.prompt).toContain('Peer answer PEER_AFTER_STOP');
     expect(recovered.prompt.endsWith(await h.withoutHistory('NEW_RECOVERY_REQUEST'))).toBe(true);
   });
@@ -137,7 +136,7 @@ describe('native resumed conversations receive intervening peer history', () => 
     if (outcome === 'partial-error') expect(failed.chunks).toContainEqual({ type: 'text', content: 'Controlled Claude answer' });
     append(history, 'FAILED_REQUIREMENT', 'user'); peer(history, 'PEER_AFTER_FAILURE');
     const recovered = await h.send(history, 'RETRY_REVIEW');
-    expect(recovered.prompt).toContain('User: FAILED_REQUIREMENT'); expect(recovered.prompt).toContain('OWN_FIRST_ANSWER');
+    expect(recovered.prompt).toContain('User: FAILED_REQUIREMENT'); expect(recovered.prompt).not.toContain('OWN_FIRST_ANSWER');
   });
 
   it('conservatively preserves peers when a native session exists without an own assistant yet', async () => {
@@ -213,5 +212,14 @@ describe('native resumed conversations receive intervening peer history', () => 
     const fresh = await h.send(history, 'Fresh review');
     expect(h.children.at(-1)!.args).not.toContain('--resume');
     expect(fresh.prompt).toContain('OWN_FIRST_ANSWER'); expect(fresh.prompt).toContain('AFTER_RESET_PEER');
+  });
+
+  it('replays an own-looking pair when another message interleaves it (concurrent panels)', async () => {
+    const h = harness(), history = conversation();
+    await h.send(history, 'PANEL_A_QUESTION');
+    append(history, 'PANEL_A_QUESTION', 'user'); append(history, 'PANEL_B_QUESTION', 'user');
+    append(history, 'PANEL_B_ANSWER', 'assistant', 'claude-code'); append(history, 'PANEL_A_ANSWER', 'assistant', 'claude-code');
+    const next = await h.send(history, 'PANEL_A_NEXT');
+    expect(next.prompt).toContain('PANEL_B_ANSWER'); expect(next.prompt).toContain('PANEL_A_ANSWER');
   });
 });

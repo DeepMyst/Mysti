@@ -46,13 +46,11 @@ const TABLE: Array<[ProviderType, boolean, boolean, boolean]> = [
   ['cline', false, false, false],
   ['continue', false, false, false],
   ['github-copilot', false, false, false],
+  ['cursor', false, false, false],
   // Mysti sends the whole history over HTTP, so Mysti compacts it.
   ['ollama', false, true, true],
   ['localai', false, true, true],
   ['openrouter', false, true, true],
-  // sessionKind 'none' but its prompts carry no history (sendsNoHistory):
-  // nothing to compact, and summarizing through cursor-agent ran ungated tools.
-  ['cursor', false, false, false],
 ];
 
 describe('compaction ownership per provider', () => {
@@ -63,8 +61,9 @@ describe('compaction ownership per provider', () => {
     expect(cm.mystiSendsFullHistory(id, pm)).toBe(full);
   });
 
-  it('Cursor keeps no history; the HTTP backends are not mistaken for it', () => {
-    expect(cm.keepsNoHistory('cursor', pm)).toBe(true);
+  it('no registered backend is mistaken for one that keeps no history', () => {
+    // Cursor replays recent messages (prompt-history) since it gained continuity.
+    expect(cm.keepsNoHistory('cursor', pm)).toBe(false);
     expect(cm.keepsNoHistory('ollama', pm)).toBe(false);
     expect(cm.keepsNoHistory('claude-code', pm)).toBe(false);
   });

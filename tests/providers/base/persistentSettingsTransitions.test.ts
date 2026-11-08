@@ -84,12 +84,12 @@ describe('PC-04 settings transitions follow effective runtime controls', () => {
     expect(h.children).toHaveLength(1);
   });
 
-  it('Claude applies all supported thinking token budgets, including clearing the prior setting', async () => {
+  it('Claude leaves reasoning to --effort: thinking levels add no budget and do not respawn the process', async () => {
     const h = harness(new TestableClaudeProvider());
-    for (const [thinkingLevel, tokens] of [['none', undefined], ['low', '4000'], ['medium', '8000'], ['high', '16000'], ['none', undefined]] as const) {
-      await h.send({ thinkingLevel }); expect(h.children.at(-1).thinkingTokens).toBe(tokens);
+    for (const thinkingLevel of ['none', 'low', 'medium', 'high', 'none'] as const) {
+      await h.send({ thinkingLevel }); expect(h.children.at(-1).thinkingTokens).toBeUndefined();
     }
-    expect(h.children).toHaveLength(5);
+    expect(h.children).toHaveLength(1);
   });
 
   it('Codex changes the selected profile on the next turn and preserves native thread continuation', async () => {

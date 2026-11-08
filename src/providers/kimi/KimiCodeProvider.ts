@@ -55,8 +55,12 @@ import type {
   ProviderConfig,
   AuthStatus,
   InstallMethod,
-  AccessLevel
+  AccessLevel,
+  AskUserQuestionItem
 } from '../../types';
+import type { ChildProcess } from 'child_process';
+import { normalizeAskUserQuestions } from '../../utils/askUserQuestions';
+import { isRecord } from '../../utils/valueGuards';
 import { normalizeToolName, toolKind } from '../../utils/toolNames';
 import { isProcessLive, killProcessTree } from '../../utils/processKill';
 import { validateModelName } from '../../utils/validation';
@@ -122,6 +126,24 @@ export interface KimiCodeSessionState extends PanelSessionState {
   reportedContextWindow?: number;
   activeToolCalls: Map<string, { id: string; name: string; input: Record<string, unknown> }>;
   lastUsageStats: { input_tokens: number; output_tokens: number } | null;
+  /** AskUserQuestion requests held for Mysti's card, by the card's toolCallId. */
+  questions?: Map<string, (answers: QuestionAnswers | null) => void>;
+}
+
+/** Card answers keyed by header (Q1… when empty); option labels, string[] for multi-select. */
+type QuestionAnswers = Record<string, string | string[]>;
+
+/** A native question Mysti can show, and how to encode the user's reply for Kimi. */
+interface NativeQuestion {
+  toolCallId: unknown;
+  questions: unknown[];
+  reply(answers: QuestionAnswers | null | 'cancelled', questions: AskUserQuestionItem[]): Record<string, unknown>;
+}
+
+/** The labels chosen for one question; autonomous answers may key by the bare header. */
+function chosenLabels(answers: QuestionAnswers, question: AskUserQuestionItem, index: number): string[] {
+  const value = answers[question.header || `Q${index + 1}`] ?? answers[question.header] ?? answers[question.question];
+  return value === undefined ? [] : [value].flat();
 }
 
 
@@ -189,6 +211,7 @@ export class KimiCodeProvider extends BaseCliProvider {
     thinkingStyle: 'streamed',
     thinkingLevelEffective: false, // reasoning is governed by the Kimi model, not a Mysti level
     planMode: 'none',
+    nativeModes: { approvals: true }, // only full access runs; other tiers are refused
     // Continuity lives in the ACP session held by the persistent process;
     // session.sessionId mirrors it so history is only re-sent after a respawn.
     sessionKind: 'cli-resume',
@@ -475,7 +498,10 @@ export class KimiCodeProvider extends BaseCliProvider {
         protocolVersion: ACP_PROTOCOL_VERSION,
         clientCapabilities: {
           fs: { readTextFile: false, writeTextFile: false },
-          terminal: false
+          terminal: false,
+          // Kimi then asks AskUserQuestion through `elicitation/create` with
+          // every question; without it, request_permission carries only the first.
+          elicitation: { form: {} }
         }
       }
     }) + '\n';
@@ -494,8 +520,7 @@ export class KimiCodeProvider extends BaseCliProvider {
     }) + '\n';
   }
 
-  private _writeToAcp(kimi: KimiCodeSessionState, message: Record<string, unknown>): void {
-    const proc = kimi.persistentProcess;
+  private _writeToAcp(kimi: KimiCodeSessionState, message: Record<string, unknown>, proc: ChildProcess | null = kimi.persistentProcess): void {
     if (proc?.stdin?.writable) {
       proc.stdin.write(JSON.stringify(message) + '\n');
     }
@@ -630,8 +655,20 @@ export class KimiCodeProvider extends BaseCliProvider {
 
     // --- Server→client requests (they carry method AND id) ---
     if (typeof data.method === 'string' && data.id !== undefined && data.id !== null) {
+      const id = data.id as number | string;
+      const params = isRecord(data.params) ? data.params : undefined;
+      if (data.method === 'elicitation/create') {
+        // Unshowable forms get an error: Kimi then retries the same question
+        // through request_permission, which the branch below also holds.
+        return this._holdQuestion(kimi, id, params, this._elicitationQuestion(params),
+          { error: { code: -32602, message: 'Mysti cannot present this form' } });
+      }
+      const question = data.method === 'session/request_permission' ? this._permissionQuestion(params) : undefined;
+      if (question) {
+        return this._holdQuestion(kimi, id, params, question, { result: question.reply('cancelled', []) });
+      }
       if (data.method === 'session/request_permission') {
-        this._respondToPermissionRequest(data.id as number | string, data.params as Record<string, unknown> | undefined, kimi);
+        this._respondToPermissionRequest(id, params, kimi);
       } else {
         // We advertised no fs/terminal capabilities; unblock anything unexpected
         this._writeToAcp(kimi, {
@@ -841,6 +878,108 @@ export class KimiCodeProvider extends BaseCliProvider {
       trackedTools: kimi.activeToolCalls,
       requests: this._nativeApprovalRequests(kimi),
     });
+  }
+
+  /**
+   * Hold Kimi's AskUserQuestion for Mysti's card; the user's answer settles
+   * it so Kimi continues the same turn. A question is never auto-answered:
+   * one that cannot be shown or held gets `unusable`, and the turn or process
+   * ending cancels it.
+   */
+  private _holdQuestion(
+    kimi: KimiCodeSessionState, id: number | string, params: Record<string, unknown> | undefined,
+    ask: NativeQuestion | undefined, unusable: Record<string, unknown>,
+  ): StreamChunk | null {
+    const questions = ask && normalizeAskUserQuestions(ask.questions);
+    const toolCallId = typeof ask?.toolCallId === 'string' && ask.toolCallId.trim() ? ask.toolCallId : `kimi-question-${id}`;
+    const held = (kimi.questions ??= new Map());
+    const settle = ask && questions && params?.sessionId === kimi.acpSessionId && !held.has(toolCallId)
+      ? this._nativeApprovalRequests(kimi)?.hold<QuestionAnswers | null>(id, (answers, target) => {
+        held.delete(toolCallId);
+        this._writeToAcp(kimi, { jsonrpc: '2.0', id, result: ask.reply(answers, questions) }, target);
+      })
+      : undefined;
+    if (!settle || !questions) {
+      this._writeToAcp(kimi, { jsonrpc: '2.0', id, ...unusable });
+      return null;
+    }
+    held.set(toolCallId, settle);
+    return { type: 'ask_user_question', askUserQuestion: { toolCallId, questions } };
+  }
+
+  /**
+   * Kimi's form for AskUserQuestion: one field per question (q0, q1…),
+   * single-select `oneOf`, multi-select an array of `anyOf`. Each title is
+   * the header, or the question text when it has none; the message joins
+   * the question texts with newlines.
+   */
+  private _elicitationQuestion(params: Record<string, unknown> | undefined): NativeQuestion | undefined {
+    const schema = isRecord(params?.requestedSchema) ? params.requestedSchema : undefined;
+    const fields = isRecord(schema?.properties) ? schema.properties : undefined;
+    if (params?.mode !== 'form' || !fields) { return undefined; }
+    const keys = Object.keys(fields);
+    const message = typeof params.message === 'string' ? params.message : '';
+    const lines = keys.length === 1 ? [message] : message.split('\n');
+    return {
+      toolCallId: params.toolCallId,
+      // Any unrecognised field invalidates the whole card (normalizeAskUserQuestions).
+      questions: keys.map((key, index) => {
+        const field = isRecord(fields[key]) ? fields[key] : {};
+        const multiSelect = field.type === 'array';
+        const choices = multiSelect ? (isRecord(field.items) ? field.items.anyOf : undefined) : field.oneOf;
+        if (!Array.isArray(choices)) { return undefined; }
+        const title = typeof field.title === 'string' ? field.title : '';
+        const text = (lines.length === keys.length ? lines[index].trim() : '') || title;
+        const body = typeof field.description === 'string' && field.description.trim() ? `\n\n${field.description}` : '';
+        return {
+          question: text + body, header: title === text ? '' : title, multiSelect,
+          options: choices.map(choice => isRecord(choice) ? { label: choice.const, description: choice.description } : choice),
+        };
+      }),
+      reply: (answers, questions) => answers === 'cancelled' ? { action: 'cancel' }
+        : answers === null ? { action: 'decline' }
+        : { action: 'accept', content: Object.fromEntries(keys.flatMap((key, index) => {
+          const labels = chosenLabels(answers, questions[index], index);
+          return labels.length ? [[key, questions[index].multiSelect ? labels : labels[0]]] : [];
+        })) },
+    };
+  }
+
+  /**
+   * Kimi's AskUserQuestion fallback over request_permission: titled
+   * "AskUserQuestion", the first question's text as content, one `q0_opt_N`
+   * option per answer plus `q0_skip`. An approval of the AskUserQuestion tool
+   * itself uses approval option IDs and stays on the approval path.
+   */
+  private _permissionQuestion(params: Record<string, unknown> | undefined): NativeQuestion | undefined {
+    const tool = isRecord(params?.toolCall) ? params.toolCall : {};
+    const options = Array.isArray(params?.options) ? params.options.filter(isRecord) : [];
+    const ids = options.map(option => String(option.optionId));
+    const answerable = options.filter(option => /^q0_opt_\d+$/.test(String(option.optionId)));
+    if (tool.title !== 'AskUserQuestion' || !answerable.length || !ids.every(id => /^q0_(opt_\d+|skip)$/.test(id))) { return undefined; }
+    return {
+      toolCallId: tool.toolCallId,
+      questions: [{ question: this._toolOutputText({ content: tool.content }), options: answerable.map(option => ({ label: option.name })) }],
+      reply: (answers, [question]) => {
+        // Kimi accepts only its own options, so free text is a dismissal too.
+        const label = answers && answers !== 'cancelled' ? chosenLabels(answers, question, 0)[0] : undefined;
+        const chosen = answers === 'cancelled' ? undefined
+          : answerable.find(option => option.name === label)?.optionId ?? (ids.includes('q0_skip') ? 'q0_skip' : undefined);
+        return { outcome: chosen ? { outcome: 'selected', optionId: chosen } : { outcome: 'cancelled' } };
+      },
+    };
+  }
+
+  /** Nobody will show this question (Brainstorm, background runs): dismiss it, never auto-answer. */
+  protected override releaseNativeQuestion(session: PanelSessionState, toolCallId: string): void {
+    (session as KimiCodeSessionState).questions?.get(toolCallId)?.(null);
+  }
+
+  /** Answer a question this panel's turn holds (null = skipped). False when none owns it. */
+  public answerNativeQuestion(panelId: string, toolCallId: string, answers: QuestionAnswers | null): boolean {
+    const settle = (this._panelSessions.get(panelId) as KimiCodeSessionState | undefined)?.questions?.get(toolCallId);
+    settle?.(answers);
+    return !!settle;
   }
 
   /** Extract text from an ACP content block (or block array). */

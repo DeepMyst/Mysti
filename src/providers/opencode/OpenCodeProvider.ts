@@ -119,6 +119,7 @@ export class OpenCodeProvider extends BaseCliProvider {
     thinkingStyle: 'complete-blocks',
     thinkingLevelEffective: false,
     planMode: 'none',
+    nativeModes: { approvals: true }, // only full access runs on the CLI path; other tiers are refused
     sessionKind: 'cli-resume',
     nativeInstructionFile: 'AGENTS.md',  // loaded by the CLI itself; Mysti does not resend it
     emitsToolResults: true,

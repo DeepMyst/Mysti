@@ -197,6 +197,16 @@ export interface ProviderCapabilities {
   supportsUltracode?: boolean;
   /** Plan-mode support level */
   planMode: PlanModeSupport;
+  /**
+   * Mysti modes this CLI enforces itself through the flags/protocol Mysti
+   * already sends. Enforced modes are not restated in the prompt: duplicated
+   * policy text makes models deliberate over it. Text remains only where the
+   * CLI has no native control. Flags stay the enforcement boundary either way.
+   * - plan: quick/detailed plan use the CLI's own plan mode (read-only planning)
+   * - readOnly: plan modes and the read-only access level block writes natively
+   * - approvals: ask-before-edit / edit-automatically map to native approval or auto-approve flags
+   */
+  nativeModes?: { plan?: boolean; readOnly?: boolean; approvals?: boolean };
   /** Honest session/continuity semantics */
   sessionKind: SessionKind;
   /** False where tool_use is emitted but tool_result never follows (Ollama/LocalAI) or no tool events fire (Copilot) */
@@ -619,6 +629,20 @@ export interface ICliProvider {
    * that report authoritative over Mysti's curated catalog.
    */
   hasReportedNativeCommands?(panelId?: string): boolean;
+
+  /**
+   * Answer a native question the panel's running turn is holding (null =
+   * skipped), so the agent continues the same turn. False when no native
+   * request owns it and the host should continue in a follow-up turn.
+   */
+  answerNativeQuestion?(panelId: string, toolCallId: string, answers: Record<string, string | string[]> | null): boolean;
+
+  /**
+   * The stream consumer will show and answer this native question. Questions
+   * a consumer moves past without claiming fall back to the provider's
+   * non-native handling, so no turn waits on an answer nobody will give.
+   */
+  claimNativeQuestion?(panelId: string, toolCallId: string): void;
 
   // Persistent process management
   preSpawnPersistentProcess?(panelId: string, settings: Settings): Promise<void>;

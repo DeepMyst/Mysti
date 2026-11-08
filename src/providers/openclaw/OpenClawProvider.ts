@@ -132,6 +132,7 @@ export class OpenClawProvider extends BaseCliProvider {
     thinkingStyle: 'complete-blocks',
     thinkingLevelEffective: false,  // --thinking flag exists but Mysti's level setting maps 1:1 only via prompt
     planMode: 'detected',
+    nativeModes: { approvals: true }, // only full access runs; other tiers are refused
     sessionKind: 'cli-resume',      // gateway sessionKey continuity (key is locally generated — Plan 02 Phase 5 caveat)
     emitsToolResults: true,
     emitsUsage: true,               // native agentMeta: run totals and separate latest-call context

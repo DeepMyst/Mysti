@@ -27,3 +27,13 @@ it.skipIf(CHROMIUM_UNAVAILABLE)('keeps the waiting dots through empty thinking c
   expect(await page.locator('#messages .loading').count()).toBe(0);
   expect((await page.locator('.message.assistant .message-content').allTextContents()).map(s => s.trim())).toEqual(['Hi there']);
 });
+
+it.skipIf(CHROMIUM_UNAVAILABLE)('keeps thinking progress through empty thinking chunks and clears it for the answer', async () => {
+  await receive('responseChunk', { type: 'progress', content: 'Thinking… ~150 tokens' });
+  await receive('responseChunk', { type: 'thinking', content: '' });
+  await receive('responseChunk', { type: 'progress', content: 'Thinking… ~300 tokens' });
+  await receive('responseChunk', { type: 'thinking', content: '' });
+  expect(await page.locator('.response-progress').allInnerTexts()).toEqual(['Thinking… ~300 tokens']);
+  await receive('responseChunk', { type: 'text', content: 'Hi there' });
+  expect(await page.locator('.response-progress').count()).toBe(0);
+});

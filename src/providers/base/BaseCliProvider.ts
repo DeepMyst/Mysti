@@ -64,6 +64,8 @@ interface NativeHistoryReceipt {
   sessionId: string;
   conversationId: string;
   messages: Map<string, string>;
+  /** Message IDs present when the last completed turn was sent (its own question excluded). */
+  after: ReadonlySet<string>;
 }
 
 function nativeMessageFingerprint(message: Conversation['messages'][number]): string {
@@ -216,6 +218,8 @@ export abstract class BaseCliProvider implements ICliProvider {
   /** Native deltas must not lose early unseen peers to the ordinary last-ten history cap. */
   private readonly _nativeHistoryDeltas = new WeakSet<Conversation>();
   private readonly _persistentTrackers = new WeakMap<ChildProcess, ProcessTracker>();
+  /** Native questions the stream consumer took ownership of (it will answer them). */
+  private readonly _claimedQuestions = new WeakMap<PanelSessionState, Set<string>>();
   private _nativeApprovalHost?: NativeApprovalHost;
   /** Secrets stay private and expire with their issuing process, never in session snapshots. */
   private readonly _processErrorRedactors = new WeakMap<ChildProcess, (text: string) => string>();
@@ -1069,9 +1073,11 @@ export abstract class BaseCliProvider implements ICliProvider {
    * A native session owns only the messages successfully submitted to THAT
    * session, not every peer turn in the Mysti conversation. Provider labels
    * cannot prove ownership: another panel can use the same provider and chat.
-   * Unknown IDs are replayed as context. This conservatively repeats the most
-   * recent own pair once (persisted by the host after completion), instead of
-   * guessing which assistant response belongs to this native session.
+   * Unknown IDs are replayed as context. The session's own completed exchange
+   * (persisted by the host after completion) is recognised only in its exact
+   * shape: the first message added since that turn's snapshot is a user
+   * message and the very next one is this provider's answer. Anything
+   * interleaved (another panel, a peer) keeps the conservative replay.
    */
   protected _conversationForPrompt(
     session: PanelSessionState,
@@ -1081,6 +1087,13 @@ export abstract class BaseCliProvider implements ICliProvider {
     const receipt = this._nativeHistory.get(session);
     const known = receipt?.sessionId === session.sessionId && receipt.conversationId === conversation.id
       ? receipt.messages : undefined;
+    if (known) {
+      const start = conversation.messages.findIndex(message => !receipt!.after.has(message.id));
+      const [question, answer] = start < 0 ? [] : conversation.messages.slice(start, start + 2);
+      if (question?.role === 'user' && answer?.role === 'assistant' && answer.provider === this.id) {
+        for (const own of [question, answer]) { known.set(own.id, nativeMessageFingerprint(own)); }
+      }
+    }
     const messages = conversation.messages.filter(message => known?.get(message.id) !== nativeMessageFingerprint(message));
     if (!messages.length) { return null; }
     const delta = { ...conversation, messages };
@@ -1108,7 +1121,7 @@ export abstract class BaseCliProvider implements ICliProvider {
     const known = previous?.sessionId === session.sessionId && previous.conversationId === candidate.conversationId
       ? [...previous.messages].filter(([id]) => currentIds.has(id)) : [];
     this._nativeHistory.set(session, { sessionId: session.sessionId, conversationId: candidate.conversationId,
-      messages: new Map([...known, ...candidate.messages]) });
+      messages: new Map([...known, ...candidate.messages]), after: currentIds });
   }
 
   /**
@@ -1713,6 +1726,11 @@ export abstract class BaseCliProvider implements ICliProvider {
             if (chunk.type === 'error' || chunk.type === 'auth_error') { request.failed = true; }
             usedPersistent = true;
             yield chunk;
+            // A consumer that moved past a native question without claiming it
+            // (Brainstorm, background runs) will never answer it: let the
+            // provider fall back instead of holding the turn until Stop.
+            const asked = chunk.type === 'ask_user_question' ? chunk.askUserQuestion?.toolCallId : undefined;
+            if (asked && !this._claimedQuestions.get(session)?.delete(asked)) { this.releaseNativeQuestion(session, asked); }
           }
         } catch (err) {
           request.failed = true;
@@ -1754,6 +1772,18 @@ export abstract class BaseCliProvider implements ICliProvider {
       if (this._requests.get(session) === request) { this._requests.delete(session); }
     }
   }
+
+  /** The consumer of this panel's stream will show and answer this native question. */
+  public claimNativeQuestion(panelId: string, toolCallId: string): void {
+    const session = this._panelSessions.get(panelId);
+    if (!session) { return; }
+    const claimed = this._claimedQuestions.get(session) ?? new Set<string>();
+    claimed.add(toolCallId);
+    this._claimedQuestions.set(session, claimed);
+  }
+
+  /** Fall back for a native question nobody will answer (default: nothing is held). */
+  protected releaseNativeQuestion(_session: PanelSessionState, _toolCallId: string): void { /* no native questions */ }
 
   /**
    * Glob-safety helper (Plan 01 R1). When spawning with shell:true on a POSIX
@@ -2565,16 +2595,20 @@ export abstract class BaseCliProvider implements ICliProvider {
    * Native flags and permission handlers remain the enforcement boundary.
    */
   private _addPromptPolicy(prompt: string, settings: Settings): string {
+    // Only restate what the CLI cannot enforce itself (capabilities.nativeModes):
+    // duplicated policy makes the model deliberate over it — measured ~5x the
+    // thinking for "hi" on Claude at max effort.
+    const native = this.capabilities.nativeModes ?? {};
     const planning = settings.mode === 'quick-plan' || settings.mode === 'detailed-plan';
-    if (settings.mode === 'quick-plan') {
-      prompt += '\n\n[Planning Mode] Create ONE concise implementation plan. Focus on the most practical approach without exploring multiple alternatives. Be brief and actionable.';
-    } else if (settings.mode === 'detailed-plan') {
-      prompt = this.addModeInstructions(prompt, 'plan');
+    if (planning && !native.plan) {
+      prompt = settings.mode === 'quick-plan'
+        ? prompt + '\n\n[Planning Mode] Create ONE concise implementation plan. Focus on the most practical approach without exploring multiple alternatives. Be brief and actionable.'
+        : this.addModeInstructions(prompt, 'plan');
     }
     if (settings.accessLevel === 'read-only' || planning) {
-      return prompt + '\n\n[Read Only] You may inspect and explain the available context. Do not modify files or perform other state-changing actions. If an edit is requested, explain that the current mode blocks it. The user must change Mysti’s permission setting before a new request can apply edits; a chat approval does not change this mode.';
+      return native.readOnly ? prompt : prompt + '\n\n[Read Only] You may inspect and explain the available context. Do not modify files or perform other state-changing actions. If an edit is requested, explain that the current mode blocks it. The user must change Mysti’s permission setting before a new request can apply edits; a chat approval does not change this mode.';
     }
-    return settings.mode && settings.mode !== 'default' ? this.addModeInstructions(prompt, settings.mode) : prompt;
+    return settings.mode && settings.mode !== 'default' && !native.approvals ? this.addModeInstructions(prompt, settings.mode) : prompt;
   }
 
   protected addModeInstructions(prompt: string, mode: string): string {

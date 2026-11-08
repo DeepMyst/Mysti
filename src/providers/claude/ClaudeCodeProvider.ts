@@ -49,7 +49,7 @@ import { normalizeAskUserQuestions } from '../../utils/askUserQuestions';
 import { isRecord } from '../../utils/valueGuards';
 import { killProcessTree, isProcessLive } from '../../utils/processKill';
 import { PROCESS_KILL_GRACE_PERIOD_MS } from '../../constants';
-import { handleClaudeControl, initializeClaudeControl, isClaudeControlFailure, type ClaudeControlState } from './ClaudeControlProtocol';
+import { answerClaudeQuestion, expectClaudeQuestion, releaseClaudeQuestion, handleClaudeControl, initializeClaudeControl, isClaudeControlFailure, type ClaudeControlState, type ClaudeQuestionAnswers } from './ClaudeControlProtocol';
 
 /**
  * Extended per-panel session state for Claude Code provider.
@@ -270,11 +270,12 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     supportsPromptEnhancement: true,
     // Plan 02 Phase 1 capability matrix
     thinkingStyle: 'streamed',     // incremental thinking deltas
-    thinkingLevelEffective: true,  // levels map to real token budgets (getThinkingTokens)
+    thinkingLevelEffective: false, // reasoning is Claude Code's --effort; no second MAX_THINKING_TOKENS budget
     effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],  // native --effort; CLI clamps per model
     effortDefault: 'high',
     supportsUltracode: true,
     planMode: 'native',            // sole emitter of exit_plan_mode
+    nativeModes: { plan: true, readOnly: true, approvals: true }, // --permission-mode plan + native can_use_tool approvals
     sessionKind: 'cli-resume',     // --resume with CLI-issued session IDs
     nativeInstructionFile: 'CLAUDE.md',  // loaded by the CLI itself; Mysti does not resend it
     emitsToolResults: true,
@@ -443,6 +444,16 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     if (!panelId) { return []; }
     const session = this._panelSessions.get(panelId) as ClaudeSessionState | undefined;
     return session?.reportedCommands ?? [];
+  }
+
+  /** Answer a native AskUserQuestion this panel's turn is holding (null = skipped). */
+  public answerNativeQuestion(panelId: string, toolUseId: string, answers: ClaudeQuestionAnswers | null): boolean {
+    const session = this._panelSessions.get(panelId) as ClaudeSessionState | undefined;
+    return answerClaudeQuestion(session?.control, toolUseId, answers);
+  }
+
+  protected override releaseNativeQuestion(session: PanelSessionState, toolUseId: string): void {
+    releaseClaudeQuestion((session as ClaudeSessionState).control, toolUseId);
   }
 
   /** True once the CLI has reported — the caller then trusts it over the catalog. */
@@ -664,17 +675,9 @@ export class ClaudeCodeProvider extends BaseCliProvider {
     }
   }
 
-  /**
-   * Get thinking tokens based on thinking level
-   */
-  protected getThinkingTokens(thinkingLevel: string): number | undefined {
-    const tokenMap: Record<string, number> = {
-      'none': 0,
-      'low': 4000,
-      'medium': 8000,
-      'high': 16000
-    };
-    return tokenMap[thinkingLevel];
+  /** Claude Code governs reasoning through --effort (see thinkingLevelEffective). */
+  protected getThinkingTokens(_thinkingLevel: string): number | undefined {
+    return undefined;
   }
 
   /**
@@ -875,6 +878,7 @@ export class ClaudeCodeProvider extends BaseCliProvider {
                 return { type: 'error', content: 'Claude returned an invalid question. Retry this request or ask Claude to restate the question.' };
               }
               console.log('[Mysti] Claude: AskUserQuestion completed with', questions.length, 'questions');
+              expectClaudeQuestion(claudeSession.control, completedTool.id);
               return {
                 type: 'ask_user_question',
                 askUserQuestion: {
@@ -944,6 +948,8 @@ export class ClaudeCodeProvider extends BaseCliProvider {
       // For normal messages, text was already streamed via text_delta chunks — skip to avoid duplication.
       // For CLI internal commands like /compact, no text_delta events are emitted, so emit the result text.
       if (data.type === 'result') {
+        // A finished turn owns no unanswered native question any more.
+        claudeSession.control?.questions?.clear();
         if (data.is_error === true) {
           const errors = Array.isArray(data.errors) ? data.errors.filter((error: unknown): error is string => typeof error === 'string') : [];
           return { type: 'error', content: typeof data.result === 'string' && data.result
@@ -959,6 +965,11 @@ export class ClaudeCodeProvider extends BaseCliProvider {
 
       // Handle system events (session init, etc.)
       if (data.type === 'system') {
+        // Current models redact thinking (empty deltas); the CLI's running
+        // estimate is the only visible sign of a long thinking phase.
+        if (data.subtype === 'thinking_tokens' && typeof data.estimated_tokens === 'number') {
+          return { type: 'progress', content: vscode.l10n.t('Thinking… ~{0} tokens', Math.round(data.estimated_tokens).toLocaleString('en-US')) };
+        }
         if (data.subtype === 'init') {
           // The CLI tells us exactly which `/commands` this session has —
           // built-ins, bundled skills (`/design` and friends, which live inside

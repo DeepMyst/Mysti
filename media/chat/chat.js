@@ -12105,7 +12105,8 @@
           messagesEl.scrollTop = messagesEl.scrollHeight;
           return;
         }
-        if (chunk.type === 'text' || chunk.type === 'thinking') clearProviderProgress();
+        // Empty (redacted) thinking is not content; keep "Thinking… ~N tokens".
+        if ((chunk.type === 'text' || chunk.type === 'thinking') && (chunk.content || chunk.revision)) clearProviderProgress();
         if (chunk.revision && (chunk.type === 'text' || chunk.type === 'thinking')) {
           renderResponseRevision(chunk.revision);
           return;

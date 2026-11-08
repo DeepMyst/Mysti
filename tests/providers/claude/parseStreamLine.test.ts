@@ -88,6 +88,13 @@ describe('ClaudeCodeProvider.parseStreamLine', () => {
       const result = provider.parseStreamLine(line, session);
       expect(result).toEqual({ type: 'thinking', content: '' });
     });
+
+    // Redacted thinking carries no text; the CLI's running estimate is the only
+    // sign of progress during a long (effort max: ~90 s) thinking phase.
+    it('reports the thinking_tokens estimate as transient progress', () => {
+      const line = JSON.stringify({ type: 'system', subtype: 'thinking_tokens', estimated_tokens: 2100, estimated_tokens_delta: 150 });
+      expect(provider.parseStreamLine(line, session)).toEqual({ type: 'progress', content: 'Thinking… ~2,100 tokens' });
+    });
   });
 
   // ==========================================================================

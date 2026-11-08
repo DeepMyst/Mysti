@@ -113,17 +113,18 @@ export class CursorProvider extends BaseCliProvider {
 	readonly capabilities: ProviderCapabilities = {
 		supportsAskPermission: false,
 		supportsStreaming: true,
-		supportsThinking: false,
+		supportsThinking: true,  // stream-json: thinking delta/completed events
 		supportsToolUse: true,
 		supportsSessions: false,
 		supportsAutoInstall: false,
 		supportsPromptEnhancement: true,
 		// Plan 02 Phase 1 capability matrix
-		thinkingStyle: 'none',
+		thinkingStyle: 'streamed',
 		thinkingLevelEffective: false,
 		planMode: 'detected',
-		sessionKind: 'none',  // stateless: history discarded, fabricated session IDs (F7/B8)
-		sendsNoHistory: true,  // prompts are built without history (sendMessage), so nothing to compact
+		nativeModes: { plan: true, approvals: true }, // --mode plan plans natively; Read Only text kept: headless auto-approves switch_mode
+		// Mysti replays recent messages into each prompt; session IDs are local, not --resume.
+		sessionKind: 'prompt-history',
 		emitsToolResults: true,
 		emitsUsage: true,
 		usageConvention: 'none',   // cursor-agent reports flat input/output only.
@@ -624,6 +625,13 @@ export class CursorProvider extends BaseCliProvider {
 				};
 			}
 
+			// Reasoning streams as deltas; "completed" only closes the block.
+			if (data.type === "thinking") {
+				return data.subtype === "delta" && typeof data.text === "string" && data.text
+					? { type: "thinking", content: data.text }
+					: null;
+			}
+
 			// Done/complete events do NOT emit a parser-level
 			// done: sendMessage() yields the single authoritative done (with usage)
 			// after the stream ends (Plan 02 Phase 3: exactly one done per response).
@@ -671,7 +679,7 @@ export class CursorProvider extends BaseCliProvider {
 		content: string,
 		context: ContextItem[],
 		settings: Settings,
-		_conversation: Conversation | null,
+		conversation: Conversation | null,
 		persona?: import("../base/IProvider").PersonaConfig,
 		panelId?: string,
 		providerManager?: unknown,
@@ -704,13 +712,14 @@ export class CursorProvider extends BaseCliProvider {
 		};
 
 		try {
-			// Cursor owns conversation history. Complete instructions and imports
-			// before resolving the transient input used in the final argv.
+			// Each -p run is a new Cursor chat, so Mysti replays the conversation
+			// (prompt-history). Complete instructions and imports before resolving
+			// the transient input used in the final argv.
 			const render = resolveInput ? await this.preparePromptRenderer(
-				null, settings, persona, agentConfig, undefined, session.channelSystemContext,
+				conversation, settings, persona, agentConfig, undefined, session.channelSystemContext,
 			) : undefined;
 			let fullPrompt = render ? '' : await this.buildPromptAsync(
-				content, context, null, settings, persona, agentConfig, undefined, session.channelSystemContext,
+				content, context, conversation, settings, persona, agentConfig, undefined, session.channelSystemContext,
 			);
 			if (!isCurrent()) { return; }
 			const workspaceFolders = (await import("vscode")).workspace.workspaceFolders;

@@ -179,10 +179,12 @@ describe('PC-04 model and reasoning controls in the shipped browser', () => {
     }
   });
 
-  it.skipIf(CHROMIUM_UNAVAILABLE)('settings thinking and effort controls reflect effective, advisory and absent capabilities', async () => {
+  it.skipIf(CHROMIUM_UNAVAILABLE)('settings thinking and effort controls reflect advisory and absent capabilities', async () => {
     await boot('claude-code', true);
     expect(await page.locator('#thinking-select').isVisible()).toBe(true);
-    expect(await page.locator('#thinking-advisory-hint').isVisible()).toBe(false);
+    // Claude reasons through --effort; its thinking level is advisory like every other backend's.
+    expect(await page.locator('#thinking-advisory-hint').isVisible()).toBe(true);
+    expect(await page.locator('#effort-select').isVisible()).toBe(true);
     const thinkingOffset = (await posted()).length;
     await page.locator('#thinking-select').selectOption('high');
     // The initial render's uiReady can arrive after this control's update.

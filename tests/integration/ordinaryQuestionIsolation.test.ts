@@ -169,3 +169,26 @@ it.each([null, {}, { Choice: 42 }, { Choice: ['ok', false] }])('malformed answer
   expect(h.host._handleSendMessage).not.toHaveBeenCalled();
   expect(h.host._pendingAskUserQuestions.get('a')).toBe(a.id);
 });
+
+it.each([[false, { Choice: 'answer-a' }], [true, null]] as const)(
+  'a native tool question is answered inside the running turn, not as a follow-up (skip=%s)', async (skip, expected) => {
+    const h = harness(); const answerNativeQuestion = vi.fn(() => true);
+    h.host._providerManager = { getProviderInstance: (id: string) => id === 'claude-code' ? { answerNativeQuestion } : undefined };
+    h.host._showPendingQuestion('a', { toolCallId: 'toolu_native', source: 'tool', questions: [
+      { question: 'Floor or round?', header: 'Choice', options: [{ label: 'Floor', description: '' }], multiSelect: false }] });
+    const id = h.host._postToPanel.mock.calls.filter(([, m]: any[]) => m.type === 'askUserQuestion').at(-1)![1].payload.toolCallId;
+    await h.answer('a', id, skip);
+    expect(answerNativeQuestion).toHaveBeenCalledWith('a', 'toolu_native', expected);
+    expect(h.host._handleSendMessage).not.toHaveBeenCalled();
+  },
+);
+
+it('falls back to a follow-up turn when no native request owns the question', async () => {
+  const h = harness();
+  h.host._providerManager = { getProviderInstance: () => ({ answerNativeQuestion: () => false }) };
+  h.host._showPendingQuestion('a', { toolCallId: 'toolu_gone', source: 'tool', questions: [
+    { question: 'Floor or round?', header: 'Choice', options: [{ label: 'Floor', description: '' }], multiSelect: false }] });
+  const id = h.host._postToPanel.mock.calls.filter(([, m]: any[]) => m.type === 'askUserQuestion').at(-1)![1].payload.toolCallId;
+  await h.answer('a', id);
+  expect(h.host._handleSendMessage).toHaveBeenCalledOnce();
+});
