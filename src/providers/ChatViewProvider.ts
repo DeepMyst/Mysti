@@ -3780,6 +3780,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Autonomous answers also supersede any earlier pending question.
     this._clearPendingQuestion(panelId);
 
+    // Skip = dismiss, like Esc in Claude Code: never send a message or answer on
+    // the user's behalf. A turn still waiting on this question is ended by the
+    // card's Stop (webview), which cancels the held native request.
+    if (skipped) {
+      if (originalQuestion?.source !== 'detected') {
+        this._postToPanel(panelId, { type: 'toolResult', payload: { id: payload.toolCallId, name: 'AskUserQuestion',
+          input: {}, output: 'Skipped', status: 'completed' } });
+      }
+      return;
+    }
+
     // Learn from the user's answer (passive memory building)
     if (originalQuestion) {
       this._memoryManager.learnFromQuestionAnswer(originalQuestion, payload.answers);
@@ -3803,7 +3814,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // the agent continues the same turn (Claude Code's own question flow).
     const native = originalQuestion?.source !== 'detected'
       && this._providerManager?.getProviderInstance(this._getPanelProvider(panelId))
-        ?.answerNativeQuestion?.(panelId, payload.toolCallId, skipped ? null : payload.answers);
+        ?.answerNativeQuestion?.(panelId, payload.toolCallId, payload.answers);
     if (native) { return; }
 
     // Format answers into a readable message for Claude
