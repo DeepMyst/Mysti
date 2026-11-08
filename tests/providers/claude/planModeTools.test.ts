@@ -1,6 +1,7 @@
+import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { handleClaudeControl, type ClaudeControlState } from '../../../src/providers/claude/ClaudeControlProtocol';
 
 /** Claude Code's own plan mode (--permission-mode plan, used for Mysti's plan and
@@ -62,5 +63,40 @@ describe('Claude plan mode keeps its own planning tools', () => {
     const c = control('ask-before-edit', 'ask-permission');
     expect(c.canUse('Write', { file_path: path.join(PLANS, 'x.md') })).toBe('ask');
     expect(c.canUse('Agent', {})).toBe('ask');
+  });
+});
+
+describe('the plan file allowance cannot be redirected by links', () => {
+  const setup = () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mysti-plans-'));
+    vi.stubEnv('CLAUDE_CONFIG_DIR', root);
+    const outside = path.join(root, 'outside.ts'); fs.writeFileSync(outside, 'original');
+    return { root, plans: path.join(root, 'plans'), outside };
+  };
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it('allows a new or ordinary plan file in a real plans folder', () => {
+    const { plans } = setup(); const c = control('quick-plan', 'read-only');
+    expect(c.hook('Write', { file_path: path.join(plans, 'new.md') })).toBe('ask'); // folder not created yet
+    fs.mkdirSync(plans); fs.writeFileSync(path.join(plans, 'kept.md'), '# plan');
+    expect(c.hook('Edit', { file_path: path.join(plans, 'kept.md') })).toBe('ask');
+  });
+
+  it('denies a plan path that is a symlink to another file', () => {
+    const { plans, outside } = setup(); fs.mkdirSync(plans);
+    fs.symlinkSync(outside, path.join(plans, 'evil.md'));
+    expect(control('quick-plan', 'read-only').hook('Write', { file_path: path.join(plans, 'evil.md') })).toBe('deny');
+  });
+
+  it('denies a plan path that is a hard link to another file', () => {
+    const { plans, outside } = setup(); fs.mkdirSync(plans);
+    fs.linkSync(outside, path.join(plans, 'linked.md'));
+    expect(control('quick-plan', 'read-only').hook('Write', { file_path: path.join(plans, 'linked.md') })).toBe('deny');
+  });
+
+  it('denies writes when the plans folder itself is a symlink', () => {
+    const { root, plans } = setup(); const elsewhere = path.join(root, 'elsewhere'); fs.mkdirSync(elsewhere);
+    fs.symlinkSync(elsewhere, plans);
+    expect(control('quick-plan', 'read-only').hook('Write', { file_path: path.join(plans, 'plan.md') })).toBe('deny');
   });
 });

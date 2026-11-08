@@ -3,6 +3,7 @@ import type { ChildProcess } from 'child_process';
 import type { Settings, StreamChunk } from '../../types';
 import { isRecord } from '../../utils/valueGuards';
 import { toolKind } from '../../utils/toolNames';
+import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { nativeToolDecision } from '../base/NativeApprovalPolicy';
@@ -54,12 +55,22 @@ export function answerClaudeQuestion(state: ClaudeControlState | undefined, tool
 
 const INITIALIZE_ID = 'mysti-initialize';
 
-/** A top-level markdown file in Claude Code's plans folder (where its plan mode writes the plan). */
+/**
+ * A top-level markdown file in Claude Code's plans folder (where its plan mode
+ * writes the plan). Links must not redirect the write: the folder must be a
+ * real directory, and an existing plan must be a regular, singly-linked file.
+ */
 function isClaudePlanFile(filePath: unknown): boolean {
   if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) { return false; }
   const plans = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'plans');
   const resolved = path.resolve(filePath);
-  return path.dirname(resolved) === plans && resolved.endsWith('.md');
+  if (path.dirname(resolved) !== plans || !resolved.endsWith('.md')) { return false; }
+  const stat = (target: string) => { try { return fs.lstatSync(target); } catch { return undefined; } };
+  const folder = stat(plans);
+  if (!folder) { return true; } // Claude Code creates it; nothing exists to redirect yet.
+  if (!folder.isDirectory() || folder.isSymbolicLink()) { return false; }
+  const file = stat(resolved);
+  return !file || (file.isFile() && !file.isSymbolicLink() && file.nlink === 1);
 }
 
 /**
