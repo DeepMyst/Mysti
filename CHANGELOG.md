@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- Never leave the chat stuck behind an open question. When an agent's question card is waiting, sending a message (including after switching model, agent or mode) dismisses the card, ends the waiting turn and sends your message. The card says so.
+- Make Skip on a question card a plain dismissal, like Esc in Claude Code: it no longer sends a "declined" message or triggers a reply, and it ends a turn that was waiting on the question.
+- Let Claude's own plan mode work in Mysti's Plan and Read Only tiers. Mysti's read-only gate denied the read-only Explore subagents and the plan file that Claude Code's plan mode relies on, so plans often never reached the approval card. Subagents' own tool calls still pass through the same gate, and the only write allowed is Claude's plan file under `~/.claude/plans`.
 - Let Claude Code run the way it does on its own. Mysti no longer appends its Plan/Read-only/edit-mode instructions to Claude prompts, because Claude Code already enforces those modes itself. Restating them made Claude reason about the instructions; at maximum effort a plain "hi" used about five times the thinking.
 - Answer Claude's questions in the same turn. When Claude asks a question, Mysti now holds Claude Code's native request until you answer the card and passes your choices back, so Claude continues immediately instead of failing the question tool and starting a follow-up turn. A skipped question is declined explicitly.
 - Stop replaying a resumed session's own previous exchange as "conversation history". Messages from other agents are still replayed; anything ambiguous, such as two panels interleaving, keeps the previous conservative replay.

@@ -3,6 +3,9 @@ import type { ChildProcess } from 'child_process';
 import type { Settings, StreamChunk } from '../../types';
 import { isRecord } from '../../utils/valueGuards';
 import { toolKind } from '../../utils/toolNames';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { nativeToolDecision } from '../base/NativeApprovalPolicy';
 import type { NativeApprovalRequests } from '../base/NativeApprovalRequests';
 
@@ -51,6 +54,37 @@ export function answerClaudeQuestion(state: ClaudeControlState | undefined, tool
 }
 
 const INITIALIZE_ID = 'mysti-initialize';
+
+/**
+ * A top-level markdown file in Claude Code's plans folder (where its plan mode
+ * writes the plan). Links must not redirect the write: the folder must be a
+ * real directory, and an existing plan must be a regular, singly-linked file.
+ */
+function isClaudePlanFile(filePath: unknown): boolean {
+  if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) { return false; }
+  const plans = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'plans');
+  const resolved = path.resolve(filePath);
+  if (path.dirname(resolved) !== plans || !resolved.endsWith('.md')) { return false; }
+  const stat = (target: string) => { try { return fs.lstatSync(target); } catch { return undefined; } };
+  const folder = stat(plans);
+  if (!folder) { return true; } // Claude Code creates it; nothing exists to redirect yet.
+  if (!folder.isDirectory() || folder.isSymbolicLink()) { return false; }
+  const file = stat(resolved);
+  return !file || (file.isFile() && !file.isSymbolicLink() && file.nlink === 1);
+}
+
+/**
+ * Mysti's plan and read-only tiers run Claude Code in its own plan mode, which
+ * explores with read-only subagents and writes its plan file. Keep those two
+ * tools: a subagent's own tool calls still reach this hook (so its writes stay
+ * denied), and the only write allowed is the plan file itself.
+ */
+function claudeToolDecision(settings: ClaudeControlState['settings'], name: string, input: Record<string, unknown>): 'allow' | 'ask' | 'deny' {
+  const planMode = settings.mode === 'quick-plan' || settings.mode === 'detailed-plan' || settings.accessLevel === 'read-only';
+  if (planMode && (name === 'Agent' || name === 'Task')) { return 'allow'; }
+  if (planMode && (name === 'Write' || name === 'Edit') && isClaudePlanFile(input.file_path)) { return 'allow'; }
+  return nativeToolDecision(settings, name);
+}
 const HOOK_ID = 'mysti-pre-tool';
 
 export function claudeUserMessage(prompt: string): string {
@@ -107,7 +141,8 @@ export function handleClaudeControl(
     const input = isRecord(request.input) ? request.input : {};
     const valid = state?.initialized && request.callback_id === HOOK_ID && input.hook_event_name === 'PreToolUse';
     const name = typeof input.tool_name === 'string' ? input.tool_name : 'UnknownTool';
-    const deny = !valid || nativeToolDecision(state!.settings, name) === 'deny';
+    const toolInput = isRecord(input.tool_input) ? input.tool_input : {};
+    const deny = !valid || claudeToolDecision(state!.settings, name, toolInput) === 'deny';
     reply({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: deny ? 'deny' : 'ask',
       permissionDecisionReason: deny ? 'Mysti read-only policy or unavailable approval owner.' : 'Mysti must review this tool call.',
     } });
@@ -154,7 +189,7 @@ export function handleClaudeControl(
     requests.request(data.request_id, {
       id: typeof request.tool_use_id === 'string' ? request.tool_use_id : data.request_id,
       name, input, kind: toolKind(name), status: 'running',
-    }, nativeToolDecision(state.settings, name), (decision, target) => respond(decision === 'allow', target));
+    }, claudeToolDecision(state.settings, name, input), (decision, target) => respond(decision === 'allow', target));
     return null;
   }
   // Unknown requests must not be mistaken for successful authorization.

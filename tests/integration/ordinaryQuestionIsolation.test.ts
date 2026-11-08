@@ -67,10 +67,19 @@ it.each([false, true])('a sibling cannot consume another panel question (skip=%s
   expect(h.host._handleSendMessage).toHaveBeenCalledOnce();
 });
 
-it.each([false, true])('an answer/skip is accepted once (skip=%s)', async skip => {
+it('an answer is accepted once', async () => {
   const h = harness(); const a = await h.show('a', 'A');
-  await h.answer('a', a.id, skip); await h.answer('a', a.id, skip);
+  await h.answer('a', a.id); await h.answer('a', a.id);
   expect(h.host._handleSendMessage).toHaveBeenCalledOnce();
+});
+
+// Skip = dismiss (Esc in Claude Code): it never sends a message or answers for the user.
+it('a skip dismisses the card without sending a message or teaching memory', async () => {
+  const h = harness(); const a = await h.show('a', 'A');
+  await h.answer('a', a.id, true); await h.answer('a', a.id, true);
+  expect(h.host._handleSendMessage).not.toHaveBeenCalled();
+  expect(h.host._memoryManager.learnFromQuestionAnswer).not.toHaveBeenCalled();
+  expect(h.host._pendingAskUserQuestions.size).toBe(0); expect(vi.getTimerCount()).toBe(0);
 });
 
 it('a saved card cannot answer a replacement reusing the same backend ID', async () => {
@@ -141,7 +150,7 @@ it('an explicit tool result retains its native ID when the card uses a delivery 
   expect(h.host._postToPanel).toHaveBeenCalledWith('a', expect.objectContaining({ type: 'toolResult', payload: expect.objectContaining({ id: 'native-tool-7' }) }));
 });
 
-it.each([false, true])('a question continuation preserves its own mode/access/effort despite changed global defaults (skip=%s)', async skip => {
+it.each([false])('a question continuation preserves its own mode/access/effort despite changed global defaults (skip=%s)', async skip => {
   const h = harness();
   const last = { provider: 'claude-code', model: 'model-a', mode: 'quick-plan', accessLevel: 'read-only',
     effortLevel: 'low', thinkingLevel: 'none', ultracode: false, contextMode: 'manual' };
@@ -170,7 +179,7 @@ it.each([null, {}, { Choice: 42 }, { Choice: ['ok', false] }])('malformed answer
   expect(h.host._pendingAskUserQuestions.get('a')).toBe(a.id);
 });
 
-it.each([[false, { Choice: 'answer-a' }], [true, null]] as const)(
+it.each([[false, { Choice: 'answer-a' }]] as const)(
   'a native tool question is answered inside the running turn, not as a follow-up (skip=%s)', async (skip, expected) => {
     const h = harness(); const answerNativeQuestion = vi.fn(() => true);
     h.host._providerManager = { getProviderInstance: (id: string) => id === 'claude-code' ? { answerNativeQuestion } : undefined };
@@ -182,6 +191,17 @@ it.each([[false, { Choice: 'answer-a' }], [true, null]] as const)(
     expect(h.host._handleSendMessage).not.toHaveBeenCalled();
   },
 );
+
+it('a skipped native question is neither answered nor followed up (the webview ends the waiting turn)', async () => {
+  const h = harness(); const answerNativeQuestion = vi.fn(() => true);
+  h.host._providerManager = { getProviderInstance: () => ({ answerNativeQuestion }) };
+  h.host._showPendingQuestion('a', { toolCallId: 'toolu_native', source: 'tool', questions: [
+    { question: 'Floor or round?', header: 'Choice', options: [{ label: 'Floor', description: '' }], multiSelect: false }] });
+  const id = h.host._postToPanel.mock.calls.filter(([, m]: any[]) => m.type === 'askUserQuestion').at(-1)![1].payload.toolCallId;
+  await h.answer('a', id, true);
+  expect(answerNativeQuestion).not.toHaveBeenCalled(); expect(h.host._handleSendMessage).not.toHaveBeenCalled();
+  expect(h.host._postToPanel).toHaveBeenCalledWith('a', expect.objectContaining({ type: 'toolResult', payload: expect.objectContaining({ output: 'Skipped' }) }));
+});
 
 it('falls back to a follow-up turn when no native request owns the question', async () => {
   const h = harness();

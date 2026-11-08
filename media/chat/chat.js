@@ -5244,6 +5244,8 @@
               quickActionsContainer.classList.remove('loading');
               quickActionsContainer.innerHTML = '';
             }
+            // A message sent while a question waited ends that turn first; send it now.
+            if (state.drainAfterCancel) { state.drainAfterCancel = false; state.queuePaused = false; drainQueue(); }
             if (pendingStallHandoff) {
               var handoff = pendingStallHandoff;
               pendingStallHandoff = null;
@@ -11519,6 +11521,7 @@
         inputEl.style.height = 'auto';
         clearAutocomplete();
         renderQueue();
+        moveOnFromOpenQuestion();
         return true;
       }
 
@@ -11581,6 +11584,18 @@
         // requestCancelled. Keep queued work for an explicit new send.
         state.queuePaused = true;
         postMessageWithPanelId({ type: 'cancelRequest' });
+      }
+
+      /** Sending while the agent waits on a question card means moving on: dismiss
+       * the card (ending that turn, like Esc), then send once the turn has ended. */
+      function moveOnFromOpenQuestion() {
+        if (!state.isLoading) { return; }
+        var open = Array.from(messagesEl.querySelectorAll('.ask-user-question-container')).filter(function(card) {
+          return card._duringTurn && !card._settled && card.isConnected;
+        });
+        if (!open.length) { return; }
+        open.forEach(function(card) { var skip = card.querySelector('.auq-skip-btn'); if (skip) { skip.click(); } });
+        state.drainAfterCancel = true;
       }
 
       /** Send the next queued message after completion unless Stop held it. */
@@ -14109,6 +14124,8 @@
       function renderAskUserQuestionTabs(toolCallId, questions) {
         var container = document.createElement('div');
         container.className = 'ask-user-question-container';
+        // Asked inside a running turn: the agent's native request is waiting on it.
+        container._duringTurn = !!state.isLoading;
         container.setAttribute('data-tool-call-id', toolCallId);
 
         // Track answers and current tab
@@ -14162,6 +14179,9 @@
             type: 'askUserQuestionSkipped',
             payload: { toolCallId: toolCallId }
           });
+          // Skip = dismiss, like Esc in Claude Code: end the turn that is
+          // waiting on this question instead of letting the agent carry on.
+          if (container._duringTurn && state.isLoading && !state.queuePaused) { cancelActiveRequest(); }
           if (agentMap) { agentMap.questionAnswered(toolCallId); }
           container.remove();
         };
@@ -14174,7 +14194,7 @@
 
         var submitHint = document.createElement('span');
         submitHint.style.cssText = 'font-size: 11px; color: var(--vscode-descriptionForeground); margin-right: auto; align-self: center;';
-        submitHint.textContent = '1-9 to select · Enter to submit';
+        submitHint.textContent = '1-9 to select · Enter to submit' + (container._duringTurn ? ' · or send a message to move on' : '');
 
         footer.appendChild(submitHint);
         footer.appendChild(skipBtn);
