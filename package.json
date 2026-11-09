@@ -2,7 +2,7 @@
   "name": "mysti",
   "displayName": "Mysti 2.0 BETA \u2014 AI Coding Workspace",
   "description": "Bring Claude Code, Codex and other coding agents into one VS Code workspace. Assign tasks, compare independent opinions, build with Canvas, and follow important changes with Proactive.",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "publisher": "DeepMyst",
   "author": {
     "name": "Baha Abunojaim",
