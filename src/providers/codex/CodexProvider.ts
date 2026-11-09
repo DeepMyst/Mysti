@@ -124,7 +124,9 @@ export class CodexProvider extends BaseCliProvider {
       // gpt-5.3-codex-spark: retired the week of 2026-09-14 (gone from Codex's
       // catalog). A user who still has it selected keeps it as a custom id.
     ],
-    defaultModel: 'gpt-5.6-sol'
+    // Codex's own current default (model/list isDefault, 2026-11-09) and its
+    // balanced tier; ChatGPT accounts were rejecting Sol/Astra/5.5 that day.
+    defaultModel: 'gpt-5.6-terra'
   };
 
   readonly capabilities: ProviderCapabilities = {

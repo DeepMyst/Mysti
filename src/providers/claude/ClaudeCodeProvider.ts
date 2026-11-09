@@ -166,9 +166,15 @@ export class ClaudeCodeProvider extends BaseCliProvider {
         contextWindow: 1000000
       },
       {
+        id: 'claude-sonnet-5-5',
+        name: 'Claude Sonnet 5.5',
+        description: 'Best balance of speed, intelligence and cost (Claude Code ≥ 2.1.288)',
+        contextWindow: 1000000
+      },
+      {
         id: 'claude-sonnet-5',
         name: 'Claude Sonnet 5',
-        description: 'Best balance of speed, intelligence and cost — the default',
+        description: 'Previous-generation Sonnet',
         contextWindow: 1000000
       },
       {
@@ -223,6 +229,12 @@ export class ClaudeCodeProvider extends BaseCliProvider {
         contextWindow: 200000
       },
       {
+        id: 'claude-haiku-5-5',
+        name: 'Claude Haiku 5.5',
+        description: 'Fastest and most affordable (Claude Code ≥ 2.1.319)',
+        contextWindow: 200000
+      },
+      {
         id: 'claude-haiku-4-5',
         name: 'Claude Haiku 4.5',
         description: 'Fast and efficient for simpler tasks',
@@ -242,17 +254,19 @@ export class ClaudeCodeProvider extends BaseCliProvider {
         id: 'sonnet',
         name: 'Sonnet (latest)',
         description: 'Always the latest Sonnet model the CLI supports',
-        // Claude Code 2.1.282 resolves this to claude-sonnet-5 (1M).
+        // Claude Code 2.1.288+ resolves this to claude-sonnet-5-5 (1M).
         contextWindow: 1000000
       },
       {
         id: 'haiku',
         name: 'Haiku (latest)',
         description: 'Always the latest Haiku model the CLI supports',
+        // Claude Code 2.1.319 resolves this to claude-haiku-5-5; 2.1.288 to claude-haiku-4-5.
         contextWindow: 200000
       }
     ],
-    defaultModel: 'claude-sonnet-5'
+    // The alias, as Claude Code itself does: always the newest Sonnet the installed CLI knows.
+    defaultModel: 'sonnet'
   };
 
   readonly capabilities: ProviderCapabilities = {

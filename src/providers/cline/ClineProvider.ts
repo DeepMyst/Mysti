@@ -85,6 +85,12 @@ export class ClineProvider extends BaseCliProvider {
 		name: "cline",
 		displayName: "Cline",
 		models: [
+			{
+				id: "default",
+				name: "Cline default",
+				description: "The model configured in Cline (no --model sent)",
+				contextWindow: 200000,
+			},
 			// Popular models (via OpenRouter). Ids and windows checked against
 			// OpenRouter's live /api/v1/models (2026-09-25), which Cline's bundled
 			// catalog mirrors; Cline sizes a turn as maxInputTokens ?? contextWindow.
@@ -143,7 +149,7 @@ export class ClineProvider extends BaseCliProvider {
 				contextWindow: 128000,
 			},
 		],
-		defaultModel: "deepseek/deepseek-chat",
+		defaultModel: "default",
 	};
 
 	get capabilities(): ProviderCapabilities {
@@ -453,10 +459,11 @@ export class ClineProvider extends BaseCliProvider {
 		// Cline 1.x has no per-request model flag. Do not claim the configured
 		// or routed selection is used by that older CLI.
 		if (major !== null && major < 2) { return undefined; }
-		if (settings.routedModel) { return settings.routedModel; }
+		// 'default' is a sentinel (Cline's configured model), never a model id.
+		if (settings.routedModel) { return settings.routedModel === "default" ? undefined : settings.routedModel; }
 		const custom = vscode.workspace.getConfiguration("mysti").get<string>("clineModel", "");
 		if (custom && validateModelName(custom).valid) { return custom; }
-		return settings.model || undefined;
+		return settings.model && settings.model !== "default" ? settings.model : undefined;
 	}
 
 	/**

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Changed
+
+- Default to each agent's own current model, the way the CLIs do. Claude defaults to the `sonnet` alias (the newest Sonnet your Claude Code knows: Sonnet 5.5 on 2.1.288+) instead of a pinned Sonnet 4.6; Cline and OpenClaw default to the model configured in that CLI and Codex defaults to GPT-5.6 Terra, Codex's own current default and balanced tier (ChatGPT accounts were rejecting GPT-5.6 Sol, GPT-6 Astra and GPT-5.5); Qwen defaults to `coder-model`, its own default and the only model Qwen OAuth accepts. Added Claude Sonnet 5.5 and Haiku 5.5.
+- Unanswered permission, question and plan cards now wait for you by default (`require-action`), like Claude Code, instead of being denied after 60 seconds.
+
 ### Fixed
 
 - Never leave the chat stuck behind an open question. When an agent's question card is waiting, sending a message (including after switching model, agent or mode) dismisses the card, ends the waiting turn and sends your message. The card says so.

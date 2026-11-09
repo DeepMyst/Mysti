@@ -156,8 +156,18 @@ describe('PermissionManager', () => {
   });
 
   describe('timeout behavior', () => {
+    it('waits for the user by default, like Claude Code (no expiry)', async () => {
+      setMockConfig('permission.timeout', 1);
+      pm.refreshConfig();
+      let settled = false;
+      void pm.requestPermission('file-edit', 'Edit', 'desc', {}, () => {}).then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(settled).toBe(false); expect(pm.getPendingCount()).toBe(1);
+    });
+
     it('settles even when the webview throws while receiving expiry', async () => {
       setMockConfig('permission.timeout', 1);
+      setMockConfig('permission.timeoutBehavior', 'auto-reject');
       pm.refreshConfig();
       let delivered = 0;
       const result = pm.requestPermission('file-edit', 'Edit', 'desc', {}, () => {
@@ -169,7 +179,7 @@ describe('PermissionManager', () => {
       expect(vi.getTimerCount()).toBe(0);
     });
 
-    it('should auto-reject after timeout (default behavior)', async () => {
+    it('should auto-reject after timeout when configured', async () => {
       setMockConfig('permission.timeout', 5);
       setMockConfig('permission.timeoutBehavior', 'auto-reject');
       pm = new PermissionManager('ask-permission');

@@ -92,7 +92,7 @@ export class QwenCodeProvider extends BaseCliProvider {
         contextWindow: 262144
       }
     ],
-    defaultModel: 'qwen3-coder'
+    defaultModel: 'coder-model' // the CLI's own default; the only model Qwen OAuth accepts
   };
 
   readonly capabilities: ProviderCapabilities = {
