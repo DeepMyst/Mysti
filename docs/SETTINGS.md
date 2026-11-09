@@ -335,7 +335,7 @@ Default model to use
 
 | Type | Declared default | Declared scope |
 | --- | --- | --- |
-| `string` | `"claude-sonnet-4-6"` | Not declared |
+| `string` | `"sonnet"` | Not declared |
 
 ### `mysti.claudeCodeModel`
 
@@ -1485,7 +1485,7 @@ Behavior when a permission request times out. Machine-scoped (security): a repos
 
 | Type | Declared default | Declared scope |
 | --- | --- | --- |
-| `string` | `"auto-reject"` | `machine` |
+| `string` | `"require-action"` | `machine` |
 
 Allowed values: `"auto-accept"`, `"auto-reject"`, `"require-action"`, `"semi-autonomous"`.
 

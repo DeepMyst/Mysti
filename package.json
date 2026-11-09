@@ -648,7 +648,7 @@
         },
         "mysti.defaultModel": {
           "type": "string",
-          "default": "claude-sonnet-4-6",
+          "default": "sonnet",
           "description": "%config.mysti.defaultModel.description%"
         },
         "mysti.claudeCodeModel": {
@@ -1705,7 +1705,7 @@
         },
         "mysti.permission.timeoutBehavior": {
           "type": "string",
-          "default": "auto-reject",
+          "default": "require-action",
           "scope": "machine",
           "enum": [
             "auto-accept",

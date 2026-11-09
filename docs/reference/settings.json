@@ -5,7 +5,7 @@
     "package.json",
     "package.nls.json"
   ],
-  "sourceSha256": "9ccec5eb40c07dc54f64ef7a0f240818fd623088a4b46fc447e186583182e26d",
+  "sourceSha256": "99a9d1ed05e930f2df5dca1c52081f5a5442f5270e7e638104122629a050d5e2",
   "settings": {
     "mysti.defaultProvider": {
       "type": "string",
@@ -319,7 +319,7 @@
     },
     "mysti.defaultModel": {
       "type": "string",
-      "default": "claude-sonnet-4-6",
+      "default": "sonnet",
       "description": "Default model to use"
     },
     "mysti.claudeCodeModel": {
@@ -1376,7 +1376,7 @@
     },
     "mysti.permission.timeoutBehavior": {
       "type": "string",
-      "default": "auto-reject",
+      "default": "require-action",
       "scope": "machine",
       "enum": [
         "auto-accept",

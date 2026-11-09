@@ -1522,7 +1522,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     };
 
     const permissionSettings = {
-      timeoutBehavior: config.get<string>('permission.timeoutBehavior', 'auto-reject'),
+      timeoutBehavior: config.get<string>('permission.timeoutBehavior', 'require-action'),
       semiAutonomousTimeout: config.get<number>('semiAutonomous.timeout', SEMI_AUTONOMOUS_DEFAULT_TIMEOUT_S)
     };
 

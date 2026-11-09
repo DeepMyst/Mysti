@@ -172,7 +172,7 @@ export class PermissionManager {
     const config = vscode.workspace.getConfiguration('mysti');
     return {
       timeout: config.get<number>('permission.timeout', 30),
-      timeoutBehavior: config.get<PermissionTimeoutBehavior>('permission.timeoutBehavior', 'auto-reject'),
+      timeoutBehavior: config.get<PermissionTimeoutBehavior>('permission.timeoutBehavior', 'require-action'),
       semiAutonomousTimeout: config.get<number>('semiAutonomous.timeout', SEMI_AUTONOMOUS_DEFAULT_TIMEOUT_S)
     };
   }

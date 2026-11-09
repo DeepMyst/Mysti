@@ -43,7 +43,7 @@ export const DEFAULT_AGENT: AgentSelection = 'mysti';
  * Replaces scattered 'claude-sonnet-4-5-20250929' literals. Per-provider
  * defaults still come from each ProviderConfig.defaultModel.
  */
-export const DEFAULT_FALLBACK_MODEL = 'claude-sonnet-4-6';
+export const DEFAULT_FALLBACK_MODEL = 'sonnet'; // Claude Code's alias: its newest Sonnet
 
 /**
  * Process management constants

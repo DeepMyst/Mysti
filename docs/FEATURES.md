@@ -477,7 +477,7 @@ These are commonly used settings. [SETTINGS.md](SETTINGS.md) is the complete gen
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `mysti.permission.timeout` | `30` | Timeout seconds (0 = none) |
-| `mysti.permission.timeoutBehavior` | `"auto-reject"` | Timeout behavior |
+| `mysti.permission.timeoutBehavior` | `"require-action"` | Timeout behavior (default waits for you, like Claude Code) |
 
 ## Proactive inbox
 

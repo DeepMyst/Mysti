@@ -98,6 +98,13 @@ export class OpenClawProvider extends BaseCliProvider {
     displayName: 'OpenClaw',
     models: [
       {
+        // Mysti passes no model: OpenClaw runs its own configured default.
+        id: 'default',
+        name: 'OpenClaw default',
+        description: 'The model configured for your OpenClaw agent',
+        contextWindow: 200000,
+      },
+      {
         id: 'claude-opus-5',
         name: 'Claude Opus 5',
         description: 'Flagship Anthropic model via OpenClaw',
@@ -116,7 +123,7 @@ export class OpenClawProvider extends BaseCliProvider {
         contextWindow: 1050000,
       },
     ],
-    defaultModel: 'claude-opus-5',
+    defaultModel: 'default',
   };
 
   readonly capabilities: ProviderCapabilities = {
