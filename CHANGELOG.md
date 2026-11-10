@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## [2.0.3] — 2026-11-09 · Beta 4 (pre-release)
+
+Agents now run the way their own CLIs do, and the chat no longer gets stuck behind questions. It remains a beta; [production readiness](docs/PRODUCTION_READINESS.md) records acceptance gaps.
 
 ### Changed
 

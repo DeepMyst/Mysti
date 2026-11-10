@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "product": "Mysti",
-  "productVersion": "2.0.2",
+  "productVersion": "2.0.3",
   "channel": "beta",
   "entryPoint": "docs/README.md",
   "sourceOfTruth": {
@@ -509,6 +509,22 @@
       ],
       "kind": "policy",
       "status": "current"
+    },
+    {
+      "id": "beta4-notes",
+      "path": "docs/releases/2.0.3-beta.4/RELEASE-NOTES.md",
+      "title": "Beta 4 release notes",
+      "summary": "Changes and install notes for Beta 4.",
+      "audiences": [
+        "user",
+        "maintainer"
+      ],
+      "topics": [
+        "release notes",
+        "beta4"
+      ],
+      "kind": "release",
+      "status": "release-specific"
     },
     {
       "id": "beta3-notes",

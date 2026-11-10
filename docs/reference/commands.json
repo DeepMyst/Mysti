@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "productVersion": "2.0.2",
+  "productVersion": "2.0.3",
   "sources": [
     "package.json",
     "package.nls.json"
   ],
-  "sourceSha256": "99a9d1ed05e930f2df5dca1c52081f5a5442f5270e7e638104122629a050d5e2",
+  "sourceSha256": "ee089620be07730a1e0e3b9d5c9000595171d2b13b26367f80b25ad1f9ba40d5",
   "commands": [
     {
       "command": "mysti.deskPair",

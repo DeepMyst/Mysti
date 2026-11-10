@@ -2,7 +2,7 @@
 
 > A beta VS Code extension for working with coding agents, shared context, visual artifacts and explicit multi-agent workflows.
 
-This index describes the 2.0.2 source line. Fetch the smallest relevant guide; settings and command references are generated from the manifest. Account access, native approvals and production acceptance vary by provider. Recordings use labelled sample data. Current source and the production-readiness report take precedence over historical plans. In a checkout, use these repository-relative paths for your revision; the URLs track published main.
+This index describes the 2.0.3 source line. Fetch the smallest relevant guide; settings and command references are generated from the manifest. Account access, native approvals and production acceptance vary by provider. Recordings use labelled sample data. Current source and the production-readiness report take precedence over historical plans. In a checkout, use these repository-relative paths for your revision; the URLs track published main.
 
 ## Start here
 
@@ -46,6 +46,7 @@ This index describes the 2.0.2 source line. Fetch the smallest relevant guide; s
 
 ## Optional
 
+- [Beta 4 release notes](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/releases/2.0.3-beta.4/RELEASE-NOTES.md): Changes and install notes for Beta 4.
 - [Beta 3 release notes](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/releases/2.0.2-beta.3/RELEASE-NOTES.md): Changes and install notes for the Beta 3 patch.
 - [Beta 2 release notes](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/releases/2.0.1-beta.2/RELEASE-NOTES.md): Changes and distribution notes for the published Beta 2 artifact.
 - [Beta 2 validation](https://raw.githubusercontent.com/DeepMyst/Mysti/main/docs/releases/2.0.1-beta.2/VALIDATION.md): Exact source, artifact identity and scoped qualification evidence.
